@@ -21,18 +21,58 @@ jobs:
           XCODE_VERSION=$(cat versions.json | python3 -c 'import json,sys;obj=json.load(sys.stdin);print(obj["xcode"]);')
           sudo xcode-select -s /Applications/Xcode_$XCODE_VERSION.app/Contents/Developer
 
-          # GitHub's macOS 15 image keeps Xcode 16.0 but no longer keeps its
-          # matching iOS 18.0 simulator runtime. Asset catalog compilation
-          # still asks CoreSimulator for a runtime matching the 18.0 SDK.
-          # Map that SDK to the oldest installed iOS 18 runtime instead of
-          # changing the Xcode toolchain used by this historical Swiftgram.
-          SDK_VERSION=$(xcrun --sdk iphoneos --show-sdk-version)
-          SDK_KEY="iphoneos$SDK_VERSION"
-          SDK_BUILD=$(xcrun simctl runtime match list -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d[sys.argv[1]]["sdkBuild"])' "$SDK_KEY")
-          SDK_MAJOR=${SDK_VERSION%%.*}
-          RUNTIME_BUILD=$(xcrun simctl runtime list -j | python3 -c 'import json,sys; major=sys.argv[1]; d=json.load(sys.stdin); xs=[v for v in d.values() if v.get("platform")=="iOS" and str(v.get("version","")).split(".")[0]==major]; xs.sort(key=lambda v: tuple(int(x) for x in str(v.get("version","0")).split("."))); print(xs[0]["build"] if xs else "")' "$SDK_MAJOR")
-          test -n "$RUNTIME_BUILD"
-          xcrun simctl runtime match set "$SDK_KEY" "$RUNTIME_BUILD" --sdkBuild "$SDK_BUILD"
+      - name: Configure and verify simulator runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          python3 -u <<'PY'
+          import json
+          import subprocess
+
+          def read_json(*args):
+              return json.loads(subprocess.check_output(args, text=True))
+
+          sdk_version = subprocess.check_output(
+              ["xcrun", "--sdk", "iphoneos", "--show-sdk-version"], text=True
+          ).strip()
+          sdk_key = "iphoneos" + sdk_version
+          matches = read_json("xcrun", "simctl", "runtime", "match", "list", "-j")
+          runtimes = read_json("xcrun", "simctl", "runtime", "list", "-j")
+          print("Installed runtime images:", json.dumps(runtimes, indent=2))
+          sdk_build = matches.get(sdk_key, {}).get("sdkBuild")
+          if not sdk_build:
+              raise SystemExit("Missing SDK build for " + sdk_key + ": " + json.dumps(matches))
+
+          # runtime list uses platformIdentifier, not platform="iOS".
+          # Use the oldest usable runtime from the SDK's major iOS version.
+          candidates = [
+              runtime for runtime in runtimes.values()
+              if runtime.get("platformIdentifier") == "com.apple.platform.iphonesimulator"
+              and str(runtime.get("version", "")).split(".")[0] == sdk_version.split(".")[0]
+              and runtime.get("build")
+              and runtime.get("state") != "Unusable"
+          ]
+          if not candidates:
+              raise SystemExit("No usable iOS " + sdk_version.split(".")[0] + " runtime installed")
+          candidates.sort(key=lambda runtime: tuple(int(n) for n in runtime["version"].split(".")))
+          runtime = candidates[0]
+          print("Mapping", sdk_key, sdk_build, "to iOS", runtime["version"], runtime["build"], flush=True)
+          subprocess.check_call([
+              "xcrun", "simctl", "runtime", "match", "set",
+              sdk_key, runtime["build"], "--sdkBuild", sdk_build,
+          ])
+          subprocess.check_call(["xcrun", "simctl", "runtime", "match", "list"])
+          PY
+
+          # Exercise the exact asset catalog that failed in CI #3 before Bazel.
+          ASSET_CHECK_DIR=$(mktemp -d)
+          trap 'rm -rf "$ASSET_CHECK_DIR"' EXIT
+          xcrun actool --compile "$ASSET_CHECK_DIR" \
+            --platform iphoneos --minimum-deployment-target 12.0 \
+            --compress-pngs --target-device iphone --target-device ipad \
+            --output-partial-info-plist "$ASSET_CHECK_DIR/partial.plist" \
+            Telegram/WidgetKitWidget/WidgetImages.xcassets
 
       - name: Create canonical source directory
         run: |
