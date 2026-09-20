@@ -1,0 +1,14 @@
+name: Actions Bootstrap
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Confirm workflow runs
+        run: echo "OK"
