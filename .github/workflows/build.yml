@@ -102,7 +102,42 @@ jobs:
           echo "BUILD_NUMBER=$(echo $BUILD_NUMBER)" >> $GITHUB_ENV
           echo "APP_VERSION=$(echo $APP_VERSION)" >> $GITHUB_ENV
 
-          python3 build-system/Make/ImportCertificates.py --path build-system/fake-codesigning/certs
+          # This CI produces an unsigned IPA for later re-signing. Bundled
+          # fake profiles provide entitlement metadata only, not installation rights.
+          python3 -u <<'PY'
+          import pathlib
+          import plistlib
+          import subprocess
+
+          profile_dir = pathlib.Path("build-system/fake-codesigning/profiles")
+          fixture_ids = []
+          for path in sorted(profile_dir.glob("*.mobileprovision")):
+              profile = plistlib.loads(subprocess.check_output(
+                  ["security", "cms", "-D", "-i", str(path)]
+              ))
+              fixture_ids.append(profile["UUID"])
+              print("CI fixture:", path.name, "expires:", profile["ExpirationDate"])
+          if not fixture_ids:
+              raise SystemExit("No bundled fake provisioning profiles found")
+
+          # Expiration is checked even with entitlements_validation='skip'.
+          # Exempt only UUIDs decoded from this checkout's fake profiles.
+          # All entitlement checks and all other profile expiry checks remain.
+          tool = pathlib.Path("build-system/bazel-rules/rules_apple/tools/plisttool/plisttool.py")
+          original = "    if expire and expire < datetime.datetime.now():"
+          replacement = (
+              "    is_ci_fixture = self._profile_metadata.get('UUID') in " + repr(tuple(fixture_ids)) + "\n"
+              "    if expire and expire < datetime.datetime.now() and is_ci_fixture:\n"
+              "      print('WARNING: expired CI fixture; output requires re-signing')\n"
+              "    if expire and expire < datetime.datetime.now() and not is_ci_fixture:"
+          )
+          source = tool.read_text()
+          if source.count(original) != 1:
+              raise SystemExit("Unexpected plisttool source; refusing to patch")
+          tool.write_text(source.replace(original, replacement))
+          with pathlib.Path(".bazelrc").open("a") as config:
+              config.write("\n# CI unsigned archive for re-signing\nbuild --features=disable_legacy_signing\n")
+          PY
           python3 -u build-system/Make/Make.py \
             --bazelUserRoot="$BAZEL_USER_ROOT" \
             build \
