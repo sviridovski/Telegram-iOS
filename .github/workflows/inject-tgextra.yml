@@ -42,7 +42,14 @@ jobs:
 
       - name: Install Cyan injector
         run: |
-          python3 -m pip install --force-reinstall             https://github.com/asdfzxcvbn/pyzule-rw/archive/main.zip
+          set -euo pipefail
+          python3 -m venv .venv
+          source .venv/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install --force-reinstall \
+            https://github.com/asdfzxcvbn/pyzule-rw/archive/main.zip
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+          cyan --help >/dev/null
 
       - name: Inject TGExtra
         run: |
