@@ -72,10 +72,11 @@ jobs:
             cp -R "$f" build/DSYMs/
           done
           zip -r "./$OUTPUT_PATH/Telegram.DSYMs.zip" build/DSYMs 1>/dev/null
-           - name: Upload IPA artifact
-           uses: actions/upload-artifact@v7
-           with:
-             name: Swiftgram-11.3.3-149-IPA
-             path: /Users/Shared/telegram-ios/build/artifacts/Telegram.ipa
-             if-no-files-found: error
-          
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: Swiftgram-11.3.3-149-IPA
+          path: /Users/Shared/telegram-ios/build/artifacts/Telegram.ipa
+          if-no-files-found: error
+
