@@ -553,6 +553,20 @@ def build(bazel, arguments):
 
     bazel_command_line.invoke_build()
 
+    # Compatibility for the legacy GitHub Actions workflow in this Swiftgram snapshot.
+    # The Swiftgram target emits Swiftgram.ipa in the modern Bazel output layout,
+    # while the old workflow looks for Telegram.ipa under applebin_ios-ios_arm*-opt-ST-*.
+    compatibility_output_path = 'bazel-out/applebin_ios-ios_arm64-opt-ST-compat/bin/Telegram'
+    ipa_paths = glob.glob('bazel-out/ios_arm64-opt-ios-arm64-min12.0-applebin_ios-ST-*/bin/Telegram/Swiftgram.ipa')
+    if len(ipa_paths) == 1:
+        os.makedirs(compatibility_output_path, exist_ok=True)
+        shutil.copyfile(ipa_paths[0], compatibility_output_path + '/Telegram.ipa')
+        for dsym_path in glob.glob('bazel-bin/Telegram/*.dSYM'):
+            destination_path = compatibility_output_path + '/' + os.path.basename(dsym_path)
+            if os.path.exists(destination_path):
+                shutil.rmtree(destination_path)
+            shutil.copytree(dsym_path, destination_path)
+
     if arguments.outputBuildArtifactsPath is not None:
         artifacts_path = os.path.abspath(arguments.outputBuildArtifactsPath)
         if os.path.exists(artifacts_path + '/Swiftgram.ipa'):
