@@ -21,6 +21,19 @@ jobs:
           XCODE_VERSION=$(cat versions.json | python3 -c 'import json,sys;obj=json.load(sys.stdin);print(obj["xcode"]);')
           sudo xcode-select -s /Applications/Xcode_$XCODE_VERSION.app/Contents/Developer
 
+          # GitHub's macOS 15 image keeps Xcode 16.0 but no longer keeps its
+          # matching iOS 18.0 simulator runtime. Asset catalog compilation
+          # still asks CoreSimulator for a runtime matching the 18.0 SDK.
+          # Map that SDK to the oldest installed iOS 18 runtime instead of
+          # changing the Xcode toolchain used by this historical Swiftgram.
+          SDK_VERSION=$(xcrun --sdk iphoneos --show-sdk-version)
+          SDK_KEY="iphoneos$SDK_VERSION"
+          SDK_BUILD=$(xcrun simctl runtime match list -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d[sys.argv[1]]["sdkBuild"])' "$SDK_KEY")
+          SDK_MAJOR=${SDK_VERSION%%.*}
+          RUNTIME_BUILD=$(xcrun simctl runtime list -j | python3 -c 'import json,sys; major=sys.argv[1]; d=json.load(sys.stdin); xs=[v for v in d.values() if v.get("platform")=="iOS" and str(v.get("version","")).split(".")[0]==major]; xs.sort(key=lambda v: tuple(int(x) for x in str(v.get("version","0")).split("."))); print(xs[0]["build"] if xs else "")' "$SDK_MAJOR")
+          test -n "$RUNTIME_BUILD"
+          xcrun simctl runtime match set "$SDK_KEY" "$RUNTIME_BUILD" --sdkBuild "$SDK_BUILD"
+
       - name: Create canonical source directory
         run: |
           set -x
