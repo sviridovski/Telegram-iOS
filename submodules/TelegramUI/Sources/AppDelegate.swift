@@ -228,6 +228,8 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     var mainWindow: Window1!
     private var dataImportSplash: LegacyDataImportSplash?
     private var memoryUsageOverlayView: UILabel?
+    // Main-queue state: coalesce remote configuration refreshes during app switching.
+    private var lastForegroundSGRefresh: [AccountRecordId: TimeInterval] = [:]
     
     private var buildConfig: BuildConfig?
     let episodeId = arc4random()
@@ -1540,6 +1542,8 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         
         let _ = self.urlSession(identifier: "\(baseAppBundleId).backroundSession")
         
+        // Memory sampling is diagnostic work, not a production feature.
+        #if DEBUG
         var previousReportedMemoryConsumption = 0
         let _ = Foundation.Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true, block: { _ in
             let value = getMemoryConsumption()
@@ -1584,6 +1588,8 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
             }
         })
         
+        #endif
+
         //self.addBackgroundDownloadTask()
         
         let reflectorBenchmarkDisposable = MetaDisposable()
@@ -1920,16 +1926,27 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     }
     
     func runForegroundTasks(onlySG: Bool = false) {
-        
         let _ = (self.sharedContextPromise.get()
         |> take(1)
-        |> deliverOnMainQueue).start(next: { sharedApplicationContext in
+        |> deliverOnMainQueue).start(next: { [weak self] sharedApplicationContext in
             let _ = (sharedApplicationContext.sharedContext.activeAccountContexts
              |> take(1)
-             |> deliverOnMainQueue).start(next: { activeAccounts in
+             |> deliverOnMainQueue).start(next: { [weak self] activeAccounts in
+                guard let self else {
+                    return
+                }
+                let now = ProcessInfo.processInfo.systemUptime
+                let activeIds = Set(activeAccounts.accounts.map { $0.1.account.id })
+                self.lastForegroundSGRefresh = self.lastForegroundSGRefresh.filter { activeIds.contains($0.key) }
                 for (_, context, _) in activeAccounts.accounts {
-                    // MARK: Swiftgram
-                    updateSGWebSettingsInteractivelly(context: context)
+                    let accountId = context.account.id
+                    let lastRefresh = self.lastForegroundSGRefresh[accountId]
+                    // Only coalesce automatic foreground refreshes. Explicit settings
+                    // refreshes still run immediately; message sync is independent.
+                    if onlySG || lastRefresh == nil || now - (lastRefresh ?? 0.0) >= 60.0 {
+                        self.lastForegroundSGRefresh[accountId] = now
+                        updateSGWebSettingsInteractivelly(context: context)
+                    }
                     if onlySG {
                         continue
                     }
