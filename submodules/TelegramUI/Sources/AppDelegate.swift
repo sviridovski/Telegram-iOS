@@ -1051,7 +1051,7 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
                 let id = application.beginBackgroundTask(withName: name, expirationHandler: expiration)
                 Logger.shared.log("App \(self.episodeId)", "Begin background task \(name): \(id)")
                 print("App \(self.episodeId)", "Begin background task \(name): \(id)")
-                return id
+                return id == .invalid ? nil : id
             }, endBackgroundTask: { id in
                 print("App \(self.episodeId)", "End background task \(id)")
                 Logger.shared.log("App \(self.episodeId)", "End background task \(id)")
@@ -1889,16 +1889,16 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         
         let taskIdHolder = TaskIdHolder()
         
-        taskIdHolder.taskId = application.beginBackgroundTask(withName: "lock", expirationHandler: {
+        // Expiration and normal completion can both run. Release the assertion once.
+        let finishLockTask: () -> Void = {
             if let taskId = taskIdHolder.taskId {
+                taskIdHolder.taskId = nil
                 UIApplication.shared.endBackgroundTask(taskId)
             }
-        })
-        DispatchQueue.main.asyncAfter(deadline: DispatchTime.now() + 5.0, execute: {
-            if let taskId = taskIdHolder.taskId {
-                UIApplication.shared.endBackgroundTask(taskId)
-            }
-        })
+        }
+        let lockTaskId = application.beginBackgroundTask(withName: "lock", expirationHandler: finishLockTask)
+        taskIdHolder.taskId = lockTaskId == .invalid ? nil : lockTaskId
+        DispatchQueue.main.asyncAfter(deadline: DispatchTime.now() + 5.0, execute: finishLockTask)
     }
 
     func applicationWillEnterForeground(_ application: UIApplication) {

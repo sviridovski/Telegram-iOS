@@ -55,8 +55,24 @@
         _hardMemoryLimit = MAX(hardMemoryLimit, softMemoryLimit);
         _cache = [[NSMutableDictionary alloc] init];
         _averageColors = [[NSMutableDictionary alloc] init];
+        [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(releaseCachedImages:) name:UIApplicationDidEnterBackgroundNotification object:nil];
+        [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(releaseCachedImages:) name:UIApplicationDidReceiveMemoryWarningNotification object:nil];
     }
     return self;
+}
+
+- (void)dealloc
+{
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+- (void)releaseCachedImages:(NSNotification *)notification
+{
+    [self clearCache];
+    [_queue dispatch:^
+    {
+        [_averageColors removeAllObjects];
+    }];
 }
 
 - (void)_addSize:(NSUInteger)size

@@ -343,17 +343,9 @@ public final class SharedWakeupManager {
             let canBeginBackgroundExtensionTasks = self.allowBackgroundTimeExtensionDeadline.flatMap({ CFAbsoluteTimeGetCurrent() < $0 }) ?? false
             if hasTasksForBackgroundExtension {
                 if canBeginBackgroundExtensionTasks {
-                    var endTaskId: UIBackgroundTaskIdentifier?
-                    
+                    // Keep the existing assertion until it completes or expires.
+                    // Recreating it on every state update does not extend iOS's budget.
                     let currentTime = CFAbsoluteTimeGetCurrent()
-                    if let (taskId, startTime, timer) = self.currentTask {
-                        if startTime < currentTime + 1.0 {
-                            self.currentTask = nil
-                            timer.invalidate()
-                            endTaskId = taskId
-                        }
-                    }
-                    
                     if self.currentTask == nil {
                         var actualTaskId: UIBackgroundTaskIdentifier?
                         let handleExpiration: () -> Void = { [weak self] in
@@ -361,16 +353,22 @@ public final class SharedWakeupManager {
                                 return
                             }
                             
-                            if let actualTaskId {
-                                strongSelf.endBackgroundTask(actualTaskId)
-                                
-                                if let (taskId, _, timer) = strongSelf.currentTask, taskId == actualTaskId {
-                                    timer.invalidate()
-                                    strongSelf.currentTask = nil
-                                }
+                            guard let expiredTaskId = actualTaskId else {
+                                return
                             }
-                            
+                            actualTaskId = nil
+                            guard let (taskId, _, timer) = strongSelf.currentTask, taskId == expiredTaskId else {
+                                return
+                            }
+                            timer.invalidate()
+                            strongSelf.currentTask = nil
                             strongSelf.isInBackgroundExtension = false
+                            // A new push or foreground transition may grant a new window.
+                            // Do not loop into another assertion after this one expires.
+                            strongSelf.allowBackgroundTimeExtensionDeadline = nil
+                            strongSelf.allowBackgroundTimeExtensionDeadlineTimer?.invalidate()
+                            strongSelf.allowBackgroundTimeExtensionDeadlineTimer = nil
+                            strongSelf.endBackgroundTask(expiredTaskId)
                             strongSelf.checkTasks()
                         }
                         if let taskId = self.beginBackgroundTask("background-wakeup", {
@@ -382,8 +380,6 @@ public final class SharedWakeupManager {
                             }, queue: Queue.mainQueue())
                             self.currentTask = (taskId, currentTime, timer)
                             timer.start()
-                            
-                            endTaskId.flatMap(self.endBackgroundTask)
                             
                             self.isInBackgroundExtension = true
                         }

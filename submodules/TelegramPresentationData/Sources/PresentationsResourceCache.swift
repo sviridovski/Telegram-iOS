@@ -55,6 +55,27 @@ public final class PresentationsResourceCache {
     private let imageCache = Atomic<PresentationsResourceCacheHolder>(value: PresentationsResourceCacheHolder())
     private let objectCache = Atomic<PresentationsResourceAnyCacheHolder>(value: PresentationsResourceAnyCacheHolder())
     
+    private var memoryObservers: [NSObjectProtocol] = []
+
+    public init() {
+        // Release regenerable images, not live views, when memory is scarce or
+        // the app is backgrounded. Existing UI owners retain images they need.
+        for name in [UIApplication.didEnterBackgroundNotification, UIApplication.didReceiveMemoryWarningNotification] {
+            self.memoryObservers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                guard let self else {
+                    return
+                }
+                _ = self.imageCache.swap(PresentationsResourceCacheHolder())
+            })
+        }
+    }
+
+    deinit {
+        for observer in self.memoryObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
+
     public func image(_ key: Int32, _ theme: PresentationTheme, _ generate: (PresentationTheme) -> UIImage?) -> UIImage? {
         let result = self.imageCache.with { holder -> UIImage? in
             return holder.images[key]
