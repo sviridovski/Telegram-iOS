@@ -561,28 +561,8 @@ final class AuthorizedApplicationContext {
             }
         }))
         
-        self.appUpdateInfoDisposable.set((context.account.stateManager.appUpdateInfo
-        |> deliverOnMainQueue).start(next: { [weak self] appUpdateInfo in
-            guard let strongSelf = self, strongSelf.currentAppUpdateInfo != appUpdateInfo else {
-                return
-            }
-            
-            strongSelf.currentAppUpdateInfo = appUpdateInfo
-            if let appUpdateInfo = appUpdateInfo {
-                // Remember an explicitly skipped optional update across app restarts.
-                // A different advertised version, or a mandatory update, must still appear.
-                let skippedVersionKey = "Swiftgram.skippedOptionalTelegramUpdateVersion"
-                if !appUpdateInfo.blocking && UserDefaults.standard.string(forKey: skippedVersionKey) == appUpdateInfo.version {
-                    return
-                }
-                let controller = updateInfoController(context: strongSelf.context, appUpdateInfo: appUpdateInfo, onSkip: {
-                    if !appUpdateInfo.blocking {
-                        UserDefaults.standard.set(appUpdateInfo.version, forKey: skippedVersionKey)
-                    }
-                })
-                strongSelf.mainWindow.present(controller, on: .update)
-            }
-        }))
+        // This pinned personal build is updated manually through its IPA workflow.
+        // Do not present Telegram's App Store update screen on launch.
         
         if #available(iOS 10.0, *) {
             let permissionsPosition = ValuePromise(0, ignoreRepeated: true)

@@ -178,14 +178,28 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: waruhachi/TGExtra
-          ref: main
+          ref: 087f26523b602f2d9640f37b63c8016064581f53
           path: tgextra
 
-      - name: Download TGExtra 1.2.1 package
+      - name: Set up Theos for custom TGExtra
+        uses: waruhachi/theos-action@v2.4.6
+        with:
+          theos-src: waruhachi/theos
+          theos-branch: main
+          sdks-src: waruhachi/sdks
+          sdks-branch: main
+
+      - name: Build TGExtra 1.2.1 with three-second Help gesture
+        shell: bash
         run: |
           set -euo pipefail
-          curl -L --fail             -o com.choco.tg_1.2.1_iphoneos-arm.deb             https://github.com/waruhachi/TGExtra/releases/download/release/com.choco.tg_1.2.1_iphoneos-arm.deb
-          test -f tgextra/TGExtra.bundle/langs.json
+          cp build-system/personal-tgextra/UIHooks.xm tgextra/Sources/tgapi/UI/UIHooks.xm
+          cd tgextra
+          make clean package FINALPACKAGE=1 STRIP=0 ARCHS=arm64
+          packages=(packages/*_iphoneos-arm.deb)
+          test "${#packages[@]}" -eq 1
+          cp "${packages[0]}" ../com.choco.tg_1.2.1_iphoneos-arm.deb
+          test -f TGExtra.bundle/langs.json
 
       - name: Install Cyan injector
         run: |

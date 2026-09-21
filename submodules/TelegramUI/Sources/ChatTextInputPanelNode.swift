@@ -4468,6 +4468,14 @@ class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDelegate, Ch
     
     func chatInputTextNodeShouldPaste() -> Bool {
         let pasteboard = UIPasteboard.general
+
+        // Let UIKit perform user-initiated external text paste before reading
+        // any payload ourselves. Metadata checks do not read clipboard content.
+        // Keep Telegram entities and media on the existing custom paste path.
+        if #available(iOS 16.0, *), pasteboard.hasStrings, !pasteboard.hasImages,
+           !pasteboard.contains(pasteboardTypes: ["private.telegramtext", "com.compuserve.gif", "public.mpeg-4", "public.heics", "com.apple.png-sticker"]) {
+            return true
+        }
         
         var attributedString: NSAttributedString?
         if let data = pasteboard.data(forPasteboardType: "private.telegramtext"), let value = chatInputStateStringFromAppSpecificString(data: data) {
