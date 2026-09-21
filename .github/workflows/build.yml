@@ -1,8 +1,8 @@
 name: CI
 
 on:
-  # push:
-  #   branches: [ master ]
+  push:
+    branches: [ swiftgram-11.3.3-149-build ]
 
   workflow_dispatch:
 
@@ -168,3 +168,105 @@ jobs:
           path: /Users/Shared/telegram-ios/build/artifacts/Telegram.ipa
           if-no-files-found: error
 
+      - name: Use IPA from this build for TGExtra
+        run: |
+          set -euo pipefail
+          mkdir -p clean
+          cp /Users/Shared/telegram-ios/build/artifacts/Telegram.ipa clean/Telegram.ipa
+
+      - name: Fetch TGExtra bundle
+        uses: actions/checkout@v4
+        with:
+          repository: waruhachi/TGExtra
+          ref: main
+          path: tgextra
+
+      - name: Download TGExtra 1.2.1 package
+        run: |
+          set -euo pipefail
+          curl -L --fail             -o com.choco.tg_1.2.1_iphoneos-arm.deb             https://github.com/waruhachi/TGExtra/releases/download/release/com.choco.tg_1.2.1_iphoneos-arm.deb
+          test -f tgextra/TGExtra.bundle/langs.json
+
+      - name: Install Cyan injector
+        run: |
+          set -euo pipefail
+          python3 -m venv .venv
+          source .venv/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install --force-reinstall \
+            https://github.com/asdfzxcvbn/pyzule-rw/archive/main.zip
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+          cyan --help >/dev/null
+
+      - name: Inject TGExtra
+        run: |
+          set -euo pipefail
+          mkdir -p output
+          cyan             -i clean/Telegram.ipa             -o output/Swiftgram-11.3.3-149-TGExtra-1.2.1.ipa             -uwsgqf             com.choco.tg_1.2.1_iphoneos-arm.deb             tgextra/TGExtra.bundle
+          test -f output/Swiftgram-11.3.3-149-TGExtra-1.2.1.ipa
+
+      - name: Install ipapatch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG=$(gh api repos/asdfzxcvbn/ipapatch/releases/latest --jq .tag_name)
+          ARCH=$(uname -m)
+          if [[ "$ARCH" == "arm64" ]]; then
+            ASSET="ipapatch.macos-arm64"
+          else
+            ASSET="ipapatch.macos-amd64"
+          fi
+          gh release download "$TAG"             --repo asdfzxcvbn/ipapatch             --pattern "$ASSET"             --dir .
+          mkdir -p bin
+          mv "$ASSET" bin/ipapatch
+          chmod +x bin/ipapatch
+          echo "PATH=$GITHUB_WORKSPACE/bin:$PATH" >> "$GITHUB_ENV"
+
+      - name: Patch injected IPA for sideloading
+        run: |
+          set -euo pipefail
+          ipapatch             --input output/Swiftgram-11.3.3-149-TGExtra-1.2.1.ipa             --inplace             --noconfirm
+
+      - name: Verify TGExtra and PlugIns survived
+        run: |
+          set -euo pipefail
+          rm -rf verify
+          mkdir verify
+          unzip -q output/Swiftgram-11.3.3-149-TGExtra-1.2.1.ipa -d verify
+
+          APP=$(find verify/Payload -maxdepth 1 -type d -name '*.app' | head -n 1)
+          test -n "$APP"
+
+          required_extensions=(
+            "NotificationServiceExtensionv1.appex"
+            "BroadcastUploadExtension.appex"
+            "NotificationContentExtension.appex"
+            "WidgetExtension.appex"
+            "IntentsExtension.appex"
+            "ShareExtension.appex"
+          )
+
+          for ext in "${required_extensions[@]}"; do
+            test -d "$APP/PlugIns/$ext"
+            echo "OK PlugIn: $ext"
+          done
+
+          BUNDLE_PATH=$(find "$APP" -type d -name 'TGExtra.bundle' | head -n 1)
+          test -n "$BUNDLE_PATH"
+          echo "OK TGExtra bundle: $BUNDLE_PATH"
+
+          find "$APP" -iname '*TGExtra*' -print
+
+      - name: Generate checksum
+        run: |
+          shasum -a 256             output/Swiftgram-11.3.3-149-TGExtra-1.2.1.ipa             | tee output/SHA256.txt
+
+      - name: Upload injected IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Swiftgram-11.3.3-149-TGExtra-1.2.1
+          path: |
+            output/Swiftgram-11.3.3-149-TGExtra-1.2.1.ipa
+            output/SHA256.txt
+          if-no-files-found: error

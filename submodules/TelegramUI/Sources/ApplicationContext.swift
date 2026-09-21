@@ -569,7 +569,17 @@ final class AuthorizedApplicationContext {
             
             strongSelf.currentAppUpdateInfo = appUpdateInfo
             if let appUpdateInfo = appUpdateInfo {
-                let controller = updateInfoController(context: strongSelf.context, appUpdateInfo: appUpdateInfo)
+                // Remember an explicitly skipped optional update across app restarts.
+                // A different advertised version, or a mandatory update, must still appear.
+                let skippedVersionKey = "Swiftgram.skippedOptionalTelegramUpdateVersion"
+                if !appUpdateInfo.blocking && UserDefaults.standard.string(forKey: skippedVersionKey) == appUpdateInfo.version {
+                    return
+                }
+                let controller = updateInfoController(context: strongSelf.context, appUpdateInfo: appUpdateInfo, onSkip: {
+                    if !appUpdateInfo.blocking {
+                        UserDefaults.standard.set(appUpdateInfo.version, forKey: skippedVersionKey)
+                    }
+                })
                 strongSelf.mainWindow.present(controller, on: .update)
             }
         }))

@@ -90,7 +90,7 @@ private func updateInfoControllerEntries(theme: PresentationTheme, strings: Pres
     return entries
 }
 
-public func updateInfoController(context: AccountContext, appUpdateInfo: AppUpdateInfo) -> ViewController {
+public func updateInfoController(context: AccountContext, appUpdateInfo: AppUpdateInfo, onSkip: (() -> Void)? = nil) -> ViewController {
     var dismissImpl: (() -> Void)?
     var linkActionImpl: ((TextLinkItemActionType, TextLinkItem) -> Void)?
     
@@ -117,6 +117,7 @@ public func updateInfoController(context: AccountContext, appUpdateInfo: AppUpda
         }
         
         let leftNavigationButton = appUpdateInfo.blocking ? nil : ItemListNavigationButton(content: .text(presentationData.strings.Update_Skip), style: .regular, enabled: true, action: {
+            onSkip?()
             dismissImpl?()
         })
         let controllerState = ItemListControllerState(presentationData: ItemListPresentationData(presentationData), title: .text(presentationData.strings.Update_Title), leftNavigationButton: leftNavigationButton, rightNavigationButton: nil, backNavigationButton: ItemListBackButton(title: presentationData.strings.Common_Back))
