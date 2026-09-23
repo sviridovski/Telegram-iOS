@@ -67,7 +67,7 @@ public final class SwiftgramMessageArchive {
         }
         let entry = Entry(
             kind: kind,
-            peerNamespace: message.id.peerId.namespace._internalGetInt32Value()
+            peerNamespace: message.id.peerId.namespace._internalGetInt32Value(),
             peerId: message.id.peerId.id._internalGetInt64Value(),
             messageNamespace: message.id.namespace,
             messageId: message.id.id,
