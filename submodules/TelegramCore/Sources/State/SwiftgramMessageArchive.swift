@@ -80,7 +80,8 @@ public final class SwiftgramMessageArchive {
             currentText: currentText
         )
         let account = accountId.id._internalGetInt64Value()
-        self.queue.async {
+        // Persist the snapshot before update processing can be suspended.
+        self.queue.sync {
             var stored = self.entries(accountId: account)
             stored.append(entry)
             if stored.count > self.limit {

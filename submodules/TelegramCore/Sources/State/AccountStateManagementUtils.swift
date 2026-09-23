@@ -3657,6 +3657,19 @@ func replayFinalState(
                         }
                     }
                 }
+                // Some synchronization paths replay messages as additions. Preserve
+                // the existing text before an addition replaces a cached message.
+                for incoming in messages {
+                    if case let .Id(id) = incoming.id, let previous = transaction.getMessage(id), previous.text != incoming.text {
+                        SwiftgramMessageArchive.shared.snapshot(
+                            accountId: accountPeerId,
+                            message: previous,
+                            chatTitle: transaction.getPeer(id.peerId)?.debugDisplayTitle ?? "Чат",
+                            kind: .edited,
+                            currentText: incoming.text
+                        )
+                    }
+                }
                 let _ = transaction.addMessages(messages, location: location)
                 if case .UpperHistoryBlock = location {
                     for message in messages {
