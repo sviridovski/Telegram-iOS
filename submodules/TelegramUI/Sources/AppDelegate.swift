@@ -1502,16 +1502,28 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
             
             BGTaskScheduler.shared.register(forTaskWithIdentifier: taskId, using: DispatchQueue.main) { task in
                 Logger.shared.log("App \(self.episodeId)", "Executing cleanup task")
-                
+
+                var didComplete = false
+                let completeOnce: (Bool) -> Void = { success in
+                    guard !didComplete else {
+                        return
+                    }
+                    didComplete = true
+                    task.setTaskCompleted(success: success)
+                }
                 let disposable = self.runCacheReindexTasks(lowImpact: true, completion: {
                     Logger.shared.log("App \(self.episodeId)", "Completed cleanup task")
-                    
-                    task.setTaskCompleted(success: true)
+                    completeOnce(true)
                 })
-                
+
                 task.expirationHandler = {
-                    disposable.dispose()
-                    task.setTaskCompleted(success: false)
+                    DispatchQueue.main.async {
+                        guard !didComplete else {
+                            return
+                        }
+                        disposable.dispose()
+                        completeOnce(false)
+                    }
                 }
             }
             
