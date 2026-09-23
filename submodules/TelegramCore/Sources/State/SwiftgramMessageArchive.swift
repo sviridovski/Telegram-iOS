@@ -99,7 +99,7 @@ public final class SwiftgramMessageArchive {
     public func list(accountId: PeerId, kind: Kind) -> [Entry] {
         let account = accountId.id._internalGetInt64Value()
         return self.queue.sync {
-            self.entries(accountId: account).filter { $0.kind == kind }.reversed()
+            Array(self.entries(accountId: account).filter { $0.kind == kind }.reversed())
         }
     }
 
