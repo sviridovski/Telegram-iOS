@@ -3815,6 +3815,11 @@ func replayFinalState(
                     }
                 }
             case let .DeleteMessagesWithGlobalIds(ids):
+                for messageId in transaction.messageIdsForGlobalIds(ids) {
+                    if let message = transaction.getMessage(messageId) {
+                        SwiftgramMessageArchive.shared.snapshot(accountId: accountPeerId, message: message, chatTitle: transaction.getPeer(messageId.peerId)?.debugDisplayTitle ?? "Чат", kind: .deleted)
+                    }
+                }
                 var resourceIds: [MediaResourceId] = []
                 transaction.deleteMessagesWithGlobalIds(ids, forEachMedia: { media in
                     addMessageMediaResourceIdsToRemove(media: media, resourceIds: &resourceIds)
@@ -3824,6 +3829,11 @@ func replayFinalState(
                 }
                 deletedMessageIds.append(contentsOf: ids.map { .global($0) })
             case let .DeleteMessages(ids):
+                for messageId in ids {
+                    if let message = transaction.getMessage(messageId) {
+                        SwiftgramMessageArchive.shared.snapshot(accountId: accountPeerId, message: message, chatTitle: transaction.getPeer(messageId.peerId)?.debugDisplayTitle ?? "Чат", kind: .deleted)
+                    }
+                }
                 _internal_deleteMessages(transaction: transaction, mediaBox: mediaBox, ids: ids, manualAddMessageThreadStatsDifference: { id, add, remove in
                     addMessageThreadStatsDifference(threadKey: id, remove: remove, addedMessagePeer: nil, addedMessageId: nil, isOutgoing: false)
                 })
@@ -3859,6 +3869,7 @@ func replayFinalState(
             case let .EditMessage(id, message):
                 var generatedEvent: (reactionAuthor: Peer, reaction: MessageReaction.Reaction, message: Message, timestamp: Int32)?
                 transaction.updateMessage(id, update: { previousMessage in
+                    SwiftgramMessageArchive.shared.snapshot(accountId: accountPeerId, message: previousMessage, chatTitle: transaction.getPeer(id.peerId)?.debugDisplayTitle ?? "Чат", kind: .edited, currentText: message.text)
                     var updatedFlags = message.flags
                     var updatedLocalTags = message.localTags
                     var updatedAttributes = message.attributes

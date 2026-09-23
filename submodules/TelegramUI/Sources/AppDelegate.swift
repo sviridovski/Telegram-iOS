@@ -230,8 +230,6 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     private var memoryUsageOverlayView: UILabel?
     // Main-queue state: coalesce remote configuration refreshes during app switching.
     private var lastForegroundSGRefresh: [AccountRecordId: TimeInterval] = [:]
-    // Small lifecycle breadcrumb; it does not poll or keep the process awake.
-    private let lifecycleKey = "SwiftgramLastBackgroundSnapshot_v1"
     
     private var buildConfig: BuildConfig?
     let episodeId = arc4random()
@@ -335,13 +333,7 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         precondition(!testIsLaunched)
         testIsLaunched = true
-        if let snapshot = UserDefaults.standard.dictionary(forKey: self.lifecycleKey),
-           let enteredAt = snapshot["enteredAt"] as? TimeInterval {
-            let interval = max(0, Date().timeIntervalSince1970 - enteredAt)
-            Logger.shared.log("SwiftgramLifecycle", "Cold launch after background: \(Int(interval)) s; prior resident memory: \(snapshot["residentMB"] ?? "unknown") MB. Cause of termination is unknown; consult iOS jetsam reports.")
-        }
-        UserDefaults.standard.removeObject(forKey: self.lifecycleKey)
-
+        
         let _ = voipTokenPromise.get().start(next: { token in
             self.voipDeviceToken.set(.single(token))
         })
@@ -1502,28 +1494,16 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
             
             BGTaskScheduler.shared.register(forTaskWithIdentifier: taskId, using: DispatchQueue.main) { task in
                 Logger.shared.log("App \(self.episodeId)", "Executing cleanup task")
-
-                var didComplete = false
-                let completeOnce: (Bool) -> Void = { success in
-                    guard !didComplete else {
-                        return
-                    }
-                    didComplete = true
-                    task.setTaskCompleted(success: success)
-                }
+                
                 let disposable = self.runCacheReindexTasks(lowImpact: true, completion: {
                     Logger.shared.log("App \(self.episodeId)", "Completed cleanup task")
-                    completeOnce(true)
+                    
+                    task.setTaskCompleted(success: true)
                 })
-
+                
                 task.expirationHandler = {
-                    DispatchQueue.main.async {
-                        guard !didComplete else {
-                            return
-                        }
-                        disposable.dispose()
-                        completeOnce(false)
-                    }
+                    disposable.dispose()
+                    task.setTaskCompleted(success: false)
                 }
             }
             
@@ -1889,13 +1869,6 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     }
 
     func applicationDidEnterBackground(_ application: UIApplication) {
-        let residentMB = getMemoryConsumption() / (1024 * 1024)
-        UserDefaults.standard.set([
-            "enteredAt": Date().timeIntervalSince1970,
-            "residentMB": residentMB
-        ], forKey: self.lifecycleKey)
-        Logger.shared.log("SwiftgramLifecycle", "Background entry; resident memory: \(residentMB) MB")
-
         let _ = (self.sharedContextPromise.get()
         |> take(1)
         |> deliverOnMainQueue).start(next: { sharedApplicationContext in
@@ -1935,11 +1908,6 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     }
 
     func applicationWillEnterForeground(_ application: UIApplication) {
-        if let snapshot = UserDefaults.standard.dictionary(forKey: self.lifecycleKey),
-           let enteredAt = snapshot["enteredAt"] as? TimeInterval {
-            Logger.shared.log("SwiftgramLifecycle", "Warm return after \(Int(max(0, Date().timeIntervalSince1970 - enteredAt))) s; resident memory: \(getMemoryConsumption() / (1024 * 1024)) MB")
-            UserDefaults.standard.removeObject(forKey: self.lifecycleKey)
-        }
         if self.isActiveValue {
             self.isInForegroundValue = true
             self.isInForegroundPromise.set(true)

@@ -503,6 +503,8 @@ private enum PeerInfoContextSubject {
 
 private enum PeerInfoSettingsSection {
     case swiftgram
+    case swiftgramDeletedMessages
+    case swiftgramEditedMessages
     case avatar
     case edit
     case proxy
@@ -1085,6 +1087,12 @@ private func settingsItems(showProfileId: Bool, data: PeerInfoScreenData?, conte
     }))
     items[.support]!.append(PeerInfoScreenDisclosureItem(id: 2, text: presentationData.strings.Settings_Tips, icon: PresentationResourcesSettings.tips, action: {
         interaction.openSettings(.tips)
+    }))
+    items[.support]!.append(PeerInfoScreenDisclosureItem(id: 3, text: "Удалённые сообщения", icon: PresentationResourcesSettings.faq, action: {
+        interaction.openSettings(.swiftgramDeletedMessages)
+    }))
+    items[.support]!.append(PeerInfoScreenDisclosureItem(id: 4, text: "Изменённые сообщения", icon: PresentationResourcesSettings.faq, action: {
+        interaction.openSettings(.swiftgramEditedMessages)
     }))
     
     var result: [(AnyHashable, [PeerInfoScreenItem])] = []
@@ -10545,6 +10553,24 @@ final class PeerInfoScreenNode: ViewControllerTracingNode, PeerInfoScreenNodePro
         switch section {
         case .swiftgram:
             self.controller?.push(sgSettingsController(context: self.context))
+        case .swiftgramDeletedMessages, .swiftgramEditedMessages:
+            let kind: SwiftgramMessageArchive.Kind = section == .swiftgramDeletedMessages ? .deleted : .edited
+            self.controller?.push(sgMessageArchiveController(context: self.context, kind: kind, openChat: { [weak self] entry in
+                guard let self, let navigationController = self.controller?.navigationController as? NavigationController else {
+                    return
+                }
+                let peerId = PeerId(namespace: entry.peerNamespace, id: PeerId.Id._internalFromInt64Value(entry.peerId))
+                let messageId = MessageId(peerId: peerId, namespace: entry.messageNamespace, id: entry.messageId)
+                let _ = (self.context.account.postbox.transaction { transaction in
+                    transaction.getPeer(peerId)
+                } |> deliverOnMainQueue).start(next: { [weak self] peer in
+                    guard let self, let peer else {
+                        return
+                    }
+                    let subject: ChatControllerSubject? = entry.kind == .edited ? .message(id: .id(messageId), highlight: ChatControllerSubject.MessageHighlight(quote: nil), timecode: nil, setupReply: false) : nil
+                    self.context.sharedContext.navigateToChatController(NavigateToChatControllerParams(navigationController: navigationController, context: self.context, chatLocation: .peer(EnginePeer(peer)), subject: subject, keepStack: .always))
+                })
+            }))
         case .avatar:
             self.openAvatarForEditing()
         case .edit:

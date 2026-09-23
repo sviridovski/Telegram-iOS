@@ -333,6 +333,7 @@ public class ChatMessageTextBubbleContentNode: ChatMessageBubbleContentNode {
                 var rawText: String
                 var attributedText: NSAttributedString
                 var messageEntities: [MessageTextEntity]?
+                var swiftgramPreviousTextRange: NSRange?
                 
                 var mediaDuration: Double? = nil
                 var isSeekableWebMedia = false
@@ -409,6 +410,14 @@ public class ChatMessageTextBubbleContentNode: ChatMessageBubbleContentNode {
                     }
                 }
                 
+                // Keep the current message intact and show the last observed text
+                // beneath it, including in groups and channel discussion threads.
+                if !isTranslating, let previous = SwiftgramMessageArchive.shared.previousText(accountId: item.context.account.peerId, messageId: item.message.id), previous != item.message.text {
+                    let originalLength = (rawText as NSString).length
+                    rawText += "\n\nДо изменения: \(previous)"
+                    swiftgramPreviousTextRange = NSRange(location: originalLength, length: (rawText as NSString).length - originalLength)
+                }
+
                 var entities: [MessageTextEntity]?
                 var updatedCachedChatMessageText: CachedChatMessageText?
                 if let cached = currentCachedChatMessageText, cached.matches(text: rawText, inputEntities: messageEntities) {
@@ -557,6 +566,15 @@ public class ChatMessageTextBubbleContentNode: ChatMessageBubbleContentNode {
                         updatedString.replaceCharacters(in: range, with: insertString)
                     }
                     attributedText = updatedString
+                }
+
+                if let range = swiftgramPreviousTextRange, NSMaxRange(range) <= attributedText.length {
+                    let styled = NSMutableAttributedString(attributedString: attributedText)
+                    styled.addAttributes([
+                        .foregroundColor: UIColor.gray,
+                        .font: Font.regular(textFont.pointSize * 0.85)
+                    ], range: range)
+                    attributedText = styled
                 }
                                 
                 var customTruncationToken: ((UIFont, Bool) -> NSAttributedString?)?
