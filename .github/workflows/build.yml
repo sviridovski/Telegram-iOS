@@ -219,6 +219,13 @@ jobs:
           cyan             -i clean/Telegram.ipa             -o output/Swiftgram-11.3.3-149-TGExtra-1.2.1.ipa             -uwsgqf             com.choco.tg_1.2.1_iphoneos-arm.deb             tgextra/TGExtra.bundle
           test -f output/Swiftgram-11.3.3-149-TGExtra-1.2.1.ipa
 
+      - name: Make TGExtra install as Swiftgram alongside Telegram
+        run: |
+          set -euo pipefail
+          python3 build-system/personal-tgextra/retarget_ipa.py \
+            output/Swiftgram-11.3.3-149-TGExtra-1.2.1.ipa \
+            ph.telegra.Telegraph app.swiftgram.ios
+
       - name: Install ipapatch
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -251,6 +258,7 @@ jobs:
 
           APP=$(find verify/Payload -maxdepth 1 -type d -name '*.app' | head -n 1)
           test -n "$APP"
+          test "$(plutil -extract CFBundleIdentifier raw -o - "$APP/Info.plist")" = "app.swiftgram.ios"
 
           required_extensions=(
             "NotificationServiceExtensionv1.appex"
@@ -263,7 +271,9 @@ jobs:
 
           for ext in "${required_extensions[@]}"; do
             test -d "$APP/PlugIns/$ext"
-            echo "OK PlugIn: $ext"
+            ext_id="$(plutil -extract CFBundleIdentifier raw -o - "$APP/PlugIns/$ext/Info.plist")"
+            [[ "$ext_id" == app.swiftgram.ios.* ]]
+            echo "OK PlugIn: $ext ($ext_id)"
           done
 
           BUNDLE_PATH=$(find "$APP" -type d -name 'TGExtra.bundle' | head -n 1)
@@ -279,7 +289,7 @@ jobs:
       - name: Upload injected IPA artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Swiftgram-11.3.3-149-TGExtra-1.2.1
+          name: Swiftgram-11.3.3-149-TGExtra-1.2.1-Parallel
           path: |
             output/Swiftgram-11.3.3-149-TGExtra-1.2.1.ipa
             output/SHA256.txt
