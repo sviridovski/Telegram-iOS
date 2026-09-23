@@ -10568,7 +10568,14 @@ final class PeerInfoScreenNode: ViewControllerTracingNode, PeerInfoScreenNodePro
                         return
                     }
                     let subject: ChatControllerSubject? = entry.kind == .edited ? .message(id: .id(messageId), highlight: ChatControllerSubject.MessageHighlight(quote: nil), timecode: nil, setupReply: false) : nil
-                    self.context.sharedContext.navigateToChatController(NavigateToChatControllerParams(navigationController: navigationController, context: self.context, chatLocation: .peer(EnginePeer(peer)), subject: subject, keepStack: .always))
+                    if let threadId = entry.threadId, let channel = peer as? TelegramChannel, channel.flags.contains(.isForum) {
+                        let _ = self.context.sharedContext.navigateToForumThread(context: self.context, peerId: peerId, threadId: threadId, messageId: messageId, navigationController: navigationController, activateInput: nil, scrollToEndIfExists: false, keepStack: .default).startStandalone()
+                    } else if let threadId = entry.threadId {
+                        let thread = ChatReplyThreadMessage(peerId: peerId, threadId: threadId, channelMessageId: nil, isChannelPost: false, isForumPost: false, maxMessage: nil, maxReadIncomingMessageId: nil, maxReadOutgoingMessageId: nil, unreadCount: 0, initialFilledHoles: IndexSet(), initialAnchor: .automatic, isNotAvailable: false)
+                        self.context.sharedContext.navigateToChatController(NavigateToChatControllerParams(navigationController: navigationController, context: self.context, chatLocation: .replyThread(thread), subject: subject, keepStack: .always))
+                    } else {
+                        self.context.sharedContext.navigateToChatController(NavigateToChatControllerParams(navigationController: navigationController, context: self.context, chatLocation: .peer(EnginePeer(peer)), subject: subject, keepStack: .always))
+                    }
                 })
             }))
         case .avatar:
