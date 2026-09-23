@@ -10559,7 +10559,7 @@ final class PeerInfoScreenNode: ViewControllerTracingNode, PeerInfoScreenNodePro
                 guard let self, let navigationController = self.controller?.navigationController as? NavigationController else {
                     return
                 }
-                let peerId = PeerId(namespace: entry.peerNamespace, id: PeerId.Id._internalFromInt64Value(entry.peerId))
+                let peerId = PeerId(namespace: PeerId.Namespace._internalFromInt32Value(entry.peerNamespace), id: PeerId.Id._internalFromInt64Value(entry.peerId))
                 let messageId = MessageId(peerId: peerId, namespace: entry.messageNamespace, id: entry.messageId)
                 let _ = (self.context.account.postbox.transaction { transaction in
                     transaction.getPeer(peerId)

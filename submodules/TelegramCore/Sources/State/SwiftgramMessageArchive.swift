@@ -67,7 +67,7 @@ public final class SwiftgramMessageArchive {
         }
         let entry = Entry(
             kind: kind,
-            peerNamespace: message.id.peerId.namespace,
+            peerNamespace: message.id.peerId.namespace._internalGetInt32Value()
             peerId: message.id.peerId.id._internalGetInt64Value(),
             messageNamespace: message.id.namespace,
             messageId: message.id.id,
@@ -107,7 +107,7 @@ public final class SwiftgramMessageArchive {
         let account = accountId.id._internalGetInt64Value()
         return self.queue.sync {
             _ = self.entries(accountId: account)
-            let key = "\(messageId.peerId.namespace):\(messageId.peerId.id._internalGetInt64Value()):\(messageId.namespace):\(messageId.id)"
+            let key = "\(messageId.peerId.namespace._internalGetInt32Value()):\(messageId.peerId.id._internalGetInt64Value()):\(messageId.namespace):\(messageId.id)"
             return self.latestEditedTextByAccount[account]?[key]
         }
     }
