@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [ swiftgram-11.3.3-149-build ]
+    branches: [ swiftgram-11.3.3-149-mx-experimental ]
 
   workflow_dispatch:
 
@@ -168,20 +168,20 @@ jobs:
           path: /Users/Shared/telegram-ios/build/artifacts/Telegram.ipa
           if-no-files-found: error
 
-      - name: Use IPA from this build for TGExtra
+      - name: Use IPA from this build for Mx
         run: |
           set -euo pipefail
           mkdir -p clean
           cp /Users/Shared/telegram-ios/build/artifacts/Telegram.ipa clean/Telegram.ipa
 
-      - name: Fetch TGExtra bundle
+      - name: Fetch MxGram source
         uses: actions/checkout@v4
         with:
-          repository: waruhachi/TGExtra
-          ref: 087f26523b602f2d9640f37b63c8016064581f53
-          path: tgextra
+          repository: m1ronx1412/mxgram
+          ref: 23c980300c3e9c98f39ee2bd073fe83d317e15ba
+          path: mxgram
 
-      - name: Set up Theos for custom TGExtra
+      - name: Set up Theos for Mx
         uses: waruhachi/theos-action@v2.4.6
         with:
           theos-src: waruhachi/theos
@@ -189,17 +189,17 @@ jobs:
           sdks-src: waruhachi/sdks
           sdks-branch: main
 
-      - name: Build TGExtra 1.2.1 with three-second Help gesture
+      - name: Build Mx 1.0.0
         shell: bash
         run: |
           set -euo pipefail
-          cp build-system/personal-tgextra/UIHooks.xm tgextra/Sources/tgapi/UI/UIHooks.xm
-          cd tgextra
+          cd mxgram
           make clean package FINALPACKAGE=1 STRIP=0 ARCHS=arm64
-          packages=(packages/*_iphoneos-arm.deb)
+          packages=(packages/com.m1ronx.mx_*_iphoneos-arm.deb)
           test "${#packages[@]}" -eq 1
-          cp "${packages[0]}" ../com.choco.tg_1.2.1_iphoneos-arm.deb
-          test -f TGExtra.bundle/langs.json
+          cp "${packages[0]}" ../com.m1ronx.mx_1.0.0_iphoneos-arm.deb
+          test -d Mx.bundle
+          test -f packages/Mx.dylib
 
       - name: Install Cyan injector
         run: |
@@ -212,18 +212,23 @@ jobs:
           echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
           cyan --help >/dev/null
 
-      - name: Inject TGExtra
+      - name: Inject Mx
         run: |
           set -euo pipefail
           mkdir -p output
-          cyan             -i clean/Telegram.ipa             -o output/Swiftgram-11.3.3-149-TGExtra-1.2.1.ipa             -uwsgqf             com.choco.tg_1.2.1_iphoneos-arm.deb             tgextra/TGExtra.bundle
-          test -f output/Swiftgram-11.3.3-149-TGExtra-1.2.1.ipa
+          cyan \
+            -i clean/Telegram.ipa \
+            -o output/Swiftgram-11.3.3-149-Mx-1.0.0.ipa \
+            -uwsgqf \
+            com.m1ronx.mx_1.0.0_iphoneos-arm.deb \
+            mxgram/Mx.bundle
+          test -f output/Swiftgram-11.3.3-149-Mx-1.0.0.ipa
 
-      - name: Make TGExtra install as Swiftgram alongside Telegram
+      - name: Make Mx build install as Swiftgram alongside Telegram
         run: |
           set -euo pipefail
           python3 build-system/personal-tgextra/retarget_ipa.py \
-            output/Swiftgram-11.3.3-149-TGExtra-1.2.1.ipa \
+            output/Swiftgram-11.3.3-149-Mx-1.0.0.ipa \
             ph.telegra.Telegraph app.swiftgram.ios
 
       - name: Install ipapatch
@@ -238,23 +243,29 @@ jobs:
           else
             ASSET="ipapatch.macos-amd64"
           fi
-          gh release download "$TAG"             --repo asdfzxcvbn/ipapatch             --pattern "$ASSET"             --dir .
+          gh release download "$TAG" \
+            --repo asdfzxcvbn/ipapatch \
+            --pattern "$ASSET" \
+            --dir .
           mkdir -p bin
           mv "$ASSET" bin/ipapatch
           chmod +x bin/ipapatch
           echo "PATH=$GITHUB_WORKSPACE/bin:$PATH" >> "$GITHUB_ENV"
 
-      - name: Patch injected IPA for sideloading
+      - name: Patch Mx IPA for sideloading
         run: |
           set -euo pipefail
-          ipapatch             --input output/Swiftgram-11.3.3-149-TGExtra-1.2.1.ipa             --inplace             --noconfirm
+          ipapatch \
+            --input output/Swiftgram-11.3.3-149-Mx-1.0.0.ipa \
+            --inplace \
+            --noconfirm
 
-      - name: Verify TGExtra and PlugIns survived
+      - name: Verify Mx and PlugIns survived
         run: |
           set -euo pipefail
           rm -rf verify
           mkdir verify
-          unzip -q output/Swiftgram-11.3.3-149-TGExtra-1.2.1.ipa -d verify
+          unzip -q output/Swiftgram-11.3.3-149-Mx-1.0.0.ipa -d verify
 
           APP=$(find verify/Payload -maxdepth 1 -type d -name '*.app' | head -n 1)
           test -n "$APP"
@@ -276,21 +287,25 @@ jobs:
             echo "OK PlugIn: $ext ($ext_id)"
           done
 
-          BUNDLE_PATH=$(find "$APP" -type d -name 'TGExtra.bundle' | head -n 1)
+          BUNDLE_PATH=$(find "$APP" -type d -name 'Mx.bundle' | head -n 1)
           test -n "$BUNDLE_PATH"
-          echo "OK TGExtra bundle: $BUNDLE_PATH"
+          echo "OK Mx bundle: $BUNDLE_PATH"
 
-          find "$APP" -iname '*TGExtra*' -print
+          DYLIB_PATH=$(find "$APP" -type f -name 'Mx.dylib' | head -n 1)
+          test -n "$DYLIB_PATH"
+          echo "OK Mx dylib: $DYLIB_PATH"
 
       - name: Generate checksum
         run: |
-          shasum -a 256             output/Swiftgram-11.3.3-149-TGExtra-1.2.1.ipa             | tee output/SHA256.txt
+          shasum -a 256 \
+            output/Swiftgram-11.3.3-149-Mx-1.0.0.ipa \
+            | tee output/SHA256.txt
 
-      - name: Upload injected IPA artifact
+      - name: Upload Mx IPA artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Swiftgram-11.3.3-149-TGExtra-1.2.1-Parallel
+          name: Swiftgram-11.3.3-149-Mx-1.0.0-Experimental
           path: |
-            output/Swiftgram-11.3.3-149-TGExtra-1.2.1.ipa
+            output/Swiftgram-11.3.3-149-Mx-1.0.0.ipa
             output/SHA256.txt
           if-no-files-found: error
