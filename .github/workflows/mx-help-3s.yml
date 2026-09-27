@@ -38,7 +38,7 @@ jobs:
           changes = [
               (
                   '    if ([lower containsString:@"swiftgram"]) return YES;',
-                  '''    if ([[[NSBundle mainBundle] bundleIdentifier] isEqualToString:@"app.swiftgram.ios"]) {
+                  '''    if ([[[NSBundle mainBundle] bundleIdentifier] isEqualToString:@"app.swiftgram.ios"]\n                  || [[[NSBundle mainBundle] bundleIdentifier] isEqualToString:@"ph.telegra.Telegraph"]) {
                   if (mxLabelMatchesLocalizedKey(lower, @"Settings.Support", YES)
                       || [lower containsString:@"помощь"]
                       || [lower containsString:@"help"]) return YES;
