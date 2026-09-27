@@ -1,0 +1,89 @@
+name: Build Mx for Swiftgram run 19
+
+on:
+  push:
+    branches: [ swiftgram-11.3.3-149-mx-from-run19 ]
+  workflow_dispatch:
+
+jobs:
+  build-mx:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch pinned Mx source
+        uses: actions/checkout@v4
+        with:
+          repository: m1ronx1412/mxgram
+          ref: 23c980300c3e9c98f39ee2bd073fe83d317e15ba
+          path: mxgram
+
+      - name: Set up Theos
+        uses: waruhachi/theos-action@v2.4.6
+        with:
+          theos-src: waruhachi/theos
+          theos-branch: main
+          sdks-src: waruhachi/sdks
+          sdks-branch: main
+
+      - name: Require a three-second press on Swiftgram Help
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('mxgram/Sources/tgapi/UI/UIHooks.xm')
+          source = path.read_text()
+          changes = [
+              (
+                  '    if ([lower containsString:@"swiftgram"]) return YES;',
+                  '''    if ([[[NSBundle mainBundle] bundleIdentifier] isEqualToString:@"app.swiftgram.ios"]) {
+                  if (mxLabelMatchesLocalizedKey(lower, @"Settings.Support", YES)
+                      || [lower containsString:@"помощь"]
+                      || [lower containsString:@"help"]) return YES;
+                  // In Swiftgram, only the Help row should open Mx.
+                  return NO;
+              }
+              if ([lower containsString:@"swiftgram"]) return YES;'''
+              ),
+              (
+                  '                    [parent addGestureRecognizer:gr];',
+                  '                    gr.minimumPressDuration = 3.0;\n                    [parent addGestureRecognizer:gr];'
+              ),
+              (
+                  '        parent.mxLongPressGesture = gr;',
+                  '        gr.minimumPressDuration = 3.0;\n        parent.mxLongPressGesture = gr;'
+              ),
+          ]
+          for original, replacement in changes:
+              if source.count(original) != 1:
+                  raise SystemExit(f'Unexpected Mx source; expected one occurrence of {original!r}')
+              source = source.replace(original, replacement)
+          path.write_text(source)
+          print('Mx Help gesture configured for 3.0 seconds in both attachment paths')
+          PY
+
+      - name: Build Mx dylib and resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd mxgram
+          make clean package FINALPACKAGE=1 STRIP=0 ARCHS=arm64 \
+            'Sources/tgapi/VideoToVoice.xm_CFLAGS=-std=c++17'
+          test -f packages/Mx.dylib
+          test -f Mx.bundle/langs.json
+          mkdir -p ../output
+          cp packages/Mx.dylib ../output/Mx.dylib
+          cp -a Mx.bundle ../output/Mx.bundle
+          shasum -a 256 ../output/Mx.dylib > ../output/Mx.SHA256
+
+      - name: Upload Mx dylib and resources
+        uses: actions/upload-artifact@v4
+        with:
+          name: Mx-1.0.0-Swiftgram-Help-3s
+          path: |
+            output/Mx.dylib
+            output/Mx.bundle
+            output/Mx.SHA256
+          if-no-files-found: error
