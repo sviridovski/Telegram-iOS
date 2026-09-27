@@ -6,6 +6,10 @@ on:
 
   workflow_dispatch:
 
+permissions:
+  contents: read
+  actions: read
+
 jobs:
   build:
     runs-on: macos-15
@@ -16,12 +20,38 @@ jobs:
           submodules: 'recursive'
           fetch-depth: '0'
 
+      - name: Check reusable Swiftgram base
+        id: base_source
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Run 21 successfully built this exact app source before Mx failed.
+          # Only workflow changes may reuse its unsigned base IPA.
+          BASE_SHA=2a22d7eafe1cf9b22c88fb6004083e77687f1c2d
+          if git diff --quiet "$BASE_SHA" HEAD -- . ':!.github/workflows/build.yml'; then
+            echo "reuse=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "reuse=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download unchanged Swiftgram base from run 21
+        id: base_ipa
+        if: steps.base_source.outputs.reuse == 'true'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: Swiftgram-11.3.3-149-IPA
+          run-id: 36282629071
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: clean
+
       - name: Set active Xcode path
         run: |
           XCODE_VERSION=$(cat versions.json | python3 -c 'import json,sys;obj=json.load(sys.stdin);print(obj["xcode"]);')
           sudo xcode-select -s /Applications/Xcode_$XCODE_VERSION.app/Contents/Developer
 
       - name: Configure and verify simulator runtime
+        if: steps.base_ipa.outcome != 'success'
         shell: bash
         run: |
           set -euo pipefail
@@ -75,6 +105,7 @@ jobs:
             Telegram/WidgetKitWidget/WidgetImages.xcassets
 
       - name: Create canonical source directory
+        if: steps.base_ipa.outcome != 'success'
         run: |
           set -x
           sudo mkdir -p /Users/Shared
@@ -82,6 +113,7 @@ jobs:
           mv /Users/Shared/$(basename $GITHUB_WORKSPACE) /Users/Shared/telegram-ios
 
       - name: Build the App
+        if: steps.base_ipa.outcome != 'success'
         run: |
           set -x
 
@@ -162,6 +194,7 @@ jobs:
           zip -r "./$OUTPUT_PATH/Telegram.DSYMs.zip" build/DSYMs 1>/dev/null
 
       - name: Upload IPA artifact
+        if: steps.base_ipa.outcome != 'success'
         uses: actions/upload-artifact@v7
         with:
           name: Swiftgram-11.3.3-149-IPA
@@ -169,6 +202,7 @@ jobs:
           if-no-files-found: error
 
       - name: Use IPA from this build for Mx
+        if: steps.base_ipa.outcome != 'success'
         run: |
           set -euo pipefail
           mkdir -p clean
@@ -194,7 +228,10 @@ jobs:
         run: |
           set -euo pipefail
           cd mxgram
-          make clean package FINALPACKAGE=1 STRIP=0 ARCHS=arm64 ADDITIONAL_CCFLAGS=-std=c++17
+          # Theos forwards global CCFLAGS into Swift's Objective-C importer.
+          # Per-source flags apply only to this Objective-C++ translation unit.
+          make clean package FINALPACKAGE=1 STRIP=0 ARCHS=arm64 \
+            'Sources/tgapi/VideoToVoice.xm_CFLAGS=-std=c++17'
           packages=(packages/com.m1ronx.mx_*_iphoneos-arm.deb)
           test "${#packages[@]}" -eq 1
           cp "${packages[0]}" ../com.m1ronx.mx_1.0.0_iphoneos-arm.deb
