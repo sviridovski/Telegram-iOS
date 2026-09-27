@@ -194,7 +194,7 @@ jobs:
         run: |
           set -euo pipefail
           cd mxgram
-          make clean package FINALPACKAGE=1 STRIP=0 ARCHS=arm64
+          make clean package FINALPACKAGE=1 STRIP=0 ARCHS=arm64 ADDITIONAL_CCFLAGS=-std=c++17
           packages=(packages/com.m1ronx.mx_*_iphoneos-arm.deb)
           test "${#packages[@]}" -eq 1
           cp "${packages[0]}" ../com.m1ronx.mx_1.0.0_iphoneos-arm.deb
