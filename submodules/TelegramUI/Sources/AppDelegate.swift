@@ -1899,16 +1899,11 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         let _ = (self.sharedContextPromise.get()
         |> take(1)
         |> deliverOnMainQueue).start(next: { sharedApplicationContext in
-            var extendNow = false
-            if #available(iOS 9.0, *) {
-                if !ProcessInfo.processInfo.isLowPowerModeEnabled {
-                    extendNow = true
-                }
-            }
-            if !sharedApplicationContext.sharedContext.energyUsageSettings.extendBackgroundWork {
-                extendNow = false
-            }
-            sharedApplicationContext.wakeupManager.allowBackgroundTimeExtension(timeout: 2.0, extendNow: extendNow)
+            // Swiftgram energy profile: do not request an unconditional 20-second
+            // background assertion on every app switch. Real pending work still
+            // acquires the task-aware "background-wakeup" assertion while this
+            // short grace window is active.
+            sharedApplicationContext.wakeupManager.allowBackgroundTimeExtension(timeout: 2.0)
         })
         
         self.isInForegroundValue = false

@@ -92,6 +92,7 @@ public final class SharedWakeupManager {
                     strongSelf.activeExplicitExtensionTask = nil
                     strongSelf.endBackgroundTask(activeExplicitExtensionTask)
                 }
+                strongSelf.allowBackgroundTimeExtensionDeadline = nil
                 strongSelf.allowBackgroundTimeExtensionDeadlineTimer?.invalidate()
                 strongSelf.allowBackgroundTimeExtensionDeadlineTimer = nil
             }
@@ -210,6 +211,7 @@ public final class SharedWakeupManager {
             guard let strongSelf = self else {
                 return
             }
+            strongSelf.allowBackgroundTimeExtensionDeadline = nil
             strongSelf.allowBackgroundTimeExtensionDeadlineTimer?.invalidate()
             strongSelf.allowBackgroundTimeExtensionDeadlineTimer = nil
             strongSelf.checkTasks()
