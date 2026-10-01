@@ -81,22 +81,7 @@ public final class SharedWakeupManager {
         
         self.inForegroundDisposable = (inForeground
         |> deliverOnMainQueue).startStrict(next: { [weak self] value in
-            guard let strongSelf = self else {
-                return
-            }
-            strongSelf.inForeground = value
-            if value {
-                strongSelf.activeExplicitExtensionTimer?.invalidate()
-                strongSelf.activeExplicitExtensionTimer = nil
-                if let activeExplicitExtensionTask = strongSelf.activeExplicitExtensionTask {
-                    strongSelf.activeExplicitExtensionTask = nil
-                    strongSelf.endBackgroundTask(activeExplicitExtensionTask)
-                }
-                strongSelf.allowBackgroundTimeExtensionDeadline = nil
-                strongSelf.allowBackgroundTimeExtensionDeadlineTimer?.invalidate()
-                strongSelf.allowBackgroundTimeExtensionDeadlineTimer = nil
-            }
-            strongSelf.checkTasks()
+            self?.setInForeground(value)
         })
         
         self.hasActiveAudioSessionDisposable = (hasActiveAudioSession
@@ -188,6 +173,31 @@ public final class SharedWakeupManager {
             strongSelf.accountsAndTasks = accountsAndTasks
             strongSelf.checkTasks()
         })
+    }
+    
+    private func setInForeground(_ value: Bool) {
+        assert(Queue.mainQueue().isCurrent())
+        
+        self.inForeground = value
+        if value {
+            self.activeExplicitExtensionTimer?.invalidate()
+            self.activeExplicitExtensionTimer = nil
+            if let activeExplicitExtensionTask = self.activeExplicitExtensionTask {
+                self.activeExplicitExtensionTask = nil
+                self.endBackgroundTask(activeExplicitExtensionTask)
+            }
+            self.allowBackgroundTimeExtensionDeadline = nil
+            self.allowBackgroundTimeExtensionDeadlineTimer?.invalidate()
+            self.allowBackgroundTimeExtensionDeadlineTimer = nil
+        }
+        self.checkTasks()
+    }
+    
+    // Gold fast reconnect: start restoring the primary MTProto connection at the
+    // earliest foreground lifecycle callback, before the foreground signal has
+    // propagated through its normal asynchronous delivery path.
+    public func prepareForForeground() {
+        self.setInForeground(true)
     }
     
     deinit {
