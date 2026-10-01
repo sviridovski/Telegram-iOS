@@ -1487,7 +1487,8 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
             })
         }*/
         
-        self.maybeCheckForUpdates()
+        // Gold energy profile: updates are delivered through our own CI / signing
+        // flow, so avoid the AppCenter release lookup on every process launch.
 
         #if canImport(AppCenter)
         if !buildConfig.isAppStoreBuild, let appCenterId = buildConfig.appCenterId, !appCenterId.isEmpty {
@@ -1990,9 +1991,9 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         self.isActivePromise.set(true)
 
         self.resetBadge()
-        
-        self.maybeCheckForUpdates()
-        
+
+        // Do not perform an AppCenter release lookup when merely returning
+        // from another app. Telegram sync is independent of this check.
         SharedDisplayLinkDriver.shared.updateForegroundState(self.isActiveValue)
     }
     
