@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [ swiftgram-11.3.3-149-build ]
+    branches: [ swiftgram-11.3.3-149-build, gold ]
 
   workflow_dispatch:
 
