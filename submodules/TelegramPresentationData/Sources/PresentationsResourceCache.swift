@@ -58,14 +58,15 @@ public final class PresentationsResourceCache {
     private var memoryObservers: [NSObjectProtocol] = []
 
     public init() {
-        // Release regenerable images, not live views, when memory is scarce or
-        // the app is backgrounded. Existing UI owners retain images they need.
+        // Release regenerable presentation resources when memory is scarce or
+        // the app is backgrounded. Existing UI owners retain anything still in use.
         for name in [UIApplication.didEnterBackgroundNotification, UIApplication.didReceiveMemoryWarningNotification] {
             self.memoryObservers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 guard let self else {
                     return
                 }
                 _ = self.imageCache.swap(PresentationsResourceCacheHolder())
+                _ = self.objectCache.swap(PresentationsResourceAnyCacheHolder())
             })
         }
     }
