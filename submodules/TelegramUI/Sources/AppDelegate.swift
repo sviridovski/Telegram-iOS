@@ -1936,18 +1936,17 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
             Logger.shared.log("SwiftgramLifecycle", "Warm return after \(Int(max(0, Date().timeIntervalSince1970 - enteredAt))) s; resident memory: \(getMemoryConsumption() / (1024 * 1024)) MB")
             UserDefaults.standard.removeObject(forKey: self.lifecycleKey)
         }
-        
-        // Gold fast reconnect: wake the primary MTProto connection immediately
-        // on the earliest foreground callback. This avoids waiting for the
-        // applicationInForeground signal to make an extra main-queue hop.
-        let _ = (self.sharedContextPromise.get()
-        |> take(1)
-        |> deliverOnMainQueue).start(next: { sharedApplicationContext in
-            sharedApplicationContext.wakeupManager.prepareForForeground()
-        })
-        
-        self.isInForegroundValue = true
-        self.isInForegroundPromise.set(true)
+        if self.isActiveValue {
+            self.isInForegroundValue = true
+            self.isInForegroundPromise.set(true)
+        } else {
+            if #available(iOSApplicationExtension 12.0, *) {
+                DispatchQueue.main.async {
+                    self.isInForegroundValue = true
+                    self.isInForegroundPromise.set(true)
+                }
+            }
+        }
         
         self.runForegroundTasks()
         
