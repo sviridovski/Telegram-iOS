@@ -41,6 +41,32 @@ Acceptance goals:
 - No regression in messaging, notifications, calls or media transfer.
 - Compare each atom with the untouched golden baseline.
 
+### Stable-build validation milestone — Ghostgram vs Gold A/B test
+
+When Gold reaches a stable performance baseline, run a controlled A/B comparison against Ghostgram before moving on to major feature work.
+
+Test protocol:
+- Same physical iPhone.
+- Same iOS version, battery/thermal starting conditions, network and screen brightness.
+- Same accounts/chats and as close as possible to the same notification load.
+- Same scripted usage scenario, especially repeated ChatGPT ↔ Telegram-client switching.
+- 20–30 minutes per run.
+- Repeat runs when possible instead of relying on a single sample.
+- Test both normal multitasking and a memory-pressure scenario with a heavy game.
+- Let the device cool back to a comparable state between runs.
+
+Record for both Ghostgram and Gold:
+- RAM footprint and RAM behavior over time.
+- Battery delta over the test interval.
+- Thermal state / visible heating behavior.
+- CPU time / CPU utilization where measurable.
+- Warm-resume success after app switching.
+- Whether iOS keeps the client resident or jetsams/relaunches it under heavy-game pressure.
+- Time to usable UI after returning to the client.
+- Any messaging / notification / media-transfer regressions.
+
+The goal is not to “win” a benchmark by disabling useful Telegram behavior. Gold should remain functionally correct while consuming fewer resources and surviving memory pressure for as long as iOS allows.
+
 ---
 
 ## Phase 1 — Deleted / edited message history
