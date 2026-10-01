@@ -1889,6 +1889,27 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         })
     }
 
+    func applicationDidReceiveMemoryWarning(_ application: UIApplication) {
+        let residentMB = getMemoryConsumption() / (1024 * 1024)
+        Logger.shared.log("SwiftgramLifecycle", "Memory warning; releasing Postbox table caches at \(residentMB) MB")
+        
+        // Gold memory-pressure policy: keep ordinary warm resume untouched.
+        // Only when iOS explicitly reports memory pressure, release regenerable
+        // in-memory Postbox table caches for every loaded account.
+        let _ = (self.sharedContextPromise.get()
+        |> take(1)
+        |> deliverOnMainQueue).start(next: { sharedApplicationContext in
+            let _ = (sharedApplicationContext.sharedContext.activeAccountContexts
+            |> take(1)
+            |> deliverOnMainQueue).start(next: { _, accounts, currentAuth in
+                for (_, context, _) in accounts {
+                    context.account.postbox.clearCaches()
+                }
+                currentAuth?.postbox.clearCaches()
+            })
+        })
+    }
+    
     func applicationDidEnterBackground(_ application: UIApplication) {
         let residentMB = getMemoryConsumption() / (1024 * 1024)
         UserDefaults.standard.set([
