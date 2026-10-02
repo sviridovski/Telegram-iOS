@@ -230,6 +230,9 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     private var memoryUsageOverlayView: UILabel?
     // Main-queue state: coalesce remote configuration refreshes during app switching.
     private var lastForegroundSGRefresh: [AccountRecordId: TimeInterval] = [:]
+    // Downloaded-media autosave housekeeping is unrelated to message sync. Avoid
+    // re-scanning Postbox on every rapid app switch.
+    private var lastForegroundMediaStoreTasks: [AccountRecordId: TimeInterval] = [:]
     // Small lifecycle breadcrumb; it does not poll or keep the process awake.
     private let lifecycleKey = "SwiftgramLastBackgroundSnapshot_v1"
     
@@ -1987,6 +1990,7 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
                 let now = ProcessInfo.processInfo.systemUptime
                 let activeIds = Set(activeAccounts.accounts.map { $0.1.account.id })
                 self.lastForegroundSGRefresh = self.lastForegroundSGRefresh.filter { activeIds.contains($0.key) }
+                self.lastForegroundMediaStoreTasks = self.lastForegroundMediaStoreTasks.filter { activeIds.contains($0.key) }
                 for (_, context, _) in activeAccounts.accounts {
                     let accountId = context.account.id
                     let lastRefresh = self.lastForegroundSGRefresh[accountId]
@@ -1999,7 +2003,15 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
                     if onlySG {
                         continue
                     }
-                    (context.downloadedMediaStoreManager as? DownloadedMediaStoreManagerImpl)?.runTasks()
+                    
+                    // Autosaving downloaded media scans a Postbox operation table and
+                    // can touch Photos. It does not need to run again for every
+                    // ChatGPT <-> Swiftgram bounce, so keep rapid warm resumes cheap.
+                    let lastMediaStoreTasks = self.lastForegroundMediaStoreTasks[accountId]
+                    if lastMediaStoreTasks == nil || now - (lastMediaStoreTasks ?? 0.0) >= 30.0 {
+                        self.lastForegroundMediaStoreTasks[accountId] = now
+                        (context.downloadedMediaStoreManager as? DownloadedMediaStoreManagerImpl)?.runTasks()
+                    }
                 }
             })
         })
