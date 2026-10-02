@@ -90,6 +90,10 @@ public final class SharedDisplayLinkDriver {
     private var requests: [RequestContext] = []
     
     private var isInForeground: Bool = false
+    // The Telegram app drives the renderer from its active-state callbacks.
+    // Once that explicit path is in use, avoid briefly starting CADisplayLink
+    // from willEnterForeground only to tear it down again before didBecomeActive.
+    private var hasExplicitForegroundState: Bool = false
     private var isProcessingEvent: Bool = false
     private var isUpdateRequested: Bool = false
     
@@ -98,8 +102,10 @@ public final class SharedDisplayLinkDriver {
             guard let self else {
                 return
             }
-            self.isInForeground = true
-            self.update()
+            if !self.hasExplicitForegroundState {
+                self.isInForeground = true
+                self.update()
+            }
         })
         let _ = NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: nil, using: { [weak self] _ in
             guard let self else {
@@ -124,6 +130,7 @@ public final class SharedDisplayLinkDriver {
     }
     
     public func updateForegroundState(_ isActive: Bool) {
+        self.hasExplicitForegroundState = true
         if self.isInForeground != isActive {
             self.isInForeground = isActive
             self.update()
