@@ -352,6 +352,20 @@ private final class ItemAnimationContext {
             isPlaying = false
         }
         
+        // A retained controller can keep animation targets alive while they are
+        // offscreen or the app is inactive. The rendered layer already owns the
+        // last CGImage it needs for presentation, so keeping the decoded Frame as
+        // well only duplicates transient pixel data in RAM.
+        //
+        // Invalidating loadingFrameTaskId also makes an already-running decode
+        // harmless: its completion checks the task id before publishing a frame.
+        // When animation becomes active again, update() sees currentFrame == nil
+        // and decodes the next frame from the existing AnimationCacheItem.
+        if !isPlaying {
+            self.currentFrame = nil
+            self.loadingFrameTaskId = nil
+        }
+        
         self.isPlaying = isPlaying
     }
     
