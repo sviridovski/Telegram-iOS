@@ -266,6 +266,9 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     private let openUrlWhenReadyDisposable = MetaDisposable()
     
     private let badgeDisposable = MetaDisposable()
+    // applicationBadge is already a live signal. Keep one subscription for the
+    // lifetime of the process instead of rebuilding it on every didBecomeActive.
+    private var isBadgeSubscriptionStarted = false
     private let quickActionsDisposable = MetaDisposable()
     
     private var pushRegistry: PKPushRegistry?
@@ -1845,6 +1848,11 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     }
 
     private func resetBadge() {
+        guard !self.isBadgeSubscriptionStarted else {
+            return
+        }
+        self.isBadgeSubscriptionStarted = true
+        
         var resetOnce = true
         self.badgeDisposable.set((self.context.get()
         |> mapToSignal { context -> Signal<Int32, NoError> in
