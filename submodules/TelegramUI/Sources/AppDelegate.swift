@@ -47,6 +47,7 @@ import MediaEditor
 import TelegramUIDeclareEncodables
 import ContextMenuScreen
 import MetalEngine
+import os
 
 #if canImport(AppCenter)
 import AppCenter
@@ -344,7 +345,10 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         if let snapshot = UserDefaults.standard.dictionary(forKey: self.lifecycleKey),
            let enteredAt = snapshot["enteredAt"] as? TimeInterval {
             let interval = max(0, Date().timeIntervalSince1970 - enteredAt)
-            Logger.shared.log("SwiftgramLifecycle", "Cold launch after background: \(Int(interval)) s; prior resident memory: \(snapshot["residentMB"] ?? "unknown") MB. Cause of termination is unknown; consult iOS jetsam reports.")
+            Logger.shared.log(
+                "SwiftgramLifecycle",
+                "Cold launch after background: \(Int(interval)) s; prior footprint: \(snapshot["residentMB"] ?? "unknown") MB; prior available: \(snapshot["availableMB"] ?? "unknown") MB; prior estimated limit: \(snapshot["estimatedLimitMB"] ?? "unknown") MB. Cause of termination is unknown; consult iOS jetsam reports."
+            )
         }
         UserDefaults.standard.removeObject(forKey: self.lifecycleKey)
 
@@ -1902,7 +1906,12 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
 
     func applicationDidReceiveMemoryWarning(_ application: UIApplication) {
         let residentMB = getMemoryConsumption() / (1024 * 1024)
-        Logger.shared.log("SwiftgramLifecycle", "Memory warning; releasing Postbox table caches at \(residentMB) MB")
+        let availableMB = getAvailableMemory() / (1024 * 1024)
+        let estimatedLimitMB = residentMB + availableMB
+        Logger.shared.log(
+            "SwiftgramLifecycle",
+            "Memory warning; footprint: \(residentMB) MB; available: \(availableMB) MB; estimated limit: \(estimatedLimitMB) MB; releasing Postbox table caches"
+        )
         
         // Gold memory-pressure policy: keep ordinary warm resume untouched.
         // Only when iOS explicitly reports memory pressure, release regenerable
@@ -1923,11 +1932,18 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     
     func applicationDidEnterBackground(_ application: UIApplication) {
         let residentMB = getMemoryConsumption() / (1024 * 1024)
+        let availableMB = getAvailableMemory() / (1024 * 1024)
+        let estimatedLimitMB = residentMB + availableMB
         UserDefaults.standard.set([
             "enteredAt": Date().timeIntervalSince1970,
-            "residentMB": residentMB
+            "residentMB": residentMB,
+            "availableMB": availableMB,
+            "estimatedLimitMB": estimatedLimitMB
         ], forKey: self.lifecycleKey)
-        Logger.shared.log("SwiftgramLifecycle", "Background entry; resident memory: \(residentMB) MB")
+        Logger.shared.log(
+            "SwiftgramLifecycle",
+            "Background entry; footprint: \(residentMB) MB; available: \(availableMB) MB; estimated limit: \(estimatedLimitMB) MB"
+        )
 
         let _ = (self.sharedContextPromise.get()
         |> take(1)
@@ -1965,7 +1981,12 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     func applicationWillEnterForeground(_ application: UIApplication) {
         if let snapshot = UserDefaults.standard.dictionary(forKey: self.lifecycleKey),
            let enteredAt = snapshot["enteredAt"] as? TimeInterval {
-            Logger.shared.log("SwiftgramLifecycle", "Warm return after \(Int(max(0, Date().timeIntervalSince1970 - enteredAt))) s; resident memory: \(getMemoryConsumption() / (1024 * 1024)) MB")
+            let residentMB = getMemoryConsumption() / (1024 * 1024)
+            let availableMB = getAvailableMemory() / (1024 * 1024)
+            Logger.shared.log(
+                "SwiftgramLifecycle",
+                "Warm return after \(Int(max(0, Date().timeIntervalSince1970 - enteredAt))) s; prior footprint: \(snapshot["residentMB"] ?? "unknown") MB; current footprint: \(residentMB) MB; current available: \(availableMB) MB"
+            )
             UserDefaults.standard.removeObject(forKey: self.lifecycleKey)
         }
         if self.isActiveValue {
@@ -3110,6 +3131,14 @@ private func downloadHTTPData(url: URL) -> Signal<Data, DownloadFileError> {
                 downloadTask.cancel()
             }
         }
+    }
+}
+
+private func getAvailableMemory() -> Int {
+    if #available(iOS 13.0, *) {
+        return Int(os_proc_available_memory())
+    } else {
+        return 0
     }
 }
 
