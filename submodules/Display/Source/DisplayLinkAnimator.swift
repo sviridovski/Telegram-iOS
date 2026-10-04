@@ -94,6 +94,9 @@ public final class SharedDisplayLinkDriver {
     // Once that explicit path is in use, avoid briefly starting CADisplayLink
     // from willEnterForeground only to tear it down again before didBecomeActive.
     private var hasExplicitForegroundState: Bool = false
+    // Gold Cold Mode: app-owned display links may use ProMotion while a ListView
+    // is actively scrolling, but are capped at 60 Hz while the UI is being read.
+    private var interactiveHighRefreshSources = Set<ObjectIdentifier>()
     private var isProcessingEvent: Bool = false
     private var isUpdateRequested: Bool = false
     
@@ -137,6 +140,19 @@ public final class SharedDisplayLinkDriver {
         }
     }
     
+    func setInteractiveHighRefresh(source: AnyObject, active: Bool) {
+        let id = ObjectIdentifier(source)
+        let changed: Bool
+        if active {
+            changed = self.interactiveHighRefreshSources.insert(id).inserted
+        } else {
+            changed = self.interactiveHighRefreshSources.remove(id) != nil
+        }
+        if changed {
+            self.requestUpdate()
+        }
+    }
+    
     private func requestUpdate() {
         if self.isProcessingEvent {
             self.isUpdateRequested = true
@@ -173,19 +189,21 @@ public final class SharedDisplayLinkDriver {
                 let maxFps = Float(UIScreen.main.maximumFramesPerSecond)
                 if maxFps > 61.0 {
                     var frameRateRange: CAFrameRateRange
-                    switch maxFramesPerSecond {
-                    case let .fps(fps):
-                        if fps > 60 {
-                            frameRateRange = CAFrameRateRange(minimum: 30.0, maximum: 120.0, preferred: 120.0)
-                        } else {
-                            frameRateRange = .default
-                        }
-                    case .max:
-                        frameRateRange = CAFrameRateRange(minimum: 30.0, maximum: 120.0, preferred: 120.0)
-                    }
-                    
                     if isIpad {
                         frameRateRange = CAFrameRateRange(minimum: 30.0, maximum: 120.0, preferred: 120.0)
+                    } else if self.interactiveHighRefreshSources.isEmpty {
+                        frameRateRange = CAFrameRateRange(minimum: 30.0, maximum: 60.0, preferred: 60.0)
+                    } else {
+                        switch maxFramesPerSecond {
+                        case let .fps(fps):
+                            if fps > 60 {
+                                frameRateRange = CAFrameRateRange(minimum: 30.0, maximum: 120.0, preferred: 120.0)
+                            } else {
+                                frameRateRange = CAFrameRateRange(minimum: 30.0, maximum: 60.0, preferred: 60.0)
+                            }
+                        case .max:
+                            frameRateRange = CAFrameRateRange(minimum: 30.0, maximum: 120.0, preferred: 120.0)
+                        }
                     }
                     
                     if displayLink.preferredFrameRateRange != frameRateRange {

@@ -203,6 +203,8 @@ open class ListView: ASDisplayNode, ASScrollViewDelegate, ASGestureRecognizerDel
     
     private final var displayLink: CADisplayLink!
     private final var needsAnimations = false
+    private var coldModeIdleWorkItem: DispatchWorkItem?
+    private var coldModeHighRefreshActive = false
     
     public final var dynamicBounceEnabled = true
     public final var rotated = false
@@ -542,7 +544,11 @@ open class ListView: ASDisplayNode, ASScrollViewDelegate, ASGestureRecognizerDel
         self.displayLink.add(to: RunLoop.main, forMode: RunLoop.Mode.common)
         
         if #available(iOS 15.0, iOSApplicationExtension 15.0, *) {
-            self.displayLink?.preferredFrameRateRange = CAFrameRateRange(minimum: 60.0, maximum: 120.0, preferred: 120.0)
+            if UIDevice.current.userInterfaceIdiom == .phone && UIScreen.main.maximumFramesPerSecond > 61 {
+                self.displayLink?.preferredFrameRateRange = CAFrameRateRange(minimum: 30.0, maximum: 60.0, preferred: 60.0)
+            } else {
+                self.displayLink?.preferredFrameRateRange = CAFrameRateRange(minimum: 60.0, maximum: 120.0, preferred: 120.0)
+            }
         }
         
         self.displayLink.isPaused = true
@@ -550,6 +556,9 @@ open class ListView: ASDisplayNode, ASScrollViewDelegate, ASGestureRecognizerDel
     
     deinit {
         let _ = { () -> Void in
+            self.coldModeIdleWorkItem?.cancel()
+            self.coldModeIdleWorkItem = nil
+            SharedDisplayLinkDriver.shared.setInteractiveHighRefresh(source: self, active: false)
             self.pauseAnimations()
             self.displayLink.invalidate()
             
@@ -571,6 +580,37 @@ open class ListView: ASDisplayNode, ASScrollViewDelegate, ASGestureRecognizerDel
     
     @objc private func tapGesture(_ gestureRecognizer: UITapGestureRecognizer) {
         self.tapped?()
+    }
+    
+    private func setColdModeHighRefresh(_ active: Bool, delayedIdle: Bool = false) {
+        self.coldModeIdleWorkItem?.cancel()
+        self.coldModeIdleWorkItem = nil
+        
+        if !active && delayedIdle {
+            let workItem = DispatchWorkItem { [weak self] in
+                self?.applyColdModeHighRefresh(false)
+            }
+            self.coldModeIdleWorkItem = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7, execute: workItem)
+        } else {
+            self.applyColdModeHighRefresh(active)
+        }
+    }
+    
+    private func applyColdModeHighRefresh(_ active: Bool) {
+        guard self.coldModeHighRefreshActive != active else {
+            return
+        }
+        self.coldModeHighRefreshActive = active
+        SharedDisplayLinkDriver.shared.setInteractiveHighRefresh(source: self, active: active)
+        
+        if #available(iOS 15.0, iOSApplicationExtension 15.0, *),
+           UIDevice.current.userInterfaceIdiom == .phone,
+           UIScreen.main.maximumFramesPerSecond > 61 {
+            self.displayLink.preferredFrameRateRange = active
+                ? CAFrameRateRange(minimum: 30.0, maximum: 120.0, preferred: 120.0)
+                : CAFrameRateRange(minimum: 30.0, maximum: 60.0, preferred: 60.0)
+        }
     }
     
     private func displayLinkEvent() {
@@ -835,6 +875,7 @@ open class ListView: ASDisplayNode, ASScrollViewDelegate, ASGestureRecognizerDel
     }
     
     public func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        self.setColdModeHighRefresh(true)
         self.lastContentOffsetTimestamp = 0.0
         self.resetHeaderItemsFlashTimer(start: false)
         self.updateHeaderItemsFlashing(animated: true)
@@ -880,6 +921,7 @@ open class ListView: ASDisplayNode, ASScrollViewDelegate, ASGestureRecognizerDel
             
             self.lastContentOffsetTimestamp = 0.0
             self.isAuxiliaryDisplayLinkEnabled = false
+            self.setColdModeHighRefresh(false, delayedIdle: true)
         }
         self.ignoreScrollingEvents = true
         self.ignoreScrollingEvents = false
@@ -896,6 +938,7 @@ open class ListView: ASDisplayNode, ASScrollViewDelegate, ASGestureRecognizerDel
         self.updateHeaderItemsFlashing(animated: true)
         self.resetScrollIndicatorFlashTimer(start: true)
         self.isAuxiliaryDisplayLinkEnabled = false
+        self.setColdModeHighRefresh(false, delayedIdle: true)
         if !scrollView.isTracking {
             self.didEndScrolling?(true)
         }
@@ -905,6 +948,7 @@ open class ListView: ASDisplayNode, ASScrollViewDelegate, ASGestureRecognizerDel
     private var accumulatedTransferVelocityOffset: CGFloat = 0.0
     
     public func transferVelocity(_ velocity: CGFloat) {
+        self.setColdModeHighRefresh(true)
         self.decelerationAnimator?.isPaused = true
         let startTime = CACurrentMediaTime()
         let decelerationRate: CGFloat = 0.998
@@ -937,6 +981,7 @@ open class ListView: ASDisplayNode, ASScrollViewDelegate, ASGestureRecognizerDel
                 strongSelf.scroller.forceDecelerating = false
                 strongSelf.decelerationAnimator?.isPaused = true
                 strongSelf.decelerationAnimator = nil
+                strongSelf.setColdModeHighRefresh(false, delayedIdle: true)
             }
             var contentOffset = strongSelf.scroller.contentOffset
             contentOffset.y = floorToScreenPixels(currentOffset.y)
