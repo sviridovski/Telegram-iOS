@@ -1852,7 +1852,22 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     }
 
     private func resetBadge() {
-        guard !self.isBadgeSubscriptionStarted else {
+        if self.isBadgeSubscriptionStarted {
+            // The process can be suspended while the notification extension or
+            // Postbox changes unread state. Refresh the current value once on
+            // resume without tearing down the long-lived subscription.
+            let _ = (self.context.get()
+            |> take(1)
+            |> mapToSignal { context -> Signal<Int32, NoError> in
+                if let context = context {
+                    return context.applicationBadge |> take(1)
+                } else {
+                    return .single(0)
+                }
+            }
+            |> deliverOnMainQueue).startStandalone(next: { count in
+                UIApplication.shared.applicationIconBadgeNumber = Int(count)
+            })
             return
         }
         self.isBadgeSubscriptionStarted = true
