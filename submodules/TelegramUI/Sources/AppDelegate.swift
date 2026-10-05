@@ -237,6 +237,9 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     // Small lifecycle breadcrumb; it does not poll or keep the process awake.
     private let lifecycleKey = "SwiftgramLastBackgroundSnapshot_v1"
     private let backgroundCacheCleanupDisposable = MetaDisposable()
+    private var backgroundLifecycleGeneration: UInt64 = 0
+    private var backgroundLockTaskGeneration: UInt64?
+    private var backgroundPostboxDelayedFootprintWorkItem: DispatchWorkItem?
     
     private var buildConfig: BuildConfig?
     let episodeId = arc4random()
@@ -1946,6 +1949,18 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     }
     
     func applicationDidEnterBackground(_ application: UIApplication) {
+        self.backgroundPostboxDelayedFootprintWorkItem?.cancel()
+        self.backgroundPostboxDelayedFootprintWorkItem = nil
+        self.backgroundLifecycleGeneration &+= 1
+        let backgroundLifecycleGeneration = self.backgroundLifecycleGeneration
+        let isCurrentBackgroundCycle: () -> Bool = { [weak self] in
+            guard let self else {
+                return false
+            }
+            return self.backgroundLifecycleGeneration == backgroundLifecycleGeneration
+                && UIApplication.shared.applicationState == .background
+        }
+
         let residentMB = getMemoryConsumption() / (1024 * 1024)
         let availableMB = getAvailableMemory() / (1024 * 1024)
         let estimatedLimitMB = residentMB + availableMB
@@ -1957,7 +1972,7 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         ], forKey: self.lifecycleKey)
         Logger.shared.log(
             "SwiftgramLifecycle",
-            "Background entry; footprint: \(residentMB) MB; available: \(availableMB) MB; estimated limit: \(estimatedLimitMB) MB"
+            "Background entry; footprint: \(residentMB) MB; available: \(availableMB) MB; estimated limit: \(estimatedLimitMB) MB; cycle: \(backgroundLifecycleGeneration)"
         )
 
         let _ = (self.sharedContextPromise.get()
@@ -1986,20 +2001,46 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
             |> take(1)
         }
         |> deliverOnMainQueue).start(next: { _, accounts, currentAuth in
-            guard UIApplication.shared.applicationState == .background else {
+            guard isCurrentBackgroundCycle() else {
                 return
+            }
+
+            let scheduleDelayedFootprintSample: () -> Void = { [weak self] in
+                guard let self else {
+                    return
+                }
+                self.backgroundPostboxDelayedFootprintWorkItem?.cancel()
+                let workItem = DispatchWorkItem { [weak self] in
+                    guard let self else {
+                        return
+                    }
+                    guard isCurrentBackgroundCycle(),
+                          self.backgroundLockTaskGeneration == backgroundLifecycleGeneration else {
+                        return
+                    }
+
+                    let delayedResidentMB = getMemoryConsumption() / (1024 * 1024)
+                    let releasedMB = max(0, residentMB - delayedResidentMB)
+                    Logger.shared.log(
+                        "SwiftgramLifecycle",
+                        "Background Postbox cache cleanup +2s sample; footprint: \(delayedResidentMB) MB; released since background entry: \(releasedMB) MB; cycle: \(backgroundLifecycleGeneration)"
+                    )
+                }
+                self.backgroundPostboxDelayedFootprintWorkItem = workItem
+                DispatchQueue.main.asyncAfter(deadline: DispatchTime.now() + 2.0, execute: workItem)
             }
 
             var pendingCleanupBarriers = accounts.count + (currentAuth != nil ? 1 : 0)
             let cleanupBarrierCompleted: () -> Void = {
                 pendingCleanupBarriers -= 1
-                if pendingCleanupBarriers == 0 && UIApplication.shared.applicationState == .background {
+                if pendingCleanupBarriers == 0 && isCurrentBackgroundCycle() {
                     let postCleanupResidentMB = getMemoryConsumption() / (1024 * 1024)
                     let releasedMB = max(0, residentMB - postCleanupResidentMB)
                     Logger.shared.log(
                         "SwiftgramLifecycle",
-                        "Background Postbox cache cleanup completed; footprint: \(postCleanupResidentMB) MB; released since background entry: \(releasedMB) MB"
+                        "Background Postbox cache cleanup completed; footprint: \(postCleanupResidentMB) MB; released since background entry: \(releasedMB) MB; cycle: \(backgroundLifecycleGeneration)"
                     )
+                    scheduleDelayedFootprintSample()
                 }
             }
 
@@ -2020,13 +2061,14 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
                 "Background Postbox cache cleanup requested for \(accounts.count) accounts; auth account: \(currentAuth != nil)"
             )
 
-            if pendingCleanupBarriers == 0 {
+            if pendingCleanupBarriers == 0 && isCurrentBackgroundCycle() {
                 let postCleanupResidentMB = getMemoryConsumption() / (1024 * 1024)
                 let releasedMB = max(0, residentMB - postCleanupResidentMB)
                 Logger.shared.log(
                     "SwiftgramLifecycle",
-                    "Background Postbox cache cleanup completed; footprint: \(postCleanupResidentMB) MB; released since background entry: \(releasedMB) MB"
+                    "Background Postbox cache cleanup completed; footprint: \(postCleanupResidentMB) MB; released since background entry: \(releasedMB) MB; cycle: \(backgroundLifecycleGeneration)"
                 )
+                scheduleDelayedFootprintSample()
             }
         }))
         
@@ -2037,18 +2079,28 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         let taskIdHolder = TaskIdHolder()
         
         // Expiration and normal completion can both run. Release the assertion once.
-        let finishLockTask: () -> Void = {
+        let finishLockTask: () -> Void = { [weak self] in
             if let taskId = taskIdHolder.taskId {
                 taskIdHolder.taskId = nil
                 UIApplication.shared.endBackgroundTask(taskId)
             }
+            if let self, self.backgroundLifecycleGeneration == backgroundLifecycleGeneration {
+                self.backgroundLockTaskGeneration = nil
+                self.backgroundPostboxDelayedFootprintWorkItem?.cancel()
+                self.backgroundPostboxDelayedFootprintWorkItem = nil
+            }
         }
         let lockTaskId = application.beginBackgroundTask(withName: "lock", expirationHandler: finishLockTask)
         taskIdHolder.taskId = lockTaskId == .invalid ? nil : lockTaskId
+        self.backgroundLockTaskGeneration = lockTaskId == .invalid ? nil : backgroundLifecycleGeneration
         DispatchQueue.main.asyncAfter(deadline: DispatchTime.now() + 5.0, execute: finishLockTask)
     }
 
     func applicationWillEnterForeground(_ application: UIApplication) {
+        self.backgroundLifecycleGeneration &+= 1
+        self.backgroundLockTaskGeneration = nil
+        self.backgroundPostboxDelayedFootprintWorkItem?.cancel()
+        self.backgroundPostboxDelayedFootprintWorkItem = nil
         self.backgroundCacheCleanupDisposable.set(nil)
         if let snapshot = UserDefaults.standard.dictionary(forKey: self.lifecycleKey),
            let enteredAt = snapshot["enteredAt"] as? TimeInterval {
