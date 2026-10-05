@@ -236,6 +236,7 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     private var lastForegroundMediaStoreTasks: [AccountRecordId: TimeInterval] = [:]
     // Small lifecycle breadcrumb; it does not poll or keep the process awake.
     private let lifecycleKey = "SwiftgramLastBackgroundSnapshot_v1"
+    private let backgroundCacheCleanupDisposable = MetaDisposable()
     
     private var buildConfig: BuildConfig?
     let episodeId = arc4random()
@@ -1928,9 +1929,8 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
             "Memory warning; footprint: \(residentMB) MB; available: \(availableMB) MB; estimated limit: \(estimatedLimitMB) MB; releasing Postbox table caches"
         )
         
-        // Gold memory-pressure policy: keep ordinary warm resume untouched.
-        // Only when iOS explicitly reports memory pressure, release regenerable
-        // in-memory Postbox table caches for every loaded account.
+        // Release regenerable Postbox table caches immediately on memory pressure.
+        // Background entry also requests this cleanup before suspension.
         let _ = (self.sharedContextPromise.get()
         |> take(1)
         |> deliverOnMainQueue).start(next: { sharedApplicationContext in
@@ -1974,6 +1974,30 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         self.isInForegroundPromise.set(false)
         self.isActiveValue = false
         self.isActivePromise.set(false)
+
+        // Gold: trim regenerable table caches once per background entry, without
+        // resetting chat views, deleting disk media or creating a keepalive task.
+        // Cancel a pending account lookup on resume; already queued Postbox work
+        // remains serialized with database transactions on its own queue.
+        self.backgroundCacheCleanupDisposable.set((self.sharedContextPromise.get()
+        |> take(1)
+        |> mapToSignal { sharedApplicationContext in
+            return sharedApplicationContext.sharedContext.activeAccountContexts
+            |> take(1)
+        }
+        |> deliverOnMainQueue).start(next: { _, accounts, currentAuth in
+            guard UIApplication.shared.applicationState == .background else {
+                return
+            }
+            for (_, context, _) in accounts {
+                context.account.postbox.clearCaches()
+            }
+            currentAuth?.postbox.clearCaches()
+            Logger.shared.log(
+                "SwiftgramLifecycle",
+                "Background Postbox cache cleanup requested for \(accounts.count) accounts; auth account: \(currentAuth != nil)"
+            )
+        }))
         
         final class TaskIdHolder {
             var taskId: UIBackgroundTaskIdentifier?
@@ -1994,6 +2018,7 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     }
 
     func applicationWillEnterForeground(_ application: UIApplication) {
+        self.backgroundCacheCleanupDisposable.set(nil)
         if let snapshot = UserDefaults.standard.dictionary(forKey: self.lifecycleKey),
            let enteredAt = snapshot["enteredAt"] as? TimeInterval {
             let residentMB = getMemoryConsumption() / (1024 * 1024)
