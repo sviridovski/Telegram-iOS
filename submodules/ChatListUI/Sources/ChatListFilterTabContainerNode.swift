@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import UIKit
 import AsyncDisplayKit
 import Display
@@ -6,6 +7,26 @@ import TelegramCore
 import TelegramPresentationData
 import AccountContext
 import SGSimpleSettings
+
+// Gold #37 RAM diagnostic: use the same phys_footprint metric as lifecycle logs.
+private func sgCurrentPhysicalFootprint() -> Int {
+    guard let memoryOffset = MemoryLayout.offset(of: \task_vm_info_data_t.min_address) else {
+        return 0
+    }
+    let taskVmInfoCount = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+    let taskVmInfoRev1Count = mach_msg_type_number_t(memoryOffset / MemoryLayout<integer_t>.size)
+    var info = task_vm_info_data_t()
+    var count = taskVmInfoCount
+    let result = withUnsafeMutablePointer(to: &info) { infoPtr in
+        infoPtr.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { intPtr in
+            task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), intPtr, &count)
+        }
+    }
+    guard result == KERN_SUCCESS, count >= taskVmInfoRev1Count else {
+        return 0
+    }
+    return Int(info.phys_footprint)
+}
 
 private final class ItemNodeDeleteButtonNode: HighlightableButtonNode {
     private let pressed: () -> Void
@@ -513,6 +534,13 @@ public final class ChatListFilterTabContainerNode: ASDisplayNode {
     private let scrollNode: ASScrollNode
     private let selectedLineNode: ASImageNode
     private var itemNodes: [ChatListFilterTabEntryId: ItemNode] = [:]
+
+    private let ramTextNode: ImmediateTextNode
+    private var ramUpdateWorkItem: DispatchWorkItem?
+    private var ramUpdatesActive = false
+    private var ramFootprintMB: Int?
+    private var ramTextColor: UIColor = .gray
+    private var ramObservers: [NSObjectProtocol] = []
     
     public var tabSelected: ((ChatListFilterTabEntryId, Bool) -> Void)?
     var tabRequestedDeletion: ((ChatListFilterTabEntryId) -> Void)?
@@ -568,6 +596,10 @@ public final class ChatListFilterTabContainerNode: ASDisplayNode {
         self.selectedLineNode = ASImageNode()
         self.selectedLineNode.displaysAsynchronously = false
         self.selectedLineNode.displayWithoutProcessing = true
+
+        self.ramTextNode = ImmediateTextNode()
+        self.ramTextNode.displaysAsynchronously = false
+        self.ramTextNode.isUserInteractionEnabled = false
         
         // MARK: Swiftgram
         self.inline = inline
@@ -593,6 +625,15 @@ public final class ChatListFilterTabContainerNode: ASDisplayNode {
         }
         self.addSubnode(self.scrollNode)
         self.scrollNode.addSubnode(self.selectedLineNode)
+        if !self.inline {
+            self.addSubnode(self.ramTextNode)
+            self.ramObservers.append(NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main, using: { [weak self] _ in
+                self?.stopRamUpdates()
+            }))
+            self.ramObservers.append(NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main, using: { [weak self] _ in
+                self?.startRamUpdatesIfNeeded()
+            }))
+        }
         
         let reorderingGesture = ReorderingGestureRecognizer(shouldBegin: { [weak self] point in
             guard let strongSelf = self else {
@@ -716,6 +757,73 @@ public final class ChatListFilterTabContainerNode: ASDisplayNode {
         reorderingGesture.isEnabled = false
     }
     
+    deinit {
+        self.stopRamUpdates()
+        for observer in self.ramObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
+
+    private func startRamUpdatesIfNeeded() {
+        guard !self.inline, !self.ramUpdatesActive else {
+            return
+        }
+        self.ramUpdatesActive = true
+        self.measureRamFootprint()
+        self.scheduleNextRamUpdate()
+    }
+
+    private func stopRamUpdates() {
+        self.ramUpdatesActive = false
+        self.ramUpdateWorkItem?.cancel()
+        self.ramUpdateWorkItem = nil
+    }
+
+    private func scheduleNextRamUpdate() {
+        guard self.ramUpdatesActive else {
+            return
+        }
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self, self.ramUpdatesActive else {
+                return
+            }
+            self.measureRamFootprint()
+            self.scheduleNextRamUpdate()
+        }
+        self.ramUpdateWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5.0, execute: workItem)
+    }
+
+    private func measureRamFootprint() {
+        let bytes = sgCurrentPhysicalFootprint()
+        self.ramFootprintMB = bytes > 0 ? Int((Int64(bytes) + 512 * 1024) / (1024 * 1024)) : nil
+        self.updateRamText()
+        if let currentParams = self.currentParams {
+            self.updateRamOverlayLayout(size: currentParams.size)
+        }
+    }
+
+    private func updateRamText() {
+        let text: String
+        if let ramFootprintMB = self.ramFootprintMB {
+            text = "RAM \(ramFootprintMB)M"
+        } else {
+            text = "RAM —"
+        }
+        self.ramTextNode.attributedText = NSAttributedString(string: text, font: Font.semibold(10.0), textColor: self.ramTextColor)
+    }
+
+    private func updateRamOverlayLayout(size: CGSize) {
+        guard !self.inline else {
+            return
+        }
+        let textSize = self.ramTextNode.updateLayout(CGSize(width: 64.0, height: size.height))
+        self.ramTextNode.frame = CGRect(
+            origin: CGPoint(x: max(4.0, size.width - textSize.width - 6.0), y: floor((size.height - textSize.height) / 2.0)),
+            size: textSize
+        )
+    }
+    
     private var previousSelectedAbsFrame: CGRect?
     private var previousSelectedFrame: CGRect?
     
@@ -791,6 +899,12 @@ public final class ChatListFilterTabContainerNode: ASDisplayNode {
             backgroundNode.update(size: backgroundNode.bounds.size, transition: transition)
         }
         transition.updateFrame(node: self.scrollNode, frame: CGRect(origin: CGPoint(), size: size))
+        if !self.inline {
+            self.ramTextColor = presentationData.theme.list.itemSecondaryTextColor
+            self.updateRamText()
+            self.updateRamOverlayLayout(size: size)
+            self.startRamUpdatesIfNeeded()
+        }
         
         enum BadgeAnimation {
             case `in`
