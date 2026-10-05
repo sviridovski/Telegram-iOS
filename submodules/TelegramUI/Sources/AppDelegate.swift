@@ -1989,14 +1989,45 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
             guard UIApplication.shared.applicationState == .background else {
                 return
             }
+
+            var pendingCleanupBarriers = accounts.count + (currentAuth != nil ? 1 : 0)
+            let cleanupBarrierCompleted: () -> Void = {
+                pendingCleanupBarriers -= 1
+                if pendingCleanupBarriers == 0 && UIApplication.shared.applicationState == .background {
+                    let postCleanupResidentMB = getMemoryConsumption() / (1024 * 1024)
+                    let releasedMB = max(0, residentMB - postCleanupResidentMB)
+                    Logger.shared.log(
+                        "SwiftgramLifecycle",
+                        "Background Postbox cache cleanup completed; footprint: \(postCleanupResidentMB) MB; released since background entry: \(releasedMB) MB"
+                    )
+                }
+            }
+
             for (_, context, _) in accounts {
                 context.account.postbox.clearCaches()
+                let _ = (context.account.postbox.transaction { _ -> Void in
+                }
+                |> deliverOnMainQueue).start(completed: cleanupBarrierCompleted)
             }
-            currentAuth?.postbox.clearCaches()
+            if let currentAuth {
+                currentAuth.postbox.clearCaches()
+                let _ = (currentAuth.postbox.transaction { _ -> Void in
+                }
+                |> deliverOnMainQueue).start(completed: cleanupBarrierCompleted)
+            }
             Logger.shared.log(
                 "SwiftgramLifecycle",
                 "Background Postbox cache cleanup requested for \(accounts.count) accounts; auth account: \(currentAuth != nil)"
             )
+
+            if pendingCleanupBarriers == 0 {
+                let postCleanupResidentMB = getMemoryConsumption() / (1024 * 1024)
+                let releasedMB = max(0, residentMB - postCleanupResidentMB)
+                Logger.shared.log(
+                    "SwiftgramLifecycle",
+                    "Background Postbox cache cleanup completed; footprint: \(postCleanupResidentMB) MB; released since background entry: \(releasedMB) MB"
+                )
+            }
         }))
         
         final class TaskIdHolder {
