@@ -29,16 +29,38 @@ final class InChatPrefetchManager {
     private var directionIsToLater: Bool = true
     
     private var contexts: [MediaId: PrefetchMediaContext] = [:]
+    private var applicationInForegroundDisposable: Disposable?
+    private var isInForeground: Bool = true
     
     init(context: AccountContext) {
         self.context = context
         self.settings = context.sharedContext.currentAutomaticMediaDownloadSettings
+
+        self.applicationInForegroundDisposable = (context.sharedContext.applicationBindings.applicationInForeground
+        |> distinctUntilChanged
+        |> deliverOnMainQueue).start(next: { [weak self] inForeground in
+            guard let self else {
+                return
+            }
+            self.isInForeground = inForeground
+            if inForeground {
+                self.update()
+            } else {
+                self.clearPrefetchContexts()
+            }
+        })
     }
     
     deinit {
+        self.applicationInForegroundDisposable?.dispose()
+        self.clearPrefetchContexts()
+    }
+
+    private func clearPrefetchContexts() {
         for (_, context) in self.contexts {
             context.fetchDisposable.dispose()
         }
+        self.contexts.removeAll()
     }
     
     func updateAutoDownloadSettings(_ settings: MediaAutoDownloadSettings) {
@@ -62,6 +84,10 @@ final class InChatPrefetchManager {
     }
     
     private func update() {
+        guard self.isInForeground else {
+            self.clearPrefetchContexts()
+            return
+        }
         guard let options = self.options else {
             return
         }

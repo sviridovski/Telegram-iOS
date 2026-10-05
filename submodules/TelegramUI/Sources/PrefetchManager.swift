@@ -93,9 +93,9 @@ private final class PrefetchManagerInnerImpl {
             return prefetchItems
         }
         
-        self.listDisposable = (combineLatest(orderedPreloadMedia, sharedContext.automaticMediaDownloadSettings, networkType)
-        |> deliverOn(self.queue)).startStrict(next: { [weak self] orderedPreloadMedia, automaticDownloadSettings, networkType in
-            self?.updateOrderedPreloadMedia(orderedPreloadMedia, automaticDownloadSettings: automaticDownloadSettings, networkType: networkType)
+        self.listDisposable = (combineLatest(orderedPreloadMedia, sharedContext.automaticMediaDownloadSettings, networkType, sharedContext.applicationBindings.applicationInForeground)
+        |> deliverOn(self.queue)).startStrict(next: { [weak self] orderedPreloadMedia, automaticDownloadSettings, networkType, inForeground in
+            self?.updateOrderedPreloadMedia(orderedPreloadMedia, automaticDownloadSettings: automaticDownloadSettings, networkType: networkType, inForeground: inForeground)
         })
     }
     
@@ -104,7 +104,15 @@ private final class PrefetchManagerInnerImpl {
         self.listDisposable?.dispose()
     }
     
-    private func updateOrderedPreloadMedia(_ items: [PrefetchMediaItem], automaticDownloadSettings: MediaAutoDownloadSettings, networkType: MediaAutoDownloadNetworkType) {
+    private func updateOrderedPreloadMedia(_ items: [PrefetchMediaItem], automaticDownloadSettings: MediaAutoDownloadSettings, networkType: MediaAutoDownloadNetworkType, inForeground: Bool) {
+        if !inForeground {
+            for (_, context) in self.contexts {
+                context.fetchDisposable.dispose()
+            }
+            self.contexts.removeAll()
+            return
+        }
+
         #if DEBUG
         if "".isEmpty {
             return
