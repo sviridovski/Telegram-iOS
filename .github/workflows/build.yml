@@ -148,7 +148,19 @@ jobs:
         run: |
           set -euo pipefail
           IPA=/Users/Shared/telegram-ios/build/artifacts/Swiftgram.ipa
-          ipapatch --input "$IPA" --inplace --noconfirm
+          PATCH_INPUT="$RUNNER_TEMP/Swiftgram-unpatched.ipa"
+          PATCHED_IPA="$RUNNER_TEMP/Swiftgram-sideload.ipa"
+
+          cp "$IPA" "$PATCH_INPUT"
+          chmod u+w "$PATCH_INPUT"
+
+          ipapatch \
+            --input "$PATCH_INPUT" \
+            --output "$PATCHED_IPA" \
+            --noconfirm
+
+          test -f "$PATCHED_IPA"
+          cp -f "$PATCHED_IPA" "$IPA"
 
           rm -rf verify-sideload
           mkdir verify-sideload
