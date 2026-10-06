@@ -169,24 +169,63 @@ jobs:
           APP="$(find verify-sideload/Payload -maxdepth 1 -type d -name '*.app' | head -n 1)"
           test -n "$APP"
 
-          # ipapatch must inject its sideload runtime into the host and every
-          # app extension so App Group / keychain fallbacks work after re-signing.
-          test -f "$APP/Frameworks/zxPluginsInject.dylib"
-          echo "OK host zxPluginsInject"
+          # ipapatch stores one runtime in the host Frameworks directory.
+          # Verify each binary loads it and its LC_RPATH resolves to that file.
+          python3 - "$APP" <<'PY'
+          import pathlib
+          import plistlib
+          import subprocess
+          import sys
 
-          required_extensions=(
-            "NotificationServiceExtensionv1.appex"
-            "BroadcastUploadExtension.appex"
-            "NotificationContentExtension.appex"
-            "WidgetExtension.appex"
-            "IntentsExtension.appex"
-            "ShareExtension.appex"
-          )
-          for ext in "${required_extensions[@]}"; do
-            test -d "$APP/PlugIns/$ext"
-            test -f "$APP/PlugIns/$ext/Frameworks/zxPluginsInject.dylib"
-            echo "OK patched extension: $ext"
-          done
+          app = pathlib.Path(sys.argv[1]).resolve()
+          runtime = app / "Frameworks/zxPluginsInject.dylib"
+          if not runtime.is_file():
+              raise SystemExit(f"Missing sideload runtime: {runtime}")
+
+          required_extensions = [
+              "NotificationServiceExtensionv1.appex",
+              "BroadcastUploadExtension.appex",
+              "NotificationContentExtension.appex",
+              "WidgetExtension.appex",
+              "IntentsExtension.appex",
+              "ShareExtension.appex",
+          ]
+          bundles = [app] + [app / "PlugIns" / name for name in required_extensions]
+          for bundle in bundles:
+              if not bundle.is_dir():
+                  raise SystemExit(f"Missing bundle: {bundle}")
+              with (bundle / "Info.plist").open("rb") as stream:
+                  executable = bundle / plistlib.load(stream)["CFBundleExecutable"]
+              dependencies = subprocess.check_output(
+                  ["otool", "-L", str(executable)], text=True
+              )
+              dependency = "@rpath/zxPluginsInject.dylib"
+              if not any(line.strip().startswith(dependency + " ")
+                         for line in dependencies.splitlines()):
+                  raise SystemExit(f"Missing runtime load command: {executable}")
+              commands = subprocess.check_output(
+                  ["otool", "-l", str(executable)], text=True
+              )
+              rpaths = []
+              in_rpath = False
+              for line in commands.splitlines():
+                  line = line.strip()
+                  if line.startswith("cmd "):
+                      in_rpath = line == "cmd LC_RPATH"
+                  elif in_rpath and line.startswith("path "):
+                      rpaths.append(line[5:].rsplit(" (offset ", 1)[0])
+                      in_rpath = False
+              candidates = []
+              for rpath in rpaths:
+                  expanded = rpath.replace("@executable_path", str(executable.parent))
+                  expanded = expanded.replace("@loader_path", str(executable.parent))
+                  candidates.append((pathlib.Path(expanded) / runtime.name).resolve())
+              if runtime not in candidates:
+                  raise SystemExit(
+                      f"Runtime not reachable from {executable}; LC_RPATH={rpaths}"
+                  )
+              print(f"OK runtime load and resolution: {bundle.name}", flush=True)
+          PY
 
       - name: Upload clean IPA
         uses: actions/upload-artifact@v4
