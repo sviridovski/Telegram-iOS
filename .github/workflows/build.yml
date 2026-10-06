@@ -121,6 +121,61 @@ jobs:
           cp "$IPA" "$OUTPUT_PATH/Swiftgram.ipa"
           ls -lh "$OUTPUT_PATH/Swiftgram.ipa"
 
+      - name: Install ipapatch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="$(gh api repos/asdfzxcvbn/ipapatch/releases/latest --jq .tag_name)"
+          ARCH="$(uname -m)"
+          if [[ "$ARCH" == "arm64" ]]; then
+            ASSET="ipapatch.macos-arm64"
+          else
+            ASSET="ipapatch.macos-amd64"
+          fi
+          gh release download "$TAG" \
+            --repo asdfzxcvbn/ipapatch \
+            --pattern "$ASSET" \
+            --dir .
+          mkdir -p bin
+          mv "$ASSET" bin/ipapatch
+          chmod +x bin/ipapatch
+          echo "$GITHUB_WORKSPACE/bin" >> "$GITHUB_PATH"
+
+      - name: Patch clean Swiftgram for sideloading
+        shell: bash
+        run: |
+          set -euo pipefail
+          IPA=/Users/Shared/telegram-ios/build/artifacts/Swiftgram.ipa
+          ipapatch --input "$IPA" --inplace --noconfirm
+
+          rm -rf verify-sideload
+          mkdir verify-sideload
+          unzip -q "$IPA" -d verify-sideload
+
+          APP="$(find verify-sideload/Payload -maxdepth 1 -type d -name '*.app' | head -n 1)"
+          test -n "$APP"
+
+          # ipapatch must inject its sideload runtime into the host and every
+          # app extension so App Group / keychain fallbacks work after re-signing.
+          test -f "$APP/Frameworks/zxPluginsInject.dylib"
+          echo "OK host zxPluginsInject"
+
+          required_extensions=(
+            "NotificationServiceExtensionv1.appex"
+            "BroadcastUploadExtension.appex"
+            "NotificationContentExtension.appex"
+            "WidgetExtension.appex"
+            "IntentsExtension.appex"
+            "ShareExtension.appex"
+          )
+          for ext in "${required_extensions[@]}"; do
+            test -d "$APP/PlugIns/$ext"
+            test -f "$APP/PlugIns/$ext/Frameworks/zxPluginsInject.dylib"
+            echo "OK patched extension: $ext"
+          done
+
       - name: Upload clean IPA
         uses: actions/upload-artifact@v4
         with:
