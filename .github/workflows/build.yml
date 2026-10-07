@@ -40,6 +40,43 @@ jobs:
           sudo rm -rf /Users/Shared/telegram-ios
           cp -R "$GITHUB_WORKSPACE" /Users/Shared/telegram-ios
 
+      - name: Fetch pinned Mx 1.0.0 source
+        uses: actions/checkout@v4
+        with:
+          repository: m1ronx1412/mxgram
+          ref: 23c980300c3e9c98f39ee2bd073fe83d317e15ba
+          path: mxgram
+
+      - name: Set up Theos for Mx
+        uses: waruhachi/theos-action@v2.4.6
+        with:
+          theos-src: waruhachi/theos
+          theos-branch: main
+          sdks-src: waruhachi/sdks
+          sdks-branch: main
+
+      - name: Build Mx 1.0.0 for Swiftgram 12.9.2
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 build-system/gold-next/prepare_mx.py mxgram
+          cd mxgram
+          make clean package FINALPACKAGE=1 STRIP=0 ARCHS=arm64 \
+            'Sources/tgapi/VideoToVoice.xm_CFLAGS=-std=c++17'
+          test -f packages/Mx.dylib
+          test -f Mx.bundle/langs.json
+
+      - name: Install pinned Cyan injector
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv .mx-venv
+          .mx-venv/bin/python -m pip install --upgrade pip
+          .mx-venv/bin/python -m pip install \
+            https://github.com/asdfzxcvbn/pyzule-rw/archive/740d3716dcd98c20c000f12cdb88f1f0b2a533a4.zip
+          echo "$GITHUB_WORKSPACE/.mx-venv/bin" >> "$GITHUB_PATH"
+          .mx-venv/bin/cyan --help >/dev/null
+
       - name: Build clean Swiftgram
         shell: bash
         run: |
@@ -121,6 +158,15 @@ jobs:
           cp "$IPA" "$OUTPUT_PATH/Swiftgram.ipa"
           ls -lh "$OUTPUT_PATH/Swiftgram.ipa"
 
+      - name: Inject Mx into the host only
+        shell: bash
+        run: |
+          set -euo pipefail
+          IPA=/Users/Shared/telegram-ios/build/artifacts/Swiftgram.ipa
+          cyan -i "$IPA" -o "$RUNNER_TEMP/Swiftgram-mx.ipa" \
+            -s -f mxgram/packages/Mx.dylib mxgram/Mx.bundle
+          test -s "$RUNNER_TEMP/Swiftgram-mx.ipa"
+
       - name: Install ipapatch
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -143,7 +189,7 @@ jobs:
           chmod +x bin/ipapatch
           echo "$GITHUB_WORKSPACE/bin" >> "$GITHUB_PATH"
 
-      - name: Patch clean Swiftgram for sideloading
+      - name: Patch Mx Swiftgram for sideloading
         shell: bash
         run: |
           set -euo pipefail
@@ -151,7 +197,7 @@ jobs:
           PATCH_INPUT="$RUNNER_TEMP/Swiftgram-unpatched.ipa"
           PATCHED_IPA="$RUNNER_TEMP/Swiftgram-sideload.ipa"
 
-          cp "$IPA" "$PATCH_INPUT"
+          cp "$RUNNER_TEMP/Swiftgram-mx.ipa" "$PATCH_INPUT"
           chmod u+w "$PATCH_INPUT"
 
           ipapatch \
@@ -227,9 +273,22 @@ jobs:
               print(f"OK runtime load and resolution: {bundle.name}", flush=True)
           PY
 
-      - name: Upload clean IPA
+      - name: Verify Mx and generate checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="$(find verify-sideload/Payload -maxdepth 1 -type d -name '*.app' | head -n 1)"
+          test -n "$APP"
+          python3 build-system/gold-next/verify_mx.py "$APP"
+          cd /Users/Shared/telegram-ios/build/artifacts
+          shasum -a 256 Swiftgram.ipa > SHA256.txt
+
+      - name: Upload Mx IPA
         uses: actions/upload-artifact@v4
         with:
-          name: Swiftgram-12.9.2-gold-next-clean
-          path: /Users/Shared/telegram-ios/build/artifacts/Swiftgram.ipa
+          name: Swiftgram-12.9.2-gold-next-Mx-1.0.0
+          path: |
+            /Users/Shared/telegram-ios/build/artifacts/Swiftgram.ipa
+            /Users/Shared/telegram-ios/build/artifacts/SHA256.txt
           if-no-files-found: error
+

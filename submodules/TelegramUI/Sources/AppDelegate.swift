@@ -233,45 +233,6 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     var mainWindow: Window1!
     private var dataImportSplash: LegacyDataImportSplash?
     private var memoryUsageOverlayView: UILabel?
-
-    // Gold Next temporary startup diagnostic. Remove after the 12.9.2 baseline
-    // launch path is validated on a re-signed physical device.
-    private var goldNextStartupLabel: UILabel?
-    private var goldNextStartupStageText: String = "process entered AppDelegate"
-
-    private func goldNextSetStartupStage(_ stage: String) {
-        self.goldNextStartupStageText = stage
-
-        guard let window = self.window else {
-            return
-        }
-
-        let label: UILabel
-        if let current = self.goldNextStartupLabel {
-            label = current
-        } else {
-            label = UILabel()
-            label.backgroundColor = UIColor.systemYellow
-            label.textColor = UIColor.black
-            label.font = UIFont.monospacedSystemFont(ofSize: 12.0, weight: .semibold)
-            label.numberOfLines = 0
-            label.textAlignment = .center
-            label.layer.cornerRadius = 10.0
-            label.clipsToBounds = true
-            label.layer.zPosition = 100000.0
-            window.addSubview(label)
-            self.goldNextStartupLabel = label
-        }
-
-        label.text = "Gold Next startup diagnostic\n\(stage)"
-        label.frame = CGRect(
-            x: 12.0,
-            y: max(52.0, window.safeAreaInsets.top + 8.0),
-            width: max(0.0, window.bounds.width - 24.0),
-            height: 64.0
-        )
-        window.bringSubviewToFront(label)
-    }
     
     private var buildConfig: BuildConfig?
     let episodeId = arc4random()
@@ -465,19 +426,11 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         }
         self.window = window
         self.nativeWindow = window
-
-        // Make the diagnostic visible even if startup returns before Telegram's
-        // normal makeKeyAndVisible() point.
-        self.window?.makeKeyAndVisible()
-        self.goldNextSetStartupStage("01 window created")
-
         // MARK: Swiftgram
         if sgHardReset(present: self.mainWindow?.presentNative, beforePresent: { self.window?.makeKeyAndVisible() }) {
-            self.goldNextSetStartupStage("STOP sgHardReset requested")
             return true
         }
         //
-        self.goldNextSetStartupStage("02 hard-reset gate passed")
         
         hostView.containerView.layer.addSublayer(MetalEngine.shared.rootLayer)
         
@@ -595,11 +548,6 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         let baseAppBundleId = Bundle.main.bundleIdentifier!
         let appGroupName = "group.\(baseAppBundleId)"
         let maybeAppGroupUrl = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupName)
-        if maybeAppGroupUrl != nil {
-            self.goldNextSetStartupStage("03 App Group OK: \(appGroupName)")
-        } else {
-            self.goldNextSetStartupStage("STOP App Group unavailable: \(appGroupName)")
-        }
         
         let buildConfig = BuildConfig(baseAppBundleId: baseAppBundleId)
         self.buildConfig = buildConfig
@@ -712,7 +660,6 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         )
         
         guard let appGroupUrl = maybeAppGroupUrl else {
-            self.goldNextSetStartupStage("STOP App Group unavailable: \(appGroupName)")
             self.mainWindow?.presentNative(UIAlertController(title: nil, message: "Error 2", preferredStyle: .alert))
             return true
         }
@@ -776,7 +723,6 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         }
         
         if !writeAbilityTestSuccess {
-            self.goldNextSetStartupStage("STOP app container write test failed")
             let alertController = UIAlertController(title: nil, message: "The device does not have sufficient free space.", preferredStyle: .alert)
             alertController.addAction(UIAlertAction(title: "OK", style: .default, handler: { _ in
                 preconditionFailure()
@@ -785,8 +731,6 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
             
             return true
         }
-
-        self.goldNextSetStartupStage("04 app container writable")
         
         let legacyLogs: [String] = [
             "broadcast-logs",
@@ -802,7 +746,6 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         let logsPath = rootPath + "/logs/app-logs"
         let _ = try? FileManager.default.createDirectory(atPath: logsPath, withIntermediateDirectories: true, attributes: nil)
         Logger.setSharedLogger(Logger(rootPath: rootPath, basePath: logsPath))
-        self.goldNextSetStartupStage("05 storage/logger initialized")
 
         setManagedAudioSessionLogger({ s in
             Logger.shared.log("ManagedAudioSession", s)
@@ -830,7 +773,6 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         
         //ASDisableLogging()
         
-        self.goldNextSetStartupStage("06 initializing legacy components")
         initializeLegacyComponents(application: application, currentSizeClassGetter: {
             return UIUserInterfaceSizeClass.compact
         }, currentHorizontalClassGetter: {
@@ -854,7 +796,6 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         GlobalExperimentalSettings.enableFeed = false
         
         self.window?.makeKeyAndVisible()
-        self.goldNextSetStartupStage("07 pre-account UI initialization passed")
         
         var hasActiveCalls: Signal<Bool, NoError> = .single(false)
         if CallKitIntegration.isAvailable, let callKitIntegration = CallKitIntegration.shared {
@@ -1113,7 +1054,6 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         
         let accountManager = AccountManager<TelegramAccountManagerTypes>(basePath: rootPath + "/accounts-metadata", isTemporary: false, isReadOnly: false, useCaches: true, removeDatabaseOnError: true)
         self.accountManager = accountManager
-        self.goldNextSetStartupStage("08 AccountManager created")
 
         telegramUIDeclareEncodables()
         initializeAccountManagement()
@@ -1180,7 +1120,6 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         }
         |> deliverOnMainQueue
         |> mapToSignal { accountManager, initialPresentationDataAndSettings -> Signal<(SharedApplicationContext, LoggingSettings), NoError> in
-            self.goldNextSetStartupStage("09 presentation data / shared context building")
             self.mainWindow?.hostView.containerView.backgroundColor =  initialPresentationDataAndSettings.presentationData.theme.chatList.backgroundColor
             
             let legacyBasePath = appGroupUrl.path
@@ -1417,9 +1356,6 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         let startTime = CFAbsoluteTimeGetCurrent()
         self.contextDisposable.set((self.context.get()
         |> deliverOnMainQueue).start(next: { context in
-            if context != nil {
-                self.goldNextSetStartupStage("10 authorized context received")
-            }
             print("Application: context took \(CFAbsoluteTimeGetCurrent() - startTime) to become available")
             
             var network: Network?
@@ -1451,7 +1387,6 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
                     }
                     print("Launch to ready took \((CFAbsoluteTimeGetCurrent() - launchStartTime) * 1000.0) ms")
 
-                    self.goldNextSetStartupStage("11 authorized UI ready")
                     self.mainWindow.debugAction = nil
                     self.mainWindow.viewController = context.rootController
                     
@@ -1500,7 +1435,6 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         
         self.authContextDisposable.set((self.authContext.get()
         |> deliverOnMainQueue).start(next: { context in
-            self.goldNextSetStartupStage(context == nil ? "10 auth context emitted nil" : "10 unauthorized auth context received")
             var network: Network?
             if let context = context {
                 network = context.account.network
@@ -1551,7 +1485,6 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
                 |> filter { $0 }
                 |> take(1)
                 |> deliverOnMainQueue).start(next: { _ in
-                    self.goldNextSetStartupStage("11 unauthorized UI ready")
                     progressDisposable.dispose()
                     self.mainWindow.present(context.rootController, on: .root)
                 }))
