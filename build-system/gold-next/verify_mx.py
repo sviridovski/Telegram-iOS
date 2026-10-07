@@ -15,9 +15,25 @@ with (app / "Info.plist").open("rb") as stream:
     executable = app / plistlib.load(stream)["CFBundleExecutable"]
 
 def dependencies(binary):
-    output = subprocess.check_output(["otool", "-L", str(binary)], text=True)
-    return [line.strip().split(" (compatibility version", 1)[0]
-            for line in output.splitlines()[1:] if line.strip()]
+    # otool -L also prints LC_ID_DYLIB for dylibs. That is the library's
+    # own install name, not something dyld needs to find on the device.
+    # Read the actual load-command kinds rather than guessing from paths.
+    output = subprocess.check_output(["otool", "-l", str(binary)], text=True)
+    dependency_commands = {
+        "LC_LOAD_DYLIB", "LC_LOAD_WEAK_DYLIB", "LC_REEXPORT_DYLIB",
+        "LC_LOAD_UPWARD_DYLIB", "LC_LAZY_LOAD_DYLIB",
+    }
+    result = []
+    command = None
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if line.startswith("Load command "):
+            command = None
+        elif line.startswith("cmd "):
+            command = line[4:]
+        elif line.startswith("name ") and command in dependency_commands:
+            result.append(line[5:].rsplit(" (offset ", 1)[0])
+    return result
 
 host_deps = dependencies(executable)
 if "@rpath/Mx.dylib" not in host_deps:
