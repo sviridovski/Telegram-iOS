@@ -28,6 +28,17 @@ replace_once(
     '    if ([lower isEqualToString:@"помощь"] || [lower isEqualToString:@"help"]) return YES;',
 )
 replace_once("@interface ASDisplayNode (TGExtra)", "@interface ASDisplayNode (Mx)")
+# Export a stable, C-callable entry point. Swiftgram locates it in the injected
+# Mx.dylib at runtime; existing Mx settings and gestures are unchanged.
+replace_once(
+    "void showUI() {",
+    'extern "C" __attribute__((used, visibility("default"))) void goldgram_open_mx(void) {\n'
+    '    dispatch_async(dispatch_get_main_queue(), ^{\n'
+    '        showUI();\n'
+    '    });\n'
+    '}\n\n'
+    'void showUI() {',
+)
 path.write_text(source)
 
 # Confirm the parser being built targets the same schema as the new host.

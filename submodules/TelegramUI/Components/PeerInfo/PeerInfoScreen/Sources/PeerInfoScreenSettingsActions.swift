@@ -1,6 +1,7 @@
 import SGStrings
 import SGSettingsUI
 import Foundation
+import Darwin
 import UIKit
 import Display
 import AccountContext
@@ -48,6 +49,29 @@ extension PeerInfoScreenNode {
         switch section {
         case .swiftgram:
             self.controller?.push(sgSettingsController(context: self.context))
+        case .goldgram:
+            // Mx is injected after the Swiftgram binary has been linked.
+            // Open its existing settings UI through a stable C runtime bridge.
+            let mxPath = Bundle.main.bundlePath + "/Frameworks/Mx.dylib"
+            if let handle = dlopen(mxPath, RTLD_NOW) {
+                defer { dlclose(handle) }
+                if let symbol = dlsym(handle, "goldgram_open_mx") {
+                    typealias OpenMx = @convention(c) () -> Void
+                    let openMx = unsafeBitCast(symbol, to: OpenMx.self)
+                    openMx()
+                    return
+                }
+            }
+            let alertController = textAlertController(
+                context: self.context,
+                updatedPresentationData: self.controller?.updatedPresentationData,
+                title: "Goldgram",
+                text: "Mx settings are not available in this build.",
+                actions: [
+                    TextAlertAction(type: .defaultAction, title: self.presentationData.strings.Common_OK, action: {})
+                ]
+            )
+            self.controller?.present(alertController, in: .window(.root))
         case .swiftgramPro:
             if self.context.sharedContext.immediateSGStatus.status > 1 {
                 self.controller?.push(self.context.sharedContext.makeSGProController(context: self.context))
