@@ -48,6 +48,41 @@ replace_once(
 )
 path.write_text(source)
 
+# The message-bubble layout hook asks for an ID on every layout pass.
+# Extract it through the stored message fields first; avoid allocating a
+# description and compiling regexes when the ordinary structure is available.
+# The original ID extraction paths remain as a fallback for other item shapes.
+parser_path = root / "Sources/tgapi/TLParser.swift"
+parser_source = parser_path.read_text()
+parser_anchor = '    @objc static func getMessageId(from item: Any) -> NSNumber? {\n'
+if parser_source.count(parser_anchor) != 1:
+    raise SystemExit("Unexpected Mx TLParser ID extraction entry point")
+parser_fast_path = """        // Prefer the stored message id over expensive descriptions and regex.
+        // Message items are often Optional<ChatMessageItemImpl>; unwrap them first.
+        // Keep the existing description/dump extraction as an untouched fallback.
+        let fastItem = unwrapOptional(item)
+        for child in Mirror(reflecting: fastItem).children {
+            switch child.label {
+            case "content":
+                for nested in Mirror(reflecting: unwrapOptional(child.value)).children
+                where nested.label == "firstMessage" || nested.label == "message" {
+                    if let id = extractId(fromMessage: unwrapOptional(nested.value)) {
+                        return id
+                    }
+                }
+            case "firstMessage", "message":
+                if let id = extractId(fromMessage: unwrapOptional(child.value)) {
+                    return id
+                }
+            default:
+                break
+            }
+        }
+
+"""
+parser_source = parser_source.replace(parser_anchor, parser_anchor + parser_fast_path)
+parser_path.write_text(parser_source)
+
 # Confirm the parser being built targets the same schema as the new host.
 compat = (root / "Sources/tgapi/api_sources/MxApiCompat.swift").read_text()
 if "release-12.9.2" not in compat:
