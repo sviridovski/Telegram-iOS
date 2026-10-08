@@ -39,6 +39,13 @@ replace_once(
     '}\n\n'
     'void showUI() {',
 )
+# Disable one hot-path debug write, without changing the UI hook behavior.
+# Accessibility labels may include message contents; never persist unmatched
+# labels or synchronously write a log file during chat rendering.
+replace_once(
+    '        customLog2(@"[Mx] unmatched label: %@", label);',
+    '        // Ordinary accessibility labels are intentionally not logged.',
+)
 path.write_text(source)
 
 # Confirm the parser being built targets the same schema as the new host.
