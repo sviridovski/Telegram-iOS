@@ -558,7 +558,13 @@ open class ListViewImpl: ASDisplayNode, ListView, ASScrollViewDelegate, ASGestur
         self.displayLink.add(to: RunLoop.main, forMode: RunLoop.Mode.common)
         
         if #available(iOS 15.0, iOSApplicationExtension 15.0, *) {
-            self.displayLink?.preferredFrameRateRange = CAFrameRateRange(minimum: 60.0, maximum: 120.0, preferred: 120.0)
+            // Gold Next #59: use an energy-first frame rate for ListView's own
+            // animation driver on iPhone. Keep the existing iPad behavior.
+            if UIDevice.current.userInterfaceIdiom == .phone {
+                self.displayLink?.preferredFrameRateRange = CAFrameRateRange(minimum: 30.0, maximum: 60.0, preferred: 60.0)
+            } else {
+                self.displayLink?.preferredFrameRateRange = CAFrameRateRange(minimum: 60.0, maximum: 120.0, preferred: 120.0)
+            }
         }
         
         self.displayLink.isPaused = true
