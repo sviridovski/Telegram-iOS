@@ -140,16 +140,10 @@ public final class SharedDisplayLinkDriver {
     
     private func update() {
         var hasActiveItems = false
-        var maxFramesPerSecond: FramesPerSecond = .fps(30)
         for request in self.requests {
-            if let link = request.link {
-                if link.framesPerSecond > maxFramesPerSecond {
-                    maxFramesPerSecond = link.framesPerSecond
-                }
-                if link.isValid && !link.isPaused {
-                    hasActiveItems = true
-                    break
-                }
+            if let link = request.link, link.isValid && !link.isPaused {
+                hasActiveItems = true
+                break
             }
         }
         
@@ -165,20 +159,15 @@ public final class SharedDisplayLinkDriver {
             if #available(iOS 15.0, *) {
                 let maxFps = Float(UIScreen.main.maximumFramesPerSecond)
                 if maxFps > 61.0 {
-                    var frameRateRange: CAFrameRateRange
-                    switch maxFramesPerSecond {
-                    case let .fps(fps):
-                        if fps > 60 {
-                            frameRateRange = CAFrameRateRange(minimum: 30.0, maximum: 120.0, preferred: 120.0)
-                        } else {
-                            frameRateRange = .default
-                        }
-                    case .max:
-                        frameRateRange = CAFrameRateRange(minimum: 30.0, maximum: 120.0, preferred: 120.0)
-                    }
-                    
+                    // Gold Next #56: cap the shared application display-link on
+                    // iPhones at 60 FPS for an energy-first baseline. Preserve
+                    // the existing 120 FPS policy on iPads. This does not set
+                    // a system-wide limit for UIKit animations or scrolling.
+                    let frameRateRange: CAFrameRateRange
                     if isIpad {
                         frameRateRange = CAFrameRateRange(minimum: 30.0, maximum: 120.0, preferred: 120.0)
+                    } else {
+                        frameRateRange = CAFrameRateRange(minimum: 30.0, maximum: 60.0, preferred: 60.0)
                     }
                     
                     if displayLink.preferredFrameRateRange != frameRateRange {
@@ -211,7 +200,9 @@ public final class SharedDisplayLinkDriver {
                     switch request.framesPerSecond {
                     case let .fps(value):
                         let secondsPerFrame = 1.0 / CGFloat(value)
-                        itemDuration = secondsPerFrame
+                        // At a 60 FPS driver tick, animations requesting 120 FPS
+                        // must advance by elapsed frame time, not 1/120 s.
+                        itemDuration = max(Double(secondsPerFrame), duration)
                         request.lastDuration += duration
                         if request.lastDuration >= secondsPerFrame * 0.95 {
                             //print("item \(link) accepting cycle: \(request.lastDuration - duration) + \(duration) = \(request.lastDuration) >= \(secondsPerFrame)")
