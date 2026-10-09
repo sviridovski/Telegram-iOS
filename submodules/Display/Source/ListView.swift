@@ -898,7 +898,9 @@ open class ListViewImpl: ASDisplayNode, ListView, ASScrollViewDelegate, ASGestur
             self.updateHeaderItemsFlashing(animated: true)
             self.resetScrollIndicatorFlashTimer(start: false)
             
-            self.isAuxiliaryDisplayLinkEnabled = true
+            // Gold Next #59: avoid auxiliary forced compositor updates during
+            // iPhone deceleration. Native UIScrollView scrolling is unchanged.
+            self.isAuxiliaryDisplayLinkEnabled = UIDevice.current.userInterfaceIdiom != .phone
             
             if scrollView.contentOffset.y < -48.0 {
                 self.didEndScrollingWithOverscroll?()
