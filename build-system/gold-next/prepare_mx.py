@@ -64,6 +64,23 @@ parser_fast_path = """        // Prefer the stored message id over expensive des
         for child in Mirror(reflecting: fastItem).children {
             switch child.label {
             case "content":
+                // Telegram 12.9.2 stores .message as an associated-value tuple;
+                // .group holds an array of tuples. Inspect the first message
+                // without stringifying an entire chat bubble.
+                for payload in Mirror(reflecting: unwrapOptional(child.value)).children {
+                    if payload.label == "message",
+                       let first = Mirror(reflecting: payload.value).children.first?.value,
+                       let id = extractId(fromMessage: unwrapOptional(first)) {
+                        return id
+                    }
+                    if payload.label == "group",
+                       let firstTuple = Mirror(reflecting: payload.value).children.first?.value,
+                       let first = Mirror(reflecting: firstTuple).children.first?.value,
+                       let id = extractId(fromMessage: unwrapOptional(first)) {
+                        return id
+                    }
+                }
+                // Keep the previous generic fast path for other item shapes.
                 for nested in Mirror(reflecting: unwrapOptional(child.value)).children
                 where nested.label == "firstMessage" || nested.label == "message" {
                     if let id = extractId(fromMessage: unwrapOptional(nested.value)) {
