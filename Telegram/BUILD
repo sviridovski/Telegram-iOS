@@ -1894,7 +1894,7 @@ plist_fragment(
         </dict>
     </array>
     <key>CADisableMinimumFrameDurationOnPhone</key>
-    <true/>
+    <false/>
     <key>UIApplicationSupportsIndirectInputEvents</key>
     <true/>
     """.format(
