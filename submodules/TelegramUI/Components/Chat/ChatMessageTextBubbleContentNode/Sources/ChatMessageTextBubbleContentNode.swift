@@ -805,14 +805,16 @@ public class ChatMessageTextBubbleContentNode: ChatMessageBubbleContentNode {
                             animation.animator.updateBounds(layer: strongSelf.containerNode.layer, bounds: CGRect(origin: CGPoint(), size: boundingSize), completion: nil)
                             
                             if let formattedDateUpdatePeriod {
+                                // Gold Next #60: reuse the active timer when its period
+                                // is unchanged; avoid stacking timers on repeat layouts.
                                 if strongSelf.relativeDateTimer?.period != formattedDateUpdatePeriod {
                                     strongSelf.relativeDateTimer?.timer.invalidate()
-                                    strongSelf.relativeDateTimer = nil
+                                    let timer = SwiftSignalKit.Timer(timeout: Double(formattedDateUpdatePeriod), repeat: true, completion: { [weak self] in
+                                        self?.requestFullUpdate?(ControlledTransition(duration: 0.15, curve: .easeInOut, interactive: false))
+                                    }, queue: Queue.mainQueue())
+                                    strongSelf.relativeDateTimer = (timer, formattedDateUpdatePeriod)
+                                    timer.start()
                                 }
-                                strongSelf.relativeDateTimer = (SwiftSignalKit.Timer(timeout: Double(formattedDateUpdatePeriod), repeat: true, completion: { [weak self] in
-                                    self?.requestFullUpdate?(ControlledTransition(duration: 0.15, curve: .easeInOut, interactive: false))
-                                }, queue: Queue.mainQueue()), formattedDateUpdatePeriod)
-                                strongSelf.relativeDateTimer?.timer.start()
                             } else if let (timer, _) = strongSelf.relativeDateTimer {
                                 strongSelf.relativeDateTimer = nil
                                 timer.invalidate()
