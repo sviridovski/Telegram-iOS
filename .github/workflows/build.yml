@@ -47,13 +47,30 @@ jobs:
           ref: 23c980300c3e9c98f39ee2bd073fe83d317e15ba
           path: mxgram
 
-      - name: Set up Theos for Mx
-        uses: waruhachi/theos-action@v2.4.6
+      # Pin the exact Theos/SDK revisions previously used by the action.
+      # Its cached update-theos path resets origin/master, but this fork uses main.
+      - name: Install Theos dependencies for Mx
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install make ldid
+          echo "$(brew --prefix make)/libexec/gnubin" >> "$GITHUB_PATH"
+          echo "THEOS=$GITHUB_WORKSPACE/theos" >> "$GITHUB_ENV"
+
+      - name: Fetch pinned Theos for Mx
+        uses: actions/checkout@v4
         with:
-          theos-src: waruhachi/theos
-          theos-branch: main
-          sdks-src: waruhachi/sdks
-          sdks-branch: main
+          repository: waruhachi/theos
+          ref: 9e7d18adf3b1bc0b8ab432e08900ff71c560d7a8
+          submodules: recursive
+          path: theos
+
+      - name: Fetch pinned Theos SDKs for Mx
+        uses: actions/checkout@v4
+        with:
+          repository: waruhachi/sdks
+          ref: a7b81140aa8ce18b6e6a48846d4e63476b1e5709
+          path: theos/sdks
 
       - name: Build Mx 1.0.0 for Swiftgram 12.9.2
         shell: bash
