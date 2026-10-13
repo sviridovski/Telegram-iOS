@@ -2,6 +2,16 @@
 
 **Approved by user:** 2026-10-13. **Status:** design/roadmap only; the SQLite functionality is **NOT IMPLEMENTED**. No code atom is authorized merely by updating this file.
 
+## LATEST GOLD NEXT STATUS — 2026-10-13 / CODE ATOM #65
+
+- User installed and tested #64: Swiftgram launches with inactive SQLite foundation; GitHub CI #64 GREEN.
+- **#65** on gold-next: commit `ee0f7f1e4e642751431c97f4d4094a24de810b26`, GitHub Actions actual run_number **65**, ID `38360564036`, https://github.com/sviridovski/Telegram-iOS/actions/runs/38360564036. CI was **in_progress** at documentation snapshot; outcome not yet verified.
+- New `build-system/gold-next/GoldgramLegacyImporter.swift`, compiled via `prepare_mx.py` and backed by existing `GoldgramHistoryStore`. Imports verified-account scoped MxEditHistoryByPeer (with 1.4.3 fallback) and MxDeletedMsgIds into SQLite using one transaction, upsert/ignore semantics, no data deletion. Unknown group/channel classification is skipped for edits; ambiguous deletion IDs stay unresolved.
+- **NO automatic import or history capture** in #65. Import requires a trusted proof that the *entire historical shared Mx defaults blob* belongs to one authenticated Telegram account. Merely being logged into one account now is not proof; never guess ownership or mix accounts.
+- Next: verify CI #65 and iPhone startup/navigation, then implement trusted per-account identity and migration activation as a *separate tested atom*, before any live message capture. Never mark unseen first version as a guaranteed original. Energy work paused.
+
+---
+
 ## IMPLEMENTATION STATUS UPDATE — 2026-10-13
 
 - User confirmed #62 folder navigation and #63 nested Deleted/Edited messages folder on iPhone. Both CI runs are GREEN.
