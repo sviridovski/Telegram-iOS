@@ -228,3 +228,25 @@ for before, after in mx_misc_patches:
     mx_ui_source = mx_ui_source.replace(before, after)
 mx_ui_path.write_text(mx_ui_source)
 print("Goldgram #63: four MISC subfolders, all 12 original controls retained")
+
+
+# Goldgram #64: compile the local SQLite store but do not activate capture.
+# Leave the upstream Mx 1.0.0 pin and all message hooks unchanged.
+sqlite_source = pathlib.Path(__file__).with_name("GoldgramHistoryStore.swift")
+if not sqlite_source.is_file():
+    raise SystemExit("Goldgram SQLite source is missing")
+sqlite_destination = root / "Sources/tgapi/GoldgramHistoryStore.swift"
+if sqlite_destination.exists():
+    raise SystemExit("Unexpected upstream Goldgram SQLite module")
+sqlite_destination.write_text(sqlite_source.read_text())
+
+# Theos discovers *.swift automatically; link the iOS system SQLite library.
+makefile_path = root / "Makefile"
+makefile_source = makefile_path.read_text()
+link_anchor = "$(TWEAK_NAME)_LIBRARIES = z\n"
+if makefile_source.count(link_anchor) != 1:
+    raise SystemExit("Unexpected pinned Mx Makefile SQLite linker anchor")
+makefile_path.write_text(
+    makefile_source.replace(link_anchor, "$(TWEAK_NAME)_LIBRARIES = z sqlite3\n")
+)
+print("Goldgram #64: isolated SQLite schema ready, capture remains disabled")
