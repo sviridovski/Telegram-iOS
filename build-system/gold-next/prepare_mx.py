@@ -186,3 +186,45 @@ for old, new in mx_folder_patches:
     mx_ui_source = mx_ui_source.replace(old, new)
 mx_ui_path.write_text(mx_ui_source)
 print("Goldgram UI: 7 navigable folders, native MX settings preserved")
+
+# Goldgram nested MX tool folders (#63). Apply only after the tested #62 UI.
+# Each of the original twelve MISC controls is mapped to exactly one category;
+# its original row ID and persisted NSUserDefaults key must remain unchanged.
+mx_misc_groups = [[2,3,5,7,8],[1,4,6],[9,10],[0,11]]
+assert sorted(index for group in mx_misc_groups for index in group) == list(range(12))
+mx_misc_patches = [
+  [
+    "+ (NSArray<NSString *> *)ghostSubFeatureKeys;\n@end",
+    "+ (NSArray<NSString *> *)ghostSubFeatureKeys;\n// Goldgram #63: MISC section is grouped into nested semantic categories.\n+ (NSArray<NSArray<NSNumber *> *> *)goldgramMiscRows;\n+ (NSArray<NSString *> *)goldgramMiscTitles;\n@end"
+  ],
+  [
+    "@property(nonatomic, strong) NSNumber *goldgramSection;",
+    "@property(nonatomic, strong) NSNumber *goldgramSection;\n@property(nonatomic, strong) NSNumber *goldgramMiscCategory;"
+  ],
+  [
+    "@implementation Mx\n\n- (void)viewDidLoad {",
+    "@implementation Mx\n\n// Original indices 0..11 are preserved: UI navigation does not change switch\n// keys, action tags, persisted settings, or injected hooks.\n+ (NSArray<NSArray<NSNumber *> *> *)goldgramMiscRows {\n  static NSArray<NSArray<NSNumber *> *> *groups;\n  static dispatch_once_t onceToken;\n  dispatch_once(&onceToken, ^{\n    groups = @[\n      @[@2, @3, @5, @7, @8], // removed / edited / ephemeral\n      @[@1, @4, @6],         // privacy / content access\n      @[@9, @10],            // media / downloads\n      @[@0, @11]             // ads / cosmetic tools\n    ];\n  });\n  return groups;\n}\n\n+ (NSArray<NSString *> *)goldgramMiscTitles {\n  NSString *language = [NSLocale preferredLanguages].firstObject ?: @\"\";\n  if ([language hasPrefix:@\"ru\"]) {\n    return @[@\"Удалённые и изменённые\", @\"Приватность и доступ\",\n             @\"Медиа и загрузки\", @\"Другие инструменты\"];\n  }\n  return @[@\"Deleted & edited\", @\"Privacy & access\",\n           @\"Media & downloads\", @\"Other tools\"];\n}\n\n- (void)viewDidLoad {"
+  ],
+  [
+    "  if (!self.goldgramSection) return 7;\n  section = self.goldgramSection.integerValue;",
+    "  if (!self.goldgramSection) return 7;\n  if (self.goldgramSection.integerValue == MISC) {\n    if (!self.goldgramMiscCategory) return 4;\n    NSInteger category = self.goldgramMiscCategory.integerValue;\n    NSArray *groups = [Mx goldgramMiscRows];\n    if (category < 0 || category >= (NSInteger)groups.count) return 0;\n    return [groups[category] count];\n  }\n  section = self.goldgramSection.integerValue;"
+  ],
+  [
+    "  if (!self.goldgramSection) return nil;\n  section = self.goldgramSection.integerValue;\n\n  switch (section) {",
+    "  if (!self.goldgramSection) return nil;\n  if (self.goldgramSection.integerValue == MISC && self.goldgramMiscCategory) {\n    NSInteger category = self.goldgramMiscCategory.integerValue;\n    NSArray *titles = [Mx goldgramMiscTitles];\n    if (category >= 0 && category < (NSInteger)titles.count) return titles[category];\n  }\n  section = self.goldgramSection.integerValue;\n\n  switch (section) {"
+  ],
+  [
+    "  // Reuse the existing MX cell factory and original index-based setting map.\n  indexPath = [NSIndexPath indexPathForRow:indexPath.row\n                                inSection:self.goldgramSection.integerValue];",
+    "  if (self.goldgramSection.integerValue == MISC) {\n    if (!self.goldgramMiscCategory) {\n      static NSArray<NSString *> *icons;\n      static dispatch_once_t onceToken;\n      dispatch_once(&onceToken, ^{\n        icons = @[@\"text.badge.checkmark\", @\"lock.shield\", @\"square.and.arrow.down\",\n                  @\"wand.and.stars\"];\n      });\n      NSArray<NSString *> *titles = [Mx goldgramMiscTitles];\n      cell = [self normalCellFromTableView:tableView];\n      if (indexPath.row < 0 || indexPath.row >= (NSInteger)titles.count) return cell;\n      cell.textLabel.text = titles[indexPath.row];\n      cell.detailTextLabel.text = nil;\n      cell.accessoryView = nil;\n      cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;\n      cell.imageView.image = [UIImage systemImageNamed:icons[indexPath.row]];\n      cell.imageView.tintColor = [self dynamicColorBW];\n      return cell;\n    }\n    NSInteger category = self.goldgramMiscCategory.integerValue;\n    NSArray<NSArray<NSNumber *> *> *groups = [Mx goldgramMiscRows];\n    if (category < 0 || category >= (NSInteger)groups.count ||\n        indexPath.row < 0 || indexPath.row >= (NSInteger)groups[category].count) {\n      return [self normalCellFromTableView:tableView];\n    }\n    NSInteger originalRow = groups[category][indexPath.row].integerValue;\n    indexPath = [NSIndexPath indexPathForRow:originalRow inSection:MISC];\n  }\n  // Reuse original MX row mapping; UISwitch tags still encode source row IDs.\n  indexPath = [NSIndexPath indexPathForRow:indexPath.row\n                                inSection:self.goldgramSection.integerValue];"
+  ],
+  [
+    "  indexPath = [NSIndexPath indexPathForRow:indexPath.row\n                                inSection:self.goldgramSection.integerValue];\n\n  if (indexPath.section == GHOST_MODE && indexPath.row == 1)",
+    "  if (self.goldgramSection.integerValue == MISC) {\n    if (!self.goldgramMiscCategory) {\n      if (indexPath.row < 0 || indexPath.row >= (NSInteger)[Mx goldgramMiscRows].count) return;\n      Mx *folder = [Mx new];\n      folder.goldgramSection = @(MISC);\n      folder.goldgramMiscCategory = @(indexPath.row);\n      [self.navigationController pushViewController:folder animated:YES];\n      return;\n    }\n    NSInteger category = self.goldgramMiscCategory.integerValue;\n    NSArray<NSArray<NSNumber *> *> *groups = [Mx goldgramMiscRows];\n    if (category < 0 || category >= (NSInteger)groups.count ||\n        indexPath.row < 0 || indexPath.row >= (NSInteger)groups[category].count) return;\n    indexPath = [NSIndexPath indexPathForRow:groups[category][indexPath.row].integerValue\n                                  inSection:MISC];\n  }\n  indexPath = [NSIndexPath indexPathForRow:indexPath.row\n                                inSection:self.goldgramSection.integerValue];\n\n  if (indexPath.section == GHOST_MODE && indexPath.row == 1)"
+  ]
+]
+for before, after in mx_misc_patches:
+    if mx_ui_source.count(before) != 1:
+        raise SystemExit("Unexpected Goldgram UI: #63 MISC patch anchor mismatch")
+    mx_ui_source = mx_ui_source.replace(before, after)
+mx_ui_path.write_text(mx_ui_source)
+print("Goldgram #63: four MISC subfolders, all 12 original controls retained")
