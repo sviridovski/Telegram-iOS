@@ -18,7 +18,7 @@ enum GoldgramHistoryStore {
         label: "goldgram.history.sqlite.setup",
         qos: .utility
     )
-    private static let currentSchemaVersion: Int32 = 1
+    private static let currentSchemaVersion: Int32 = 2
 
     // Account-specific DB, with peer type + peer ID + message ID scoping inside.
     // Completion intentionally runs on main; the SQLite work never does.
@@ -90,14 +90,21 @@ enum GoldgramHistoryStore {
         if version > currentSchemaVersion {
             throw StorageError.incompatibleSchema(version)
         }
-        if version == 0 {
+        if version < currentSchemaVersion {
+            // A clean install and upgrades from #66 are migrated atomically.
+            // Failure rolls back both DDL and user_version; existing originals,
+            // revision rows and event IDs are never rewritten or discarded.
             do {
                 try execute("BEGIN IMMEDIATE;", on: db)
-                try execute(schemaV1, on: db)
-                try execute("PRAGMA user_version = 1;", on: db)
+                if version == 0 {
+                    try execute(schemaV1, on: db)
+                }
+                if version <= 1 {
+                    try execute(schemaV2, on: db)
+                }
+                try execute("PRAGMA user_version = 2;", on: db)
                 try execute("COMMIT;", on: db)
             } catch {
-                // Keep the DB recoverable on unexpected schema/setup failures.
                 try? execute("ROLLBACK;", on: db)
                 throw error
             }
@@ -229,6 +236,43 @@ enum GoldgramHistoryStore {
     CREATE INDEX IF NOT EXISTS revisions_recent
         ON revisions (peer_kind, peer_id, message_id, version_index DESC);
     """
+
+    // Goldgram #67: additive metadata, never a destructive table rebuild.
+    // Times are Unix milliseconds; unknown values stay NULL. v1 rows retain
+    // provenance=0 because their historical observation source is uncertain.
+    //
+    // sender_kind: 0 user, 1 group, 2 supergroup, 3 channel; sender_id is raw.
+    // capture_provenance: 0 unknown/v1, 1 live initial, 2 difference snapshot,
+    //                     3 explicitly verified legacy import (future).
+    // revision_provenance: 0 unknown/v1, 1 live observed, 2 catch-up observed,
+    //                      3 known edit (future).
+    private static let schemaV2 = """
+    ALTER TABLE messages ADD COLUMN sender_kind INTEGER
+        CHECK (sender_kind IS NULL OR sender_kind BETWEEN 0 AND 3);
+    ALTER TABLE messages ADD COLUMN sender_id INTEGER;
+    ALTER TABLE messages ADD COLUMN sent_at INTEGER;
+    ALTER TABLE messages ADD COLUMN thread_id INTEGER;
+    ALTER TABLE messages ADD COLUMN reply_to_message_id INTEGER;
+    ALTER TABLE messages ADD COLUMN root_channel_peer_id INTEGER;
+    ALTER TABLE messages ADD COLUMN root_channel_post_id INTEGER;
+    ALTER TABLE messages ADD COLUMN anchor_before_message_id INTEGER;
+    ALTER TABLE messages ADD COLUMN anchor_after_message_id INTEGER;
+    ALTER TABLE messages ADD COLUMN capture_provenance INTEGER NOT NULL DEFAULT 0
+        CHECK (capture_provenance BETWEEN 0 AND 3);
+    ALTER TABLE revisions ADD COLUMN revision_provenance INTEGER NOT NULL DEFAULT 0
+        CHECK (revision_provenance BETWEEN 0 AND 3);
+
+    CREATE INDEX IF NOT EXISTS messages_by_sent_time
+        ON messages (peer_kind, peer_id, sent_at DESC, message_id DESC);
+    CREATE INDEX IF NOT EXISTS messages_by_sender
+        ON messages (sender_kind, sender_id, sent_at DESC);
+    CREATE INDEX IF NOT EXISTS messages_by_thread
+        ON messages (peer_kind, peer_id, thread_id, sent_at DESC);
+    CREATE INDEX IF NOT EXISTS messages_by_root_channel_post
+        ON messages (root_channel_peer_id, root_channel_post_id, sent_at DESC);
+    CREATE INDEX IF NOT EXISTS messages_by_reply
+        ON messages (peer_kind, peer_id, reply_to_message_id);
+    """
 }
 
 
@@ -293,7 +337,8 @@ private extension GoldgramHistoryStore {
 
     static func archiveIncoming(
         accountId: Int64, peerId: Int64, messageId: Int32,
-        text: String, live: Bool
+        text: String, live: Bool,
+        senderId: Int64 = 0, sentAt: Int64 = 0, threadId: Int64 = 0
     ) {
         guard accountId > 0, peerId > 0, messageId > 0,
               !text.isEmpty, text.utf8.count <= 65536 else { return }
@@ -313,16 +358,40 @@ private extension GoldgramHistoryStore {
                     // Never overwrite a previous original or a migration.
                     // 'live' is true for a real updateNewMessage, false when
                     // a catch-up difference may already contain edited text.
+                    // The original is immutable. For a new record, the
+                    // provenance flag distinguishes live delivery from a
+                    // catch-up where the first known text may already be edited.
                     try archiveSQL(
-                        "INSERT OR IGNORE INTO messages (peer_kind, peer_id, message_id, original_observed, first_seen_at, last_seen_at, original_text) VALUES (0, ?, ?, ?, ?, ?, ?);",
+                        "INSERT OR IGNORE INTO messages (peer_kind, peer_id, message_id, original_observed, capture_provenance, first_seen_at, last_seen_at, original_text) VALUES (0, ?, ?, ?, ?, ?, ?, ?);",
                         db: db,
-                        ints: [peerId, Int64(messageId), live ? 1 : 0, now, now],
+                        ints: [peerId, Int64(messageId), live ? 1 : 0, live ? 1 : 2, now, now],
                         text: text
                     )
+                    // Also backfill missing metadata for existing #66 rows.
+                    // Never manufacture a sender, timestamp, discussion
+                    // mapping or certainty flag where the host lacks proof.
                     try archiveSQL(
-                        "INSERT OR IGNORE INTO revisions (peer_kind, peer_id, message_id, version_index, observed_at, content) VALUES (0, ?, ?, 0, ?, ?);",
+                        """
+                        UPDATE messages
+                        SET sender_kind = CASE WHEN sender_kind IS NULL AND ? > 0 THEN 0 ELSE sender_kind END,
+                            sender_id = COALESCE(sender_id, NULLIF(?, 0)),
+                            sent_at = COALESCE(sent_at, NULLIF(?, 0)),
+                            thread_id = COALESCE(thread_id, NULLIF(?, 0))
+                        WHERE peer_kind = 0 AND peer_id = ? AND message_id = ?;
+                        """,
                         db: db,
-                        ints: [peerId, Int64(messageId), now],
+                        ints: [
+                            senderId > 0 ? senderId : 0,
+                            senderId > 0 ? senderId : 0,
+                            sentAt > 0 ? sentAt : 0,
+                            threadId > 0 ? threadId : 0,
+                            peerId, Int64(messageId)
+                        ]
+                    )
+                    try archiveSQL(
+                        "INSERT OR IGNORE INTO revisions (peer_kind, peer_id, message_id, version_index, observed_at, revision_provenance, content) VALUES (0, ?, ?, 0, ?, ?, ?);",
+                        db: db,
+                        ints: [peerId, Int64(messageId), now, live ? 1 : 2],
                         text: text
                     )
                     try archiveSQL("COMMIT;", db: db, ints: [])
@@ -350,5 +419,22 @@ public func goldgramArchiveOriginal(
     GoldgramHistoryStore.archiveIncoming(
         accountId: accountId, peerId: peerId, messageId: messageId,
         text: text, live: live != 0
+    )
+}
+
+// Goldgram #67: compatible v2 bridge. Keep #66's symbol working for existing
+// callers; no breaking changes to the Mx linkage or settings.
+@_cdecl("goldgram_archive_original_v2")
+public func goldgramArchiveOriginalV2(
+    accountId: Int64, peerKind: Int32, peerId: Int64,
+    messageId: Int32, senderId: Int64, sentAt: Int64,
+    threadId: Int64, content: UnsafePointer<CChar>?, live: Int32
+) {
+    guard peerKind == 0, let content = content else { return }
+    let text = String(cString: content)
+    GoldgramHistoryStore.archiveIncoming(
+        accountId: accountId, peerId: peerId, messageId: messageId,
+        text: text, live: live != 0,
+        senderId: senderId, sentAt: sentAt, threadId: threadId
     )
 }

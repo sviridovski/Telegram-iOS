@@ -72,6 +72,12 @@ jobs:
           ref: a7b81140aa8ce18b6e6a48846d4e63476b1e5709
           path: theos/sdks
 
+      - name: Validate Goldgram SQLite v1 to v2 migration
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 build-system/gold-next/test_sqlite_schema.py
+
       - name: Build Mx 1.0.0 for Swiftgram 12.9.2
         shell: bash
         run: |

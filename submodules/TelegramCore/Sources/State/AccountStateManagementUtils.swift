@@ -22,11 +22,24 @@ private let goldgramOriginalCallback: GoldgramOriginalCallback? = {
     return unsafeBitCast(symbol, to: GoldgramOriginalCallback.self)
 }()
 
+private typealias GoldgramOriginalCallbackV2 = @convention(c) (
+    Int64, Int32, Int64, Int32, Int64, Int64, Int64,
+    UnsafePointer<CChar>?, Int32
+) -> Void
+
+private let goldgramOriginalCallbackV2: GoldgramOriginalCallbackV2? = {
+    guard let handle = dlopen(nil, RTLD_NOW),
+          let symbol = dlsym(handle, "goldgram_archive_original_v2") else {
+        return nil
+    }
+    return unsafeBitCast(symbol, to: GoldgramOriginalCallbackV2.self)
+}()
+
 private func goldgramArchivePersonalOriginal(
     accountPeerId: PeerId, message: StoreMessage, live: Bool
 ) {
     guard UserDefaults.standard.bool(forKey: "GoldgramSQLiteCaptureEnabled"),
-          let writer = goldgramOriginalCallback,
+          goldgramOriginalCallbackV2 != nil || goldgramOriginalCallback != nil,
           case let .Id(messageId) = message.id,
           messageId.peerId.namespace == Namespaces.Peer.CloudUser,
           message.flags.contains(.Incoming),
@@ -34,8 +47,26 @@ private func goldgramArchivePersonalOriginal(
     let accountId = accountPeerId.id._internalGetInt64Value()
     let peerId = messageId.peerId.id._internalGetInt64Value()
     guard accountId > 0, peerId > 0, messageId.id > 0 else { return }
+    // Telegram stores the true server sent time in seconds. SQLite uses ms.
+    // Only user authors are asserted here; all other author kinds stay unknown.
+    let sender: Int64
+    if let authorId = message.authorId,
+       authorId.namespace == Namespaces.Peer.CloudUser {
+        sender = authorId.id._internalGetInt64Value()
+    } else {
+        sender = 0
+    }
+    let sentAt = message.timestamp > 0 ? Int64(message.timestamp) * 1000 : 0
+    let threadId = message.threadId ?? 0
+
     message.text.withCString { pointer in
-        writer(accountId, 0, peerId, messageId.id, pointer, live ? 1 : 0)
+        if let writer = goldgramOriginalCallbackV2 {
+            writer(accountId, 0, peerId, messageId.id, sender, sentAt,
+                   threadId, pointer, live ? 1 : 0)
+        } else if let writer = goldgramOriginalCallback {
+            // Leave the original #66 ABI as a compatibility fallback.
+            writer(accountId, 0, peerId, messageId.id, pointer, live ? 1 : 0)
+        }
     }
 }
 
