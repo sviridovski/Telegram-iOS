@@ -112,4 +112,32 @@ else:
 assert alice.execute(
     "SELECT COUNT(*) FROM revisions WHERE peer_id=123 AND message_id=10"
 ).fetchone()[0] == 4
+
+# Extract the *actual Swift SQL strings*, not just the Python behavioral mirror:
+# archiveSQL binds numeric parameters first and the text parameter LAST.
+# These executions catch real bind-order/count regressions at the next build.
+edit_source = source.split("static func archiveEdit(", 1)[1].split(
+    "static func archiveIncoming(", 1
+)[0]
+rev_query = re.search(r"INSERT INTO revisions\s+\(.*?\)\s+VALUES\s+\(.*?\);", edit_source, re.S)
+event_query = re.search(r"INSERT OR IGNORE INTO events\s+\(.*?\)\s+VALUES\s+\(.*?\);", edit_source, re.S)
+assert rev_query and event_query, "Swift runtime revision/event queries missing"
+actual = new_db()
+actual.execute("INSERT INTO dialogs (peer_kind,peer_id) VALUES (0,500)")
+actual.execute(
+    "INSERT INTO messages (peer_kind,peer_id,message_id,original_observed,first_seen_at,last_seen_at) VALUES (0,500,9,0,100,100)"
+)
+# Mirrors Goldgram.archiveSQL parameters: Int64 arguments precede text.
+actual.execute(rev_query.group(0), (500,9,0,120,150,"текст правки"))
+actual.execute(
+    event_query.group(0),
+    (500,9,150,120,"goldgram.edit.0.500.9.0")
+)
+assert actual.execute(
+    "SELECT version_index,content,observed_at,server_edit_at,revision_provenance FROM revisions"
+).fetchone() == (0,"текст правки",120,150,3)
+assert actual.execute(
+    "SELECT event_key,server_time,observed_at FROM events"
+).fetchone() == ("goldgram.edit.0.500.9.0",150,120)
+
 print("Goldgram edits #68: dedupe, reverts, honest unknown original, isolation, rollback OK")

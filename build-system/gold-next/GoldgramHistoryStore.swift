@@ -424,17 +424,15 @@ private extension GoldgramHistoryStore {
                         ints: [senderId, senderId, sentAt, threadId,
                                now, peerId, Int64(messageId)]
                     )
-                    if let previous = try lastSavedRevision(
+                    let previous = try lastSavedRevision(
                         db: db, peerId: peerId, messageId: messageId
-                    ), previous.text == text {
+                    )
+                    if previous?.text == text {
                         // Duplicated/catch-up edit. No event should be added.
                         try archiveSQL("COMMIT;", db: db, ints: [])
                         return
                     }
-                    let previous = try lastSavedRevision(
-                        db: db, peerId: peerId, messageId: messageId
-                    )
-                    guard previous == nil || previous!.index < Int64.max else {
+                    guard previous?.index != Int64.max else {
                         throw StorageError.sqlite(SQLITE_TOOBIG)
                     }
                     let index = (previous?.index ?? -1) + 1
@@ -445,10 +443,10 @@ private extension GoldgramHistoryStore {
                         """
                         INSERT INTO revisions
                         (peer_kind, peer_id, message_id, version_index,
-                         content, observed_at, server_edit_at,
-                         revision_provenance)
-                        VALUES (0, ?, ?, ?, ?, ?, 3);
-                        """.replacingOccurrences(of: "?, ?, ?, ?, ?, 3", with: "?, ?, ?, ?, ?, 3"),
+                         observed_at, server_edit_at, revision_provenance,
+                         content)
+                        VALUES (0, ?, ?, ?, ?, NULLIF(?, 0), 3, ?);
+                        """,
                         db: db,
                         ints: [peerId, Int64(messageId), index,
                                now, editedAt > 0 ? editedAt : 0],
@@ -463,8 +461,8 @@ private extension GoldgramHistoryStore {
                         """
                         INSERT OR IGNORE INTO events
                         (peer_kind, peer_id, message_id, event_kind, source,
-                         event_key, server_time, observed_at)
-                        VALUES (0, ?, ?, 1, 'telegram_edit_update', ?, NULLIF(?, 0), ?);
+                         server_time, observed_at, event_key)
+                        VALUES (0, ?, ?, 1, 'telegram_edit_update', NULLIF(?, 0), ?, ?);
                         """,
                         db: db,
                         ints: [peerId, Int64(messageId),
