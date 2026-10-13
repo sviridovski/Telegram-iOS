@@ -1,10 +1,28 @@
 # Gold Roadmap
 
-This roadmap belongs to the `gold` branch.
+This roadmap originally belongs to the `gold` branch; active Gold Next decisions are tracked below.
 
-## Rule zero: performance first
+## ACTIVE GOLD NEXT / GOLDGRAM HANDOFF — 2026-10-13
 
-Feature work starts only after the performance foundation is mature enough.
+**Read this section first.** This is the ACTIVE priority for the separate working branch gold-next. The remainder of this file documents the older gold-branch roadmap; the historical "performance first" gate is currently paused by the user, not a prerequisite for current Goldgram development.
+
+- Repository: sviridovski/Telegram-iOS. Active application branch: gold-next. Documentation branch: docs/gold-roadmap. Keep these branches separate.
+- Current working HEAD at this snapshot: e15a44295c85c67d62ec901e9a121fe15139bc93 (Goldgram settings folders). GitHub Actions run_number #62 / run ID 38327975778 was IN PROGRESS when documented; **not confirmed green or device-tested**. Previous #61 was GREEN.
+- Swiftgram / Telegram 12.9.2, pinned MxGram 1.0.0 injection (Mx.dylib); TGExtra is not part of Gold Next. KSign iPhone deployment; open Mx/Goldgram using long-hold "Помощь"/Help for ~3 seconds. Preserve bundle ID, push, extensions, and injection.
+- #62: initial navigation for seven nested Goldgram setting sections in the Mx UI, implemented as a build-time patch in build-system/gold-next/prepare_mx.py. This is **UI organization**, NOT moving Mx source files and NOT a history database. Validate CI, submenu navigation, toggle persistence, Ghost Exceptions, and iPhone/iPad behavior first.
+- Next UI atom (#63 only after #62 succeeds and is tested): divide the mixed MISC section into meaningful subfolders, especially Deleted/Edited messages, Ghost/privacy, media, and tools. Preserve existing settings keys and hooks.
+- Then prioritize **local SQLite message history**: original text, edited versions, deletion events and timestamps; browse Personal Messages, Groups/Chats, and Channels separately, each with Deleted / Edited / All Events; per-account storage, safe ID scoping, privacy, retention, and user controls.
+- Planned retention presets: 1 day, 3 days, 7 days, and indefinitely; design per dialog type (optionally per dialog). These presets are known from the user's experience with Ghostgram; **they do not prove Ghostgram uses SQLite**.
+- Important limit: iOS may suspend/terminate the client; SQLite cannot record edits/deletions while code is not running. Retain original text BEFORE edit when observed; on foreground return process updates.getDifference / channel difference. An original unseen before editing cannot generally be recovered from server current state.
+- Read the detailed technical spec and acceptance checks in **GOLDGRAM_HISTORY_SQLITE_PLAN.md**, and the chronological migration/current-run handoff in **GOLD_NEXT_MIGRATION_PLAN.md**.
+- Strict delivery: 1 logical atom -> 1 code commit -> GitHub Actions build (use **actual run_number**, do not invent numbers) -> real iPhone test -> next code atom. Documentation updates are separate commits on docs/gold-roadmap. Never touch old historical branches as part of a new feature atom.
+- Power/RAM/thermal optimization is explicitly **ON HOLD** until user reactivates it. Do not introduce thermal changes with UI/SQLite atoms.
+
+---
+
+## Historical performance strategy (paused for Gold Next)
+
+This was the original gold-branch rule. For Gold Next, the user has explicitly paused energy optimization to prioritize Goldgram functionality; preserve no-regression tests.
 
 Primary targets:
 - Reduce foreground and idle energy use.
@@ -20,7 +38,7 @@ Primary targets:
 
 ---
 
-## Phase 0 — Performance foundation (must be completed first)
+## Historical Phase 0 — Performance foundation (on hold, not a current gate)
 
 - [x] Atom #1 — task-aware background work.
 - [ ] Atom #2 — safe RAM/cache release audit.
@@ -340,4 +358,4 @@ For every feature after Phase 0:
 10. Compare RAM, heat and warm-resume behavior with the previous Gold build.
 11. Revert immediately if an atom harms the performance baseline.
 
-**Performance always has priority over feature count.**
+**Current Gold Next order: Goldgram organization and message history, with strict no-regression safeguards. Revisit performance only on explicit user request.**

@@ -1,6 +1,30 @@
 # Swiftgram Gold Next — Migration Plan
 
-Updated: 2026-10-06
+Updated: 2026-10-13 (historical migration notes preserved)
+
+## CURRENT HANDOFF — Gold Next / Goldgram (2026-10-13)
+
+**This section and the "Current next action" at the bottom supersede all obsolete #45-era next-step instructions below.** Historical migration details remain for reference only.
+
+- Repo: sviridovski/Telegram-iOS; active app branch gold-next; separate docs branch docs/gold-roadmap.
+- Swiftgram 12.9.2 + pinned MxGram 1.0.0 integrated and distributed via GitHub CI / KSign; previous Telegram/TGExtra migrations are complete enough to work from this stable integration.
+- Trusted latest successful GitHub Actions **run_number #61** (commit f5c656c93ebce312b78800a8a2fd89cdaa7b7ecb); Theos cache origin/master failure fixed in that CI commit. Do not re-open #45/#47-era history without a concrete regression.
+- Current active code HEAD **e15a44295c85c67d62ec901e9a121fe15139bc93**; CI **run_number #62**, URL https://github.com/sviridovski/Telegram-iOS/actions/runs/38327975778. Status was **in_progress** at documentation time, NOT a confirmed successful build.
+- #62 UI atom: create Goldgram folder navigation for existing Mx categories via build-system/gold-next/prepare_mx.py, while retaining Mx.dylib injection, settings keys, "Помощь" / Help long press (3 sec), push, iPad behavior and current functionality. This is only UI organization.
+- Energy optimization and ProMotion work paused by user's explicit decision. New priority: Goldgram organized settings, then local history for edits/deletes.
+- Planned next functional atom after green CI and on-device acceptance: split the mixed MISC category into sensible nested folders (personal messages / groups / channels history, Ghost/privacy, tools), with one change per commit.
+- After menu work: SQLite local history, original snapshots, edit revisions, delete events, per account and per chat type, configurable retention, safe migration from old Mx UserDefaults. See GOLDGRAM_HISTORY_SQLITE_PLAN.md for full spec.
+- Strong limitation: suspended apps cannot run a continuously active Mx hook. Catch-up with Telegram's difference/update replay after resume, while preserving only originals previously observed and captured. Do not claim unseen originals can be reconstructed or run permanent background keepalives.
+- Delivery rule: **1 functional atom -> 1 commit -> 1 CI build with true run_number -> real iPhone test -> proceed**. Keep docs-only commits on docs/gold-roadmap so they do not trigger Gold Next CI or pollute functional history.
+
+## Repositories and module boundaries
+
+- Pinned Mx source: m1ronx1412/mxgram at 23c980300c3e9c98f39ee2bd073fe83d317e15ba; build-time adaptations made in build-system/gold-next/prepare_mx.py. Do not casually switch plugin version or modify upstream.
+- The current Mx edit history in TLParser.swift is backed by UserDefaults key MxEditHistoryByPeer with a 2000-message cap and up to 20 versions per message; deleted-ID bookkeeping uses MxDeletedMsgIds and a 1000-key cap. Those are migration inputs, not the planned final persistence format.
+- A dedicated SQLite-backed Goldgram history module should be isolated from upstream and Mx patching as practical. One encrypted-at-rest (iOS file protection) local database per Telegram account; separate **logical** views for personal, groups, and channels. No transmission of message text or history to third-party servers.
+- Ghostgram retention choices of 1 day / 3 days / 7 days / forever are UX evidence only; the underlying Ghostgram storage engine has not been verified.
+
+---
 
 ## Goal
 
@@ -200,20 +224,13 @@ Any future side-by-side installation must be treated as its own project stage an
 - notification service extension,
 - actual remote push delivery.
 
-## Current next action
+## Current next action — 2026-10-13
 
-Wait for CI #45 for Atom Upgrade #1.
+1. Verify GitHub Actions #62 conclusion for SHA e15a44295c85c67d62ec901e9a121fe15139bc93. Its run_number was #62; the docs snapshot has **no confirmed GREEN**.
+2. If GREEN, install via KSign on iPhone. Confirm Goldgram opens by holding "Помощь"/Help 3 sec; all seven folders navigate correctly; original settings toggles persist; Ghost Exceptions, chat, notifications, media, and app launch still work. Include iPad regression check where applicable.
+3. If RED, inspect the actual failed build step/log and repair only the verified issue (a new CI run has its own true run_number).
+4. **Only after successful device validation**, proceed with a single #63-like atom to regroup MISC features into meaningful subfolders. Do not combine with SQLite.
+5. Stage SQLite via independently testable atoms: schema/DB bootstrap -> migration of original/edit/deleted-ID history -> capture revisions & deletion events -> browser UI & retention -> foreground-resume reconciliation. Use the detailed checkpoints in GOLDGRAM_HISTORY_SQLITE_PLAN.md.
+6. Keep energy-efficiency work paused. The user can explicitly resume it later.
 
-If it is green:
-
-1. Download/install the clean 12.9.2 Swiftgram IPA.
-2. Test the baseline.
-3. Do not add TGExtra/MxGram yet.
-4. Only after baseline acceptance start Atom Upgrade #2: remove TGExtra remnants.
-
-If #45 is red:
-
-- inspect the exact failing CI step,
-- repair only the clean-baseline build infrastructure,
-- keep Atom Upgrade #1 as one logical atom,
-- do not move to TGExtra/MxGram work.
+The previous #45 checkpoint is historical and no longer the current action.
