@@ -261,3 +261,23 @@ if importer_dst.exists():
     raise SystemExit("Unexpected upstream legacy importer")
 importer_dst.write_text(importer_src.read_text())
 print("Goldgram #65: account-gated importer available, not running")
+
+
+# Goldgram #66: one explicitly opt-in control in Deleted/Edited MISC.
+# The legacy feature row IDs 0...11 must remain exactly unchanged.
+goldgram_capture_patches = [
+    ('groups = @[\n      @[@2, @3, @5, @7, @8],',
+     'groups = @[\n      @[@2, @3, @5, @7, @8, @12],'),
+    ('  case MISC:\n    return 12;',
+     '  case MISC:\n    return 13;'),
+    ('      cell.detailTextLabel.text = TGLoc(@"VIDEO_TO_VOICE_SUBTITLE");\n    }\n\n    UISwitch *toggle',
+     '      cell.detailTextLabel.text = TGLoc(@"VIDEO_TO_VOICE_SUBTITLE");\n    }\n    if (indexPath.row == 12) {\n      BOOL russian = [[NSLocale preferredLanguages].firstObject hasPrefix:@"ru"];\n      cell.imageView.image = [UIImage systemImageNamed:@"externaldrive.badge.plus"];\n      cell.imageView.tintColor = [self dynamicColorBW];\n      cell.textLabel.text = russian ? @"Оригиналы в SQLite" : @"SQLite originals archive";\n      cell.detailTextLabel.text = russian ? @"Сохранять входящие личные сообщения локально" : @"Save incoming private-chat originals locally";\n    }\n\n    UISwitch *toggle'),
+    ('    case 10:\n      return kVideoToVoice;\n    default:',
+     '    case 10:\n      return kVideoToVoice;\n    case 12:\n      return @"GoldgramSQLiteCaptureEnabled";\n    default:')
+]
+for before, after in goldgram_capture_patches:
+    if mx_ui_source.count(before) != 1:
+        raise SystemExit("Unexpected pinned Goldgram Mx UI for #66 capture setting")
+    mx_ui_source = mx_ui_source.replace(before, after)
+mx_ui_path.write_text(mx_ui_source)
+print("Goldgram #66: personal-chat SQLite archiving toggle is default OFF")

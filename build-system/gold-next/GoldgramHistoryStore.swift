@@ -230,3 +230,125 @@ enum GoldgramHistoryStore {
         ON revisions (peer_kind, peer_id, message_id, version_index DESC);
     """
 }
+
+
+// Goldgram #66: incoming personal-message originals, account-scoped and
+// explicitly opt-in. The host supplies its authenticated accountPeerId.
+private extension GoldgramHistoryStore {
+    static var archiveConnections: [Int64: OpaquePointer] = [:]
+
+    static func archiveConnection(for accountId: Int64) throws -> OpaquePointer {
+        if let cached = archiveConnections[accountId] { return cached }
+        let url = try createOrOpen(accountId: accountId)
+        var pointer: OpaquePointer?
+        let rc = sqlite3_open_v2(
+            url.path, &pointer,
+            SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil
+        )
+        guard rc == SQLITE_OK, let db = pointer else {
+            if let pointer = pointer { sqlite3_close(pointer) }
+            throw StorageError.sqlite(rc)
+        }
+        guard sqlite3_busy_timeout(db, 2500) == SQLITE_OK,
+              sqlite3_exec(db, "PRAGMA foreign_keys = ON;", nil, nil, nil) == SQLITE_OK else {
+            sqlite3_close(db)
+            throw StorageError.sqlite(SQLITE_ERROR)
+        }
+        archiveConnections[accountId] = db
+        return db
+    }
+
+    static func archiveSQL(
+        _ sql: String, db: OpaquePointer,
+        ints: [Int64], text: String? = nil
+    ) throws {
+        var statement: OpaquePointer?
+        let prepared = sqlite3_prepare_v2(db, sql, -1, &statement, nil)
+        guard prepared == SQLITE_OK, let stmt = statement else {
+            if let statement = statement { sqlite3_finalize(statement) }
+            throw StorageError.sqlite(prepared)
+        }
+        defer { sqlite3_finalize(stmt) }
+        for (i, value) in ints.enumerated() {
+            let code = sqlite3_bind_int64(stmt, Int32(i + 1), value)
+            guard code == SQLITE_OK else { throw StorageError.sqlite(code) }
+        }
+        if let text = text {
+            let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            let utf8 = Array(text.utf8)
+            let bound: Int32 = utf8.withUnsafeBytes { bytes in
+                sqlite3_bind_text(
+                    stmt, Int32(ints.count + 1),
+                    bytes.baseAddress?.assumingMemoryBound(to: CChar.self),
+                    Int32(bytes.count), transient
+                )
+            }
+            guard bound == SQLITE_OK else { throw StorageError.sqlite(bound) }
+        }
+        let result = sqlite3_step(stmt)
+        guard result == SQLITE_DONE else {
+            throw StorageError.sqlite(result)
+        }
+    }
+
+    static func archiveIncoming(
+        accountId: Int64, peerId: Int64, messageId: Int32,
+        text: String, live: Bool
+    ) {
+        guard accountId > 0, peerId > 0, messageId > 0,
+              !text.isEmpty, text.utf8.count <= 65536 else { return }
+        storageQueue.async {
+            guard UserDefaults.standard.bool(forKey: "GoldgramSQLiteCaptureEnabled") else {
+                return
+            }
+            do {
+                let db = try archiveConnection(for: accountId)
+                let now = Int64(Date().timeIntervalSince1970 * 1000)
+                try archiveSQL("BEGIN IMMEDIATE;", db: db, ints: [])
+                do {
+                    try archiveSQL(
+                        "INSERT OR IGNORE INTO dialogs (peer_kind, peer_id) VALUES (0, ?);",
+                        db: db, ints: [peerId]
+                    )
+                    // Never overwrite a previous original or a migration.
+                    // 'live' is true for a real updateNewMessage, false when
+                    // a catch-up difference may already contain edited text.
+                    try archiveSQL(
+                        "INSERT OR IGNORE INTO messages (peer_kind, peer_id, message_id, original_observed, first_seen_at, last_seen_at, original_text) VALUES (0, ?, ?, ?, ?, ?, ?);",
+                        db: db,
+                        ints: [peerId, Int64(messageId), live ? 1 : 0, now, now],
+                        text: text
+                    )
+                    try archiveSQL(
+                        "INSERT OR IGNORE INTO revisions (peer_kind, peer_id, message_id, version_index, observed_at, content) VALUES (0, ?, ?, 0, ?, ?);",
+                        db: db,
+                        ints: [peerId, Int64(messageId), now],
+                        text: text
+                    )
+                    try archiveSQL("COMMIT;", db: db, ints: [])
+                } catch {
+                    try? archiveSQL("ROLLBACK;", db: db, ints: [])
+                    throw error
+                }
+            } catch {
+                // Fail closed, retain old Mx functionality. No chat text,
+                // account identifier, or query details go into diagnostics.
+            }
+        }
+    }
+}
+
+// Stable C ABI: the original TelegramCore host resolves this from Mx.dylib
+// using dlsym at runtime. No C++ ABI or additional host library dependencies.
+@_cdecl("goldgram_archive_original")
+public func goldgramArchiveOriginal(
+    accountId: Int64, peerKind: Int32, peerId: Int64,
+    messageId: Int32, content: UnsafePointer<CChar>?, live: Int32
+) {
+    guard peerKind == 0, let content = content else { return }
+    let text = String(cString: content)
+    GoldgramHistoryStore.archiveIncoming(
+        accountId: accountId, peerId: peerId, messageId: messageId,
+        text: text, live: live != 0
+    )
+}

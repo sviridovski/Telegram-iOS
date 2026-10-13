@@ -1,9 +1,43 @@
 import Foundation
+import Darwin
 import Postbox
 import SwiftSignalKit
 import TelegramApi
 import MtProtoKit
 import EncryptionProvider
+
+
+// Goldgram #66: account-scoped incoming personal-chat archive.
+// This *only* uses the authenticated AccountStateManager accountPeerId;
+// the old MxLastKnownUserId cached by the tweak is not a valid owner key.
+private typealias GoldgramOriginalCallback = @convention(c) (
+    Int64, Int32, Int64, Int32, UnsafePointer<CChar>?, Int32
+) -> Void
+
+private let goldgramOriginalCallback: GoldgramOriginalCallback? = {
+    guard let handle = dlopen(nil, RTLD_NOW),
+          let symbol = dlsym(handle, "goldgram_archive_original") else {
+        return nil
+    }
+    return unsafeBitCast(symbol, to: GoldgramOriginalCallback.self)
+}()
+
+private func goldgramArchivePersonalOriginal(
+    accountPeerId: PeerId, message: StoreMessage, live: Bool
+) {
+    guard UserDefaults.standard.bool(forKey: "GoldgramSQLiteCaptureEnabled"),
+          let writer = goldgramOriginalCallback,
+          case let .Id(messageId) = message.id,
+          messageId.peerId.namespace == Namespaces.Peer.CloudUser,
+          message.flags.contains(.Incoming),
+          !message.text.isEmpty else { return }
+    let accountId = accountPeerId.id._internalGetInt64Value()
+    let peerId = messageId.peerId.id._internalGetInt64Value()
+    guard accountId > 0, peerId > 0, messageId.id > 0 else { return }
+    message.text.withCString { pointer in
+        writer(accountId, 0, peerId, messageId.id, pointer, live ? 1 : 0)
+    }
+}
 
 private func reactionGeneratedEvent(_ previousReactions: ReactionsMessageAttribute?, _ updatedReactions: ReactionsMessageAttribute?, message: Message, transaction: Transaction) -> (reactionAuthor: Peer, reaction: MessageReaction.Reaction, message: Message, timestamp: Int32)? {
     if let updatedReactions = updatedReactions, !message.flags.contains(.Incoming), message.id.peerId.namespace == Namespaces.Peer.CloudUser {
@@ -767,6 +801,7 @@ func finalStateWithDifference(accountPeerId: PeerId, postbox: Postbox, network: 
             peerIsForum = updatedState.isPeerForum(peerId: peerId)
         }
         if let message = StoreMessage(apiMessage: message, accountPeerId: accountPeerId, peerIsForum: peerIsForum) {
+            goldgramArchivePersonalOriginal(accountPeerId: accountPeerId, message: message, live: false)
             updatedState.addMessages([message], location: .UpperHistoryBlock)
             
             if let reportDeliveryAttribute = message.attributes.first(where: { $0 is ReportDeliveryMessageAttribute }) as? ReportDeliveryMessageAttribute, case let .Id(id) = message.id, reportDeliveryAttribute.untilDate > currentTime {
@@ -1150,6 +1185,7 @@ private func finalStateWithUpdatesAndServerTime(accountPeerId: PeerId, postbox: 
                     peerIsForum = updatedState.isPeerForum(peerId: peerId)
                 }
                 if let message = StoreMessage(apiMessage: apiMessage, accountPeerId: accountPeerId, peerIsForum: peerIsForum) {
+                    goldgramArchivePersonalOriginal(accountPeerId: accountPeerId, message: message, live: true)
                     if let preCachedResources = apiMessage.preCachedResources {
                         for (resource, data) in preCachedResources {
                             updatedState.addPreCachedResource(resource, data: data)
