@@ -70,6 +70,50 @@ private func goldgramArchivePersonalOriginal(
     }
 }
 
+// #68: resolve injected Mx lazily via the same stable C bridge as #67.
+// No attempt to infer an account from the global Mx UserDefaults cache.
+private typealias GoldgramEditCallback = @convention(c) (
+    Int64, Int32, Int64, Int32, Int64, Int64, Int64, Int64,
+    UnsafePointer<CChar>?
+) -> Void
+
+private let goldgramEditCallback: GoldgramEditCallback? = {
+    guard let handle = dlopen(nil, RTLD_NOW),
+          let symbol = dlsym(handle, "goldgram_archive_edit_v1") else {
+        return nil
+    }
+    return unsafeBitCast(symbol, to: GoldgramEditCallback.self)
+}()
+
+private func goldgramArchivePrivateEdit(
+    accountPeerId: PeerId, message: StoreMessage, serverEditAt: Int64
+) {
+    guard UserDefaults.standard.bool(forKey: "GoldgramSQLiteCaptureEnabled"),
+          let writer = goldgramEditCallback,
+          case let .Id(messageId) = message.id,
+          messageId.peerId.namespace == Namespaces.Peer.CloudUser,
+          message.flags.contains(.Incoming),
+          !message.text.isEmpty else { return }
+
+    let accountId = accountPeerId.id._internalGetInt64Value()
+    let peerId = messageId.peerId.id._internalGetInt64Value()
+    guard accountId > 0, peerId > 0, messageId.id > 0 else { return }
+
+    let sender: Int64
+    if let author = message.authorId,
+       author.namespace == Namespaces.Peer.CloudUser {
+        sender = author.id._internalGetInt64Value()
+    } else {
+        sender = 0
+    }
+    let sentAt = message.timestamp > 0 ? Int64(message.timestamp) * 1000 : 0
+    let threadId = message.threadId ?? 0
+    message.text.withCString { pointer in
+        writer(accountId, 0, peerId, messageId.id, sender,
+               sentAt, threadId, serverEditAt, pointer)
+    }
+}
+
 private func reactionGeneratedEvent(_ previousReactions: ReactionsMessageAttribute?, _ updatedReactions: ReactionsMessageAttribute?, message: Message, transaction: Transaction) -> (reactionAuthor: Peer, reaction: MessageReaction.Reaction, message: Message, timestamp: Int32)? {
     if let updatedReactions = updatedReactions, !message.flags.contains(.Incoming), message.id.peerId.namespace == Namespaces.Peer.CloudUser {
         let prev = previousReactions?.reactions ?? []
@@ -1153,6 +1197,19 @@ private func finalStateWithUpdatesAndServerTime(accountPeerId: PeerId, postbox: 
                         }
                     }
                     updatedState.editMessage(messageId, message: message)
+                    // This is a server *edit update*, not an arbitrary
+                    // re-delivery or a message reaction/view counter change.
+                    let editedAt: Int64
+                    if case let .message(data) = apiMessage,
+                       let date = data.editDate, date > 0 {
+                        editedAt = Int64(date) * 1000
+                    } else {
+                        editedAt = 0
+                    }
+                    goldgramArchivePrivateEdit(
+                        accountPeerId: accountPeerId, message: message,
+                        serverEditAt: editedAt
+                    )
                     for media in message.media {
                         if let media = media as? TelegramMediaAction {
                             if case .historyCleared = media.action {

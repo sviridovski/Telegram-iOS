@@ -335,6 +335,154 @@ private extension GoldgramHistoryStore {
         }
     }
 
+    // Returns the latest version (including its actual UTF-8 bytes). A repeated
+    // delivery of the same edited text must not create another revision/event.
+    static func lastSavedRevision(
+        db: OpaquePointer, peerId: Int64, messageId: Int32
+    ) throws -> (index: Int64, text: String)? {
+        let sql = """
+        SELECT version_index, content
+        FROM revisions
+        WHERE peer_kind = 0 AND peer_id = ? AND message_id = ?
+        ORDER BY version_index DESC LIMIT 1;
+        """
+        var statement: OpaquePointer?
+        let prepared = sqlite3_prepare_v2(db, sql, -1, &statement, nil)
+        guard prepared == SQLITE_OK, let stmt = statement else {
+            if let partial = statement { sqlite3_finalize(partial) }
+            throw StorageError.sqlite(prepared)
+        }
+        defer { sqlite3_finalize(stmt) }
+        let b1 = sqlite3_bind_int64(stmt, 1, peerId)
+        let b2 = sqlite3_bind_int64(stmt, 2, Int64(messageId))
+        guard b1 == SQLITE_OK, b2 == SQLITE_OK else {
+            throw StorageError.sqlite(b1 != SQLITE_OK ? b1 : b2)
+        }
+        let status = sqlite3_step(stmt)
+        if status == SQLITE_DONE { return nil }
+        guard status == SQLITE_ROW else { throw StorageError.sqlite(status) }
+        let index = sqlite3_column_int64(stmt, 0)
+        let byteCount = Int(sqlite3_column_bytes(stmt, 1))
+        guard let bytes = sqlite3_column_text(stmt, 1), byteCount >= 0 else {
+            throw StorageError.sqlite(SQLITE_CORRUPT)
+        }
+        let content = String(decoding: UnsafeBufferPointer(start: bytes, count: byteCount), as: UTF8.self)
+        return (index, content)
+    }
+
+    // #68: real edits only, received in TelegramCore.updateEditMessage.
+    // Keeps the original immutable. If no prior capture exists, stores the
+    // edited text as "first known edited version" and leaves original NULL.
+    // Does NOT touch the existing MX Anti-Edit tracking or UI.
+    static func archiveEdit(
+        accountId: Int64, peerId: Int64, messageId: Int32,
+        text: String, senderId: Int64, sentAt: Int64,
+        threadId: Int64, editedAt: Int64
+    ) {
+        guard accountId > 0, peerId > 0, messageId > 0,
+              !text.isEmpty, text.utf8.count <= 65536 else { return }
+        storageQueue.async {
+            guard UserDefaults.standard.bool(forKey: "GoldgramSQLiteCaptureEnabled") else {
+                return
+            }
+            do {
+                let db = try archiveConnection(for: accountId)
+                let now = Int64(Date().timeIntervalSince1970 * 1000)
+                try archiveSQL("BEGIN IMMEDIATE;", db: db, ints: [])
+                do {
+                    try archiveSQL(
+                        "INSERT OR IGNORE INTO dialogs (peer_kind, peer_id) VALUES (0, ?);",
+                        db: db, ints: [peerId]
+                    )
+                    // A genuinely edited message may arrive when Goldgram
+                    // was not yet recording its original (or after a reinstall).
+                    // It is *not* evidence for a pre-edit original.
+                    try archiveSQL(
+                        """
+                        INSERT OR IGNORE INTO messages
+                        (peer_kind, peer_id, message_id, original_text,
+                         original_observed, capture_provenance,
+                         first_seen_at, last_seen_at)
+                        VALUES (0, ?, ?, NULL, 0, 0, ?, ?);
+                        """,
+                        db: db,
+                        ints: [peerId, Int64(messageId), now, now]
+                    )
+                    try archiveSQL(
+                        """
+                        UPDATE messages
+                        SET sender_kind = CASE
+                                WHEN sender_kind IS NULL AND ? > 0 THEN 0
+                                ELSE sender_kind END,
+                            sender_id = COALESCE(sender_id, NULLIF(?, 0)),
+                            sent_at = COALESCE(sent_at, NULLIF(?, 0)),
+                            thread_id = COALESCE(thread_id, NULLIF(?, 0)),
+                            last_seen_at = MAX(last_seen_at, ?)
+                        WHERE peer_kind = 0 AND peer_id = ? AND message_id = ?;
+                        """,
+                        db: db,
+                        ints: [senderId, senderId, sentAt, threadId,
+                               now, peerId, Int64(messageId)]
+                    )
+                    if let previous = try lastSavedRevision(
+                        db: db, peerId: peerId, messageId: messageId
+                    ), previous.text == text {
+                        // Duplicated/catch-up edit. No event should be added.
+                        try archiveSQL("COMMIT;", db: db, ints: [])
+                        return
+                    }
+                    let previous = try lastSavedRevision(
+                        db: db, peerId: peerId, messageId: messageId
+                    )
+                    guard previous == nil || previous!.index < Int64.max else {
+                        throw StorageError.sqlite(SQLITE_TOOBIG)
+                    }
+                    let index = (previous?.index ?? -1) + 1
+
+                    // version_index 0 is the only *known* edit when no original
+                    // exists; its revision_provenance=3 explicitly marks it.
+                    try archiveSQL(
+                        """
+                        INSERT INTO revisions
+                        (peer_kind, peer_id, message_id, version_index,
+                         content, observed_at, server_edit_at,
+                         revision_provenance)
+                        VALUES (0, ?, ?, ?, ?, ?, 3);
+                        """.replacingOccurrences(of: "?, ?, ?, ?, ?, 3", with: "?, ?, ?, ?, ?, 3"),
+                        db: db,
+                        ints: [peerId, Int64(messageId), index,
+                               now, editedAt > 0 ? editedAt : 0],
+                        text: text
+                    )
+
+                    // One stable key per observed content transition. A repeated
+                    // update keeps the last version identical and never reaches
+                    // this insert. An A→B→A revert is a *new* transition.
+                    let key = "goldgram.edit.0.\(peerId).\(messageId).\(index)"
+                    try archiveSQL(
+                        """
+                        INSERT OR IGNORE INTO events
+                        (peer_kind, peer_id, message_id, event_kind, source,
+                         event_key, server_time, observed_at)
+                        VALUES (0, ?, ?, 1, 'telegram_edit_update', ?, NULLIF(?, 0), ?);
+                        """,
+                        db: db,
+                        ints: [peerId, Int64(messageId),
+                               editedAt > 0 ? editedAt : 0, now],
+                        text: key
+                    )
+                    try archiveSQL("COMMIT;", db: db, ints: [])
+                } catch {
+                    try? archiveSQL("ROLLBACK;", db: db, ints: [])
+                    throw error
+                }
+            } catch {
+                // Fail closed. Never print private message bodies, message IDs
+                // or account IDs; do not affect Telegram's real edits.
+            }
+        }
+    }
+
     static func archiveIncoming(
         accountId: Int64, peerId: Int64, messageId: Int32,
         text: String, live: Bool,
@@ -436,5 +584,23 @@ public func goldgramArchiveOriginalV2(
         accountId: accountId, peerId: peerId, messageId: messageId,
         text: text, live: live != 0,
         senderId: senderId, sentAt: sentAt, threadId: threadId
+    )
+}
+
+
+// #68: account-identified real edit updates. No general response sniffing.
+@_cdecl("goldgram_archive_edit_v1")
+public func goldgramArchiveEditV1(
+    accountId: Int64, peerKind: Int32, peerId: Int64,
+    messageId: Int32, senderId: Int64, sentAt: Int64,
+    threadId: Int64, editedAt: Int64,
+    content: UnsafePointer<CChar>?
+) {
+    guard peerKind == 0, let content = content else { return }
+    GoldgramHistoryStore.archiveEdit(
+        accountId: accountId, peerId: peerId, messageId: messageId,
+        text: String(cString: content),
+        senderId: senderId, sentAt: sentAt, threadId: threadId,
+        editedAt: editedAt
     )
 }
