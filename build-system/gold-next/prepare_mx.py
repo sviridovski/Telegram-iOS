@@ -105,3 +105,84 @@ compat = (root / "Sources/tgapi/api_sources/MxApiCompat.swift").read_text()
 if "release-12.9.2" not in compat:
     raise SystemExit("Mx source does not declare Telegram 12.9.2 API compatibility")
 print("Mx 1.0.0 prepared: 12.9.2 parser, Support/Help hold 3 seconds")
+
+# Goldgram folder navigation (#62): adapt the pinned Mx UI before Theos builds.
+# Keep every original setting key, toggle action and behaviour unchanged.
+mx_ui_path = root / "Sources/tgapi/UI/Mx.m"
+mx_ui_source = mx_ui_path.read_text()
+mx_folder_patches = [
+  [
+    "@property(nonatomic, assign) BOOL isGhostModeExpanded;",
+    "@property(nonatomic, assign) BOOL isGhostModeExpanded;\n// nil is Goldgram's folder index; a number shows one existing MX section.\n@property(nonatomic, strong) NSNumber *goldgramSection;"
+  ],
+  [
+    "  self.title = @\"Mx\";",
+    "  self.title = self.goldgramSection ? [self tableView:self.tableView titleForHeaderInSection:0] : @\"Goldgram\";"
+  ],
+  [
+    "- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {\n  return 7;\n}",
+    "- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {\n  // The root lists the seven folders; an opened folder shows one section.\n  return 1;\n}"
+  ],
+  [
+    "    numberOfRowsInSection:(NSInteger)section {\n  switch (section) {",
+    "    numberOfRowsInSection:(NSInteger)section {\n  if (!self.goldgramSection) return 7;\n  section = self.goldgramSection.integerValue;\n  switch (section) {"
+  ],
+  [
+    "    titleForHeaderInSection:(NSInteger)section {\n\n  switch (section) {",
+    "    titleForHeaderInSection:(NSInteger)section {\n  if (!self.goldgramSection) return nil;\n  section = self.goldgramSection.integerValue;\n\n  switch (section) {"
+  ],
+  [
+    "    titleForFooterInSection:(NSInteger)section {\n",
+    "    titleForFooterInSection:(NSInteger)section {\n  if (!self.goldgramSection) return nil;\n  section = self.goldgramSection.integerValue;\n"
+  ],
+  [
+    "         cellForRowAtIndexPath:(NSIndexPath *)indexPath {\n  UITableViewCell *cell;",
+    "         cellForRowAtIndexPath:(NSIndexPath *)indexPath {\n  UITableViewCell *cell;\n  if (!self.goldgramSection) {\n    // Folder index: original feature rows and setting keys remain untouched.\n    static NSArray<NSString *> *icons;\n    static dispatch_once_t onceToken;\n    dispatch_once(&onceToken, ^{\n      icons = @[@\"eye.slash\", @\"person.crop.circle.badge.checkmark\",\n                @\"slider.horizontal.3\", @\"folder\", @\"location\",\n                @\"globe\", @\"info.circle\"];\n    });\n    NSArray<NSString *> *titles = @[\n      TGLoc(@\"GHOST_MODE_SECTION_HEADER\"),\n      TGLoc(@\"GHOST_EXCEPTIONS_SECTION_HEADER\"),\n      TGLoc(@\"MISC_SECTION_HEADER\"),\n      TGLoc(@\"FILE_FIXER_SECTION_HEADER\"),\n      TGLoc(@\"FAKE_LOCATION_SECTION_HEADER\"),\n      TGLoc(@\"LANGUAGE_SECTION_HEADER\"),\n      TGLoc(@\"CREDITS_SECTION_HEADER\")\n    ];\n    cell = [self normalCellFromTableView:tableView];\n    if (indexPath.row >= (NSInteger)titles.count) return cell;\n    cell.textLabel.text = titles[indexPath.row];\n    cell.detailTextLabel.text = nil;\n    cell.accessoryView = nil;\n    cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;\n    cell.imageView.image = [UIImage systemImageNamed:icons[indexPath.row]];\n    cell.imageView.tintColor = [self dynamicColorBW];\n    return cell;\n  }\n  // Reuse the existing MX cell factory and original index-based setting map.\n  indexPath = [NSIndexPath indexPathForRow:indexPath.row\n                                inSection:self.goldgramSection.integerValue];"
+  ],
+  [
+    "    didSelectRowAtIndexPath:(NSIndexPath *)indexPath {\n  [tableView deselectRowAtIndexPath:indexPath animated:YES];",
+    "    didSelectRowAtIndexPath:(NSIndexPath *)indexPath {\n  [tableView deselectRowAtIndexPath:indexPath animated:YES];\n  if (!self.goldgramSection) {\n    Mx *folder = [Mx new];\n    folder.goldgramSection = @(indexPath.row);\n    [self.navigationController pushViewController:folder animated:YES];\n    return;\n  }\n  indexPath = [NSIndexPath indexPathForRow:indexPath.row\n                                inSection:self.goldgramSection.integerValue];"
+  ],
+  [
+    "    canEditRowAtIndexPath:(NSIndexPath *)indexPath {\n  return indexPath.section == GHOST_EXCEPTIONS &&",
+    "    canEditRowAtIndexPath:(NSIndexPath *)indexPath {\n  if (!self.goldgramSection) return NO;\n  indexPath = [NSIndexPath indexPathForRow:indexPath.row inSection:self.goldgramSection.integerValue];\n  return indexPath.section == GHOST_EXCEPTIONS &&"
+  ],
+  [
+    "           editingStyleForRowAtIndexPath:(NSIndexPath *)indexPath {\n  return indexPath.section == GHOST_EXCEPTIONS",
+    "           editingStyleForRowAtIndexPath:(NSIndexPath *)indexPath {\n  if (!self.goldgramSection) return UITableViewCellEditingStyleNone;\n  indexPath = [NSIndexPath indexPathForRow:indexPath.row inSection:self.goldgramSection.integerValue];\n  return indexPath.section == GHOST_EXCEPTIONS"
+  ],
+  [
+    "     forRowAtIndexPath:(NSIndexPath *)indexPath {\n  if (editingStyle != UITableViewCellEditingStyleDelete) return;",
+    "     forRowAtIndexPath:(NSIndexPath *)indexPath {\n  if (!self.goldgramSection) return;\n  indexPath = [NSIndexPath indexPathForRow:indexPath.row inSection:self.goldgramSection.integerValue];\n  if (editingStyle != UITableViewCellEditingStyleDelete) return;"
+  ],
+  [
+    "    accessoryButtonTappedForRowWithIndexPath:(NSIndexPath *)indexPath {\n  if (indexPath.section != GHOST_EXCEPTIONS) return;",
+    "    accessoryButtonTappedForRowWithIndexPath:(NSIndexPath *)indexPath {\n  if (!self.goldgramSection) return;\n  indexPath = [NSIndexPath indexPathForRow:indexPath.row inSection:self.goldgramSection.integerValue];\n  if (indexPath.section != GHOST_EXCEPTIONS) return;"
+  ],
+  [
+    "indexSetWithIndex:GHOST_MODE",
+    "indexSetWithIndex:0"
+  ],
+  [
+    "indexSetWithIndex:GHOST_EXCEPTIONS",
+    "indexSetWithIndex:0"
+  ],
+  [
+    "indexSetWithIndex:MISC",
+    "indexSetWithIndex:0"
+  ],
+  [
+    "indexSetWithIndex:FILE_FIXER",
+    "indexSetWithIndex:0"
+  ],
+  [
+    "indexSetWithIndex:FAKE_LOCATION",
+    "indexSetWithIndex:0"
+  ]
+]
+for old, new in mx_folder_patches:
+    if old not in mx_ui_source:
+        raise SystemExit("Unexpected pinned Mx UI source; refusing folder patch")
+    mx_ui_source = mx_ui_source.replace(old, new)
+mx_ui_path.write_text(mx_ui_source)
+print("Goldgram UI: 7 navigable folders, native MX settings preserved")
