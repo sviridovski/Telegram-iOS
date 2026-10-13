@@ -2,6 +2,17 @@
 
 Updated: 2026-10-13 (historical migration notes preserved)
 
+## LATEST PROGRESS — 2026-10-13 (read before older migration checkpoints)
+
+- #62 is green and user-tested (Goldgram root folder menu).
+- #63 is green and user-tested for new nested Deleted/Edited messages settings. Commit `5a9b2a2c8004c983975d88f47f72e3e63897fcef`.
+- #64 is now the active code atom: `ab5ca990ba58060d353dbacffb758533d42ccb0a` in `gold-next`. GitHub Actions actual `run_number=64`, run ID `38350338461`. **CI was queued at this snapshot, NOT confirmed GREEN**.
+- #64 adds **inactive** `build-system/gold-next/GoldgramHistoryStore.swift` SQLite foundation and build-time copy/link in `prepare_mx.py`. It does not capture edits/deletions, does not read account history, does not migrate UserDefaults, and does not change the Goldgram UI.
+- Next: verify CI #64, then user tests iPhone launch/Mx/Help gesture and key messaging functionality. Only on user-confirmed acceptance begin a **separate** migration/capture atom. No unrelated performance changes.
+- Detailed schema and constraints: `GOLDGRAM_HISTORY_SQLITE_PLAN.md`.
+
+---
+
 ## CURRENT HANDOFF — Gold Next / Goldgram (2026-10-13)
 
 **This section and the "Current next action" at the bottom supersede all obsolete #45-era next-step instructions below.** Historical migration details remain for reference only.

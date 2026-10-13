@@ -2,6 +2,18 @@
 
 **Approved by user:** 2026-10-13. **Status:** design/roadmap only; the SQLite functionality is **NOT IMPLEMENTED**. No code atom is authorized merely by updating this file.
 
+## IMPLEMENTATION STATUS UPDATE — 2026-10-13
+
+- User confirmed #62 folder navigation and #63 nested Deleted/Edited messages folder on iPhone. Both CI runs are GREEN.
+- **First SQLite foundation code atom #64 committed**: `ab5ca990ba58060d353dbacffb758533d42ccb0a` on `gold-next`. GitHub Actions run_number #64 / run ID `38350338461` was **queued** at this snapshot (no success claim).
+- New source module `build-system/gold-next/GoldgramHistoryStore.swift` is compiled into injected Mx via build-time `prepare_mx.py`; its setup entry point is **not called yet**, so it creates no DB on existing installs and stores no messages.
+- Implemented proposed v1 DDL: `dialogs`, `messages`, `revisions`, `events`, `unresolved_deletions`, `retention_settings`; indexed composite peer-kind/peer-ID/message-ID keys; one DB per positive Telegram account ID; WAL; SQLite schema version 1; file protection; serialized off-main bootstrap.
+- **Still to implement:** verified account-ID plumbing, creation on explicit user opt-in, legacy UserDefaults migration, message original snapshots and subsequent edits/deletes, folder history UI, configurable retention cleanup and foreground resume reconciliation.
+- Immediate next action: inspect CI #64, then obtain user confirmation that new IPA launches and existing MX functions remain intact. **Do not claim SQLite history is already working**.
+- After #64 acceptance, migrate old history in a separate atom; do not merge capture and migration. Power/RAM improvements remain paused.
+
+---
+
 ## How to resume in a new chat
 
 - Work on the actual repo **sviridovski/Telegram-iOS**, app branch **gold-next**. Documentation lives on **docs/gold-roadmap** (GOLD_ROADMAP.md, GOLD_NEXT_MIGRATION_PLAN.md, this file).

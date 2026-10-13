@@ -2,6 +2,17 @@
 
 This roadmap originally belongs to the `gold` branch; active Gold Next decisions are tracked below.
 
+## LATEST GOLD NEXT STATUS — 2026-10-13 (overrides older snapshots below)
+
+- **#62**: Goldgram root folders, GitHub CI GREEN, user tested nested folder navigation on iPhone.
+- **#63**: Goldgram mixed-MISC controls grouped into four semantic subfolders, GitHub CI GREEN, user explicitly confirmed the Deleted/Edited folder works on iPhone. Commit `5a9b2a2c8004c983975d88f47f72e3e63897fcef`.
+- **#64**: isolated SQLite foundation committed on active `gold-next`: `ab5ca990ba58060d353dbacffb758533d42ccb0a`. GitHub Actions real run_number **#64**, run ID `38350338461`, https://github.com/sviridovski/Telegram-iOS/actions/runs/38350338461. It was **queued**, not verified GREEN, at this documentation snapshot.
+- Code changes: new `build-system/gold-next/GoldgramHistoryStore.swift` and a build-time copy / sqlite3 linkage in `prepare_mx.py`; account-specific `Application Support/Goldgram/Accounts/<accountId>/goldgram_history.sqlite`; WAL, user_version 1, tables for dialogs/messages/revisions/events/unresolved deletions/retention, file protection, asynchronous bootstrap. **No automatic bootstrap, no capture, no data migration, no interface changes in #64.**
+- **NEXT STEP:** inspect #64 GitHub CI. If it is green, test app launch, MX menu via 3-second long press on Help, Telegram chats/push, normal plugin functions on iPhone; no new history UI should appear yet. If red, repair *only* the exact failing build problem. Then proceed to an independent migration atom with safe account scoping, not before.
+- Energy work remains paused. One functional change -> one commit -> one CI -> real-device test.
+
+---
+
 ## ACTIVE GOLD NEXT / GOLDGRAM HANDOFF — 2026-10-13
 
 **Read this section first.** This is the ACTIVE priority for the separate working branch gold-next. The remainder of this file documents the older gold-branch roadmap; the historical "performance first" gate is currently paused by the user, not a prerequisite for current Goldgram development.
