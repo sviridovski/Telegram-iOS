@@ -1,3 +1,4 @@
+- **2026-10-13 agreed future UX:** archive folders for Personal / Groups & Chats / Channels, tap event to open its original chat/topic/message, show confirmed original prominent with latest edited text dimmer directly below in the chat; deleted messages require a local tombstone/nearest-surviving-message fallback. Full design and independent atom plan are in `GOLDGRAM_HISTORY_SQLITE_PLAN.md`. No UI or server restoration is implemented yet.
 ## LIVE ARCHIVE ATOM #66 — 2026-10-13 (LATEST; READ FIRST)
 
 - User reported iPhone test of **#65** succeeded; GitHub CI #65 **GREEN**.

@@ -1,3 +1,47 @@
+## AGREED UX DIRECTION — In-chat History Navigator (2026-10-13)
+
+**Status: requested/design only; NOT implemented by SQLite capture atom #66.** User wants a real archive organized by Personal chats / Groups & chats / Channels, with each archived event selectable to jump back into the actual Telegram conversation and show historical content directly around the message in the normal chat UI.
+
+### Desired navigation and appearance
+
+- Goldgram -> Deleted & Edited -> **Personal** / **Groups & Chats** / **Channels**.
+- Within each category: dialogs grouped by peer name, then events with original excerpt, edit/delete flag, sender when known, original sent date/time when known, and source channel post or associated discussion context.
+- Tap an archived item -> switch to the **correct authenticated Telegram account**, open the real peer or discussion thread, scroll and highlight the surviving message. Use the host native account-aware and thread-aware navigation, not guessed public t.me URLs.
+- When current message still exists, render **confirmed original in normal/primary text**, and **latest edited text below it in a dimmer, legible style**, per user's preferred direction. If there are multiple edits, provide a tap-to-expand version timeline with known edit time vs local observation time. Display can be optional to avoid cluttering every normal chat.
+- Example: Group "Альфа", Ivan, Oct 12 16:42: original "Встреча сегодня в 18:00"; latest edit "Встреча завтра в 18:00". Click -> open exact message in "Альфа"; original prominent, latest edit subdued.
+- Another example: news item published to a channel followed by a user's edited/deleted comment in a **linked discussion group**. Store the comment's real discussion-group peer + message ID + thread ID and (when verified) the original channel post ID. Tap -> open **discussion thread at the comment**, not just the channel home, with optional "View original channel post" link.
+- Event archive should function offline for already recorded content even if the source chat no longer exists or access was revoked.
+
+### Important caveat: deleted originals have no native server-side anchor
+
+- **Edited message still present**: native navigation and inline rendering can work reliably, subject to access and available account/chat state.
+- **Message deleted for everyone**: Telegram/Postbox may no longer have a displayable message or message index. Trying to jump by a deleted ID alone may fail. Plan a local **tombstone/placeholder overlay** anchored via captured date, thread, adjacent surviving message IDs and local archive metadata; alternatively open the closest valid message and show a local history card. Never imply deleted server content was restored on Telegram.
+- **Channel post or comment removed / inaccessible**: open the relevant channel/discussion if still accessible; else show a standalone archived record and an honest "cannot jump to original position" status.
+- No assumption that the earliest seen text is definitely original: label it "earliest known version" when edit already predated first capture. Sender/time/thread/category must also display UNKNOWN if never observed.
+- Display historic contents only if already observed and stored locally; iOS background suspension and Telegram API limitations remain.
+
+### Repository-grounded feasibility
+
+- Existing Swiftgram APIs: \`submodules/TelegramUI/Sources/SharedAccountContext.swift\` has \`navigateToChat(accountId:peerId:messageId:)\`, \`navigateToChatController\`, and \`navigateToForumThread\`. \`submodules/TelegramUI/Sources/Chat/ChatControllerNavigateToMessage.swift\` implements navigation, message highlighting and forum/topic-aware \`replyThread\` routing.
+- Current SQLite **v1** \`GoldgramHistoryStore.swift\` lacks \`sender_id\`, \`sent_at\`, \`thread_id\`, \`root_channel_post_id\`, \`adjacent_message_ids\`, and robust event source / import certainty flags. Add these with a **versioned v2 SQLite migration**, not by silently replacing old schema or DB files.
+- Use per-account peer kind + peer ID + message ID and actual thread/root channel post identity; do not treat channel message IDs as global. A channel post and a comment in a linked discussion are different messages and different peers.
+- A read-only local archive browser needs indexed, asynchronous, paginated SQLite queries; inline chat decorations should be only on visible affected messages, with bounded cache and no global hot-loop re-layout.
+- The overlay must not mutate Telegram remote content; avoid inventing persistent Postbox messages that may sync incorrectly. It is strictly client-side.
+
+### Safe atomic roadmap after #66 validation
+
+1. **#66 only after CI GREEN + user on-device test:** opt-in archiving of incoming private original text; browser not available yet. Verify actual creation/persistence before claiming it works.
+2. Implement **v2 schema metadata** (sender, source timestamp, thread/root post, display and provenance flags; migration tests and downgrade fail-closed). One atom/build/device test.
+3. Capture **edits** and version timeline, correctly scoped to account/peer/id, with deduplication and old/unknown-original distinction. One atom.
+4. Capture **deletions**, including unresolved global IDs and channel-specific IDs, without cross-dialog false matches. One atom.
+5. Expand event capture to **groups/supergroups/channels/comment threads**, with discussion mapping only when known. One or more atoms.
+6. Build **archive browser** (Personal/Groups/Channels, peer list, event list, search/retention filters). One UI atom.
+7. Build **tap -> native chat/thread navigation** for existing messages, account-aware + message anchor. One UI atom.
+8. Build **inline subdued revisions** for surviving chat bubbles, respecting voiceover/readability, dynamic fonts and performance. One UI atom.
+9. Build **deleted-message local tombstone/fallback navigation**, test disappearing items, inaccessible sources and imported uncertain originals. One or more atoms.
+10. Recheck retention 1/3/7 days/forever and ensure archives never appear under the wrong account or peer. Never combine these all into one build.
+
+
 ## LIVE ARCHIVE ATOM #66 — 2026-10-13 (LATEST; READ FIRST)
 
 - User reported iPhone test of **#65** succeeded; GitHub CI #65 **GREEN**.
