@@ -14,7 +14,7 @@ enum GoldgramHistoryStore {
 
     // All database initialization is serialized off the main/render thread.
     // Later write APIs must use the same serialization discipline.
-    private static let storageQueue = DispatchQueue(
+    static let storageQueue = DispatchQueue(
         label: "goldgram.history.sqlite.setup",
         qos: .utility
     )
@@ -39,7 +39,7 @@ enum GoldgramHistoryStore {
         }
     }
 
-    private static func createOrOpen(accountId: Int64) throws -> URL {
+    static func createOrOpen(accountId: Int64) throws -> URL {
         guard accountId > 0 else { throw StorageError.invalidAccount }
 
         let fileManager = FileManager.default

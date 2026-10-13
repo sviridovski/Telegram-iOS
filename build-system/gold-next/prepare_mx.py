@@ -250,3 +250,14 @@ makefile_path.write_text(
     makefile_source.replace(link_anchor, "$(TWEAK_NAME)_LIBRARIES = z sqlite3\n")
 )
 print("Goldgram #64: isolated SQLite schema ready, capture remains disabled")
+
+
+# Goldgram #65 — compile migration adapter; never invoke it automatically.
+importer_src = pathlib.Path(__file__).with_name("GoldgramLegacyImporter.swift")
+if not importer_src.is_file():
+    raise SystemExit("Missing Goldgram legacy importer")
+importer_dst = root / "Sources/tgapi/GoldgramLegacyImporter.swift"
+if importer_dst.exists():
+    raise SystemExit("Unexpected upstream legacy importer")
+importer_dst.write_text(importer_src.read_text())
+print("Goldgram #65: account-gated importer available, not running")
