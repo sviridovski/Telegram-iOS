@@ -28,7 +28,7 @@ def new_db():
 assert 'goldgram_archive_edit_v1' in source
 assert 'goldgramArchivePrivateEdit(' in host
 assert 'case let .updateEditMessage(updateEditMessageData):' in host
-assert 'original_text, original_observed' in source
+assert re.search(r"original_text\s*,\s*original_observed", source), ("Original columns not found in Goldgram Swift SQL")
 assert 'lastSavedRevision(' in source
 
 # The importer and live-capture storage use independently scoped databases.
