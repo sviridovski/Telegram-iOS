@@ -667,6 +667,8 @@ public final class GoldgramArchiveReader: NSObject {
         let mode = request["mode"] as? String ?? ""
         let peerId = (request["peerId"] as? NSNumber)?.int64Value ?? 0
         let peerKind = (request["peerKind"] as? NSNumber)?.intValue ?? -1
+        // Never trap on an unexpected 64-bit peer kind from a caller.
+        let scopedPeerKind = Int32(exactly: peerKind) ?? -1
         let offset = (request["offset"] as? NSNumber)?.intValue ?? 0
         let limit = (request["limit"] as? NSNumber)?.intValue ?? 30
         let kinds: [Int32]
@@ -681,15 +683,15 @@ public final class GoldgramArchiveReader: NSObject {
               offset >= 0, offset <= 5000,
               limit >= 1, limit <= 50,
               mode != "messages" ||
-              (peerId > 0 && kinds.contains(Int32(peerKind))) else {
+              (peerId > 0 && kinds.contains(scopedPeerKind)) else {
             completion(["status": "invalid_request", "items": []])
             return
         }
         GoldgramHistoryStore.storageQueue.async {
             let response = self.read(
                 accountId: accountId, mode: mode,
-                kinds: kinds, peerId: peerId, peerKind: Int32(peerKind),
-                offset: offset, limit: limit
+                kinds: kinds, peerId: peerId, peerKind: scopedPeerKind,
+                offset: Int32(offset), limit: Int32(limit)
             )
             DispatchQueue.main.async {
                 completion(response as NSDictionary)
