@@ -78,6 +78,7 @@ jobs:
           set -euo pipefail
           python3 build-system/gold-next/test_sqlite_schema.py
           python3 build-system/gold-next/test_sqlite_edits.py
+          python3 build-system/gold-next/test_sqlite_reader.py
 
       - name: Build Mx 1.0.0 for Swiftgram 12.9.2
         shell: bash

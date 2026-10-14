@@ -602,3 +602,209 @@ public func goldgramArchiveEditV1(
         editedAt: editedAt
     )
 }
+
+
+// Goldgram #72: bounded, read-only account-scoped history queries.
+// This is the data contract for future category/dialog screens; it does not
+// open the UI, infer the current account, or import legacy MX defaults.
+@objc(GoldgramArchiveReader)
+public final class GoldgramArchiveReader: NSObject {
+    // Both statements intentionally return only messages with observed edit
+    // or deletion events. Ordinary unedited incoming texts stay out of view.
+    // One database per account; peer kind + peer ID scope every lookup.
+    private static let dialogsSQL = """
+    SELECT d.peer_kind, d.peer_id, COUNT(*) AS archived_count,
+           MAX(COALESCE(m.sent_at, m.last_seen_at)) AS newest_at
+    FROM dialogs d
+    JOIN messages m
+      ON m.peer_kind = d.peer_kind AND m.peer_id = d.peer_id
+    WHERE d.peer_kind IN (?, ?)
+      AND (m.is_deleted = 1 OR EXISTS (
+           SELECT 1 FROM events e
+           WHERE e.peer_kind = m.peer_kind AND e.peer_id = m.peer_id
+             AND e.message_id = m.message_id AND e.event_kind IN (1, 2)))
+    GROUP BY d.peer_kind, d.peer_id
+    ORDER BY newest_at DESC, d.peer_kind ASC, d.peer_id ASC
+    LIMIT ? OFFSET ?;
+    """
+
+    private static let messagesSQL = """
+    SELECT m.peer_kind, m.peer_id, m.message_id, m.original_text,
+           m.original_observed, m.capture_provenance, m.sender_id,
+           m.sent_at, m.last_seen_at, m.is_deleted,
+           (SELECT r.content FROM revisions r
+            WHERE r.peer_kind = m.peer_kind AND r.peer_id = m.peer_id
+              AND r.message_id = m.message_id
+            ORDER BY r.version_index DESC LIMIT 1) AS latest_text,
+           (SELECT COUNT(*) FROM revisions r
+            WHERE r.peer_kind = m.peer_kind AND r.peer_id = m.peer_id
+              AND r.message_id = m.message_id) AS revision_count,
+           (SELECT r.content FROM revisions r
+            WHERE r.peer_kind = m.peer_kind AND r.peer_id = m.peer_id
+              AND r.message_id = m.message_id
+            ORDER BY r.version_index ASC LIMIT 1) AS first_known_text
+    FROM messages m
+    WHERE m.peer_kind = ? AND m.peer_id = ?
+      AND (m.is_deleted = 1 OR EXISTS (
+           SELECT 1 FROM events e
+           WHERE e.peer_kind = m.peer_kind AND e.peer_id = m.peer_id
+             AND e.message_id = m.message_id AND e.event_kind IN (1, 2)))
+    ORDER BY COALESCE(m.sent_at, m.last_seen_at) DESC, m.message_id DESC
+    LIMIT ? OFFSET ?;
+    """
+
+    // Only explicit, positive Telegram account IDs are accepted. The UI must
+    // obtain the selected authenticated account from native Telegram context,
+    // NEVER from global MxLastKnownUserId or whichever DB happens to exist.
+    // The callback is always delivered on the main queue; disk I/O is not.
+    @objc(query:completion:)
+    public static func query(
+        _ request: NSDictionary,
+        completion: @escaping (NSDictionary) -> Void
+    ) {
+        let accountId = (request["accountId"] as? NSNumber)?.int64Value ?? 0
+        let category = (request["category"] as? NSNumber)?.intValue ?? -1
+        let mode = request["mode"] as? String ?? ""
+        let peerId = (request["peerId"] as? NSNumber)?.int64Value ?? 0
+        let peerKind = (request["peerKind"] as? NSNumber)?.intValue ?? -1
+        let offset = (request["offset"] as? NSNumber)?.intValue ?? 0
+        let limit = (request["limit"] as? NSNumber)?.intValue ?? 30
+        let kinds: [Int32]
+        switch category {
+        case 0: kinds = [0, 0]       // Personal
+        case 1: kinds = [1, 2]       // Basic groups + supergroups
+        case 2: kinds = [3, 3]       // Channels
+        default: kinds = []
+        }
+        guard accountId > 0, !kinds.isEmpty,
+              mode == "dialogs" || mode == "messages",
+              offset >= 0, offset <= 5000,
+              limit >= 1, limit <= 50,
+              mode != "messages" ||
+              (peerId > 0 && kinds.contains(Int32(peerKind))) else {
+            completion(["status": "invalid_request", "items": []])
+            return
+        }
+        GoldgramHistoryStore.storageQueue.async {
+            let response = self.read(
+                accountId: accountId, mode: mode,
+                kinds: kinds, peerId: peerId, peerKind: Int32(peerKind),
+                offset: offset, limit: limit
+            )
+            DispatchQueue.main.async {
+                completion(response as NSDictionary)
+            }
+        }
+    }
+
+    private static func text(_ stmt: OpaquePointer, _ column: Int32) -> Any {
+        guard sqlite3_column_type(stmt, column) != SQLITE_NULL,
+              let bytes = sqlite3_column_text(stmt, column) else {
+            return NSNull()
+        }
+        let count = Int(sqlite3_column_bytes(stmt, column))
+        return String(decoding: UnsafeBufferPointer(start: bytes, count: count), as: UTF8.self)
+    }
+
+    private static func nullableInt(_ stmt: OpaquePointer, _ column: Int32) -> Any {
+        if sqlite3_column_type(stmt, column) == SQLITE_NULL {
+            return NSNull()
+        }
+        return NSNumber(value: sqlite3_column_int64(stmt, column))
+    }
+
+    private static func read(
+        accountId: Int64, mode: String, kinds: [Int32],
+        peerId: Int64, peerKind: Int32, offset: Int32, limit: Int32
+    ) -> [String: Any] {
+        // Opening a missing DB in READONLY mode must never create one.
+        let support = FileManager.default.urls(
+            for: .applicationSupportDirectory, in: .userDomainMask
+        )[0]
+        let path = support
+            .appendingPathComponent("Goldgram/Accounts/\(accountId)", isDirectory: true)
+            .appendingPathComponent("goldgram_history.sqlite").path
+        guard FileManager.default.fileExists(atPath: path) else {
+            return ["status": "no_archive", "items": []]
+        }
+        var pointer: OpaquePointer?
+        let rc = sqlite3_open_v2(
+            path, &pointer, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil
+        )
+        guard rc == SQLITE_OK, let db = pointer else {
+            if let pointer = pointer { sqlite3_close(pointer) }
+            return ["status": "unavailable", "items": []]
+        }
+        defer { sqlite3_close(db) }
+        guard sqlite3_busy_timeout(db, 2500) == SQLITE_OK,
+              sqlite3_exec(db, "PRAGMA query_only = ON;", nil, nil, nil) == SQLITE_OK else {
+            return ["status": "unavailable", "items": []]
+        }
+
+        var versionStatement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "PRAGMA user_version;", -1, &versionStatement, nil) == SQLITE_OK,
+              let version = versionStatement else {
+            if let versionStatement = versionStatement { sqlite3_finalize(versionStatement) }
+            return ["status": "unavailable", "items": []]
+        }
+        let versionRead = sqlite3_step(version)
+        let schemaVersion = sqlite3_column_int(version, 0)
+        sqlite3_finalize(version)
+        guard versionRead == SQLITE_ROW && schemaVersion == 2 else {
+            return ["status": "incompatible_schema", "items": []]
+        }
+
+        let sql = mode == "dialogs" ? dialogsSQL : messagesSQL
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK,
+              let stmt = statement else {
+            if let statement = statement { sqlite3_finalize(statement) }
+            return ["status": "unavailable", "items": []]
+        }
+        defer { sqlite3_finalize(stmt) }
+        let first: Int64 = mode == "dialogs" ? Int64(kinds[0]) : Int64(peerKind)
+        let second: Int64 = mode == "dialogs" ? Int64(kinds[1]) : peerId
+        let parameters = [first, second, Int64(limit), Int64(offset)]
+        for (index, value) in parameters.enumerated() {
+            guard sqlite3_bind_int64(stmt, Int32(index + 1), value) == SQLITE_OK else {
+                return ["status": "unavailable", "items": []]
+            }
+        }
+
+        var rows: [[String: Any]] = []
+        while true {
+            let step = sqlite3_step(stmt)
+            if step == SQLITE_DONE { break }
+            guard step == SQLITE_ROW else {
+                return ["status": "unavailable", "items": []]
+            }
+            if mode == "dialogs" {
+                rows.append([
+                    "peerKind": NSNumber(value: sqlite3_column_int(stmt, 0)),
+                    "peerId": NSNumber(value: sqlite3_column_int64(stmt, 1)),
+                    "messageCount": NSNumber(value: sqlite3_column_int64(stmt, 2)),
+                    "lastMessageAt": nullableInt(stmt, 3)
+                ])
+            } else {
+                let observed = sqlite3_column_int(stmt, 4) == 1
+                // A catch-up snapshot (observed=0) is never called original.
+                rows.append([
+                    "peerKind": NSNumber(value: sqlite3_column_int(stmt, 0)),
+                    "peerId": NSNumber(value: sqlite3_column_int64(stmt, 1)),
+                    "messageId": NSNumber(value: sqlite3_column_int64(stmt, 2)),
+                    "originalText": observed ? text(stmt, 3) : NSNull(),
+                    "originalObserved": NSNumber(value: observed),
+                    "captureProvenance": NSNumber(value: sqlite3_column_int(stmt, 5)),
+                    "senderId": nullableInt(stmt, 6),
+                    "sentAt": nullableInt(stmt, 7),
+                    "lastSeenAt": nullableInt(stmt, 8),
+                    "deleted": NSNumber(value: sqlite3_column_int(stmt, 9) == 1),
+                    "latestText": text(stmt, 10),
+                    "revisionCount": NSNumber(value: sqlite3_column_int64(stmt, 11)),
+                    "firstKnownText": text(stmt, 12)
+                ])
+            }
+        }
+        return ["status": "ok", "items": rows, "hasMore": rows.count == Int(limit)]
+    }
+}
