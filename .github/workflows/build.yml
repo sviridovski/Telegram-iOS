@@ -84,6 +84,9 @@ jobs:
           python3 build-system/gold-next/test_sqlite_public_edits.py
           python3 build-system/gold-next/test_sqlite_native_jump.py
           python3 build-system/gold-next/test_sqlite_clear_history.py
+          python3 build-system/gold-next/test_sqlite_channel_folders.py
+          swiftc build-system/gold-next/GoldgramArchiveGrouping.swift build-system/gold-next/test_archive_grouping.swift -o "$RUNNER_TEMP/goldgram-grouping-test"
+          "$RUNNER_TEMP/goldgram-grouping-test"
 
       - name: Build Mx 1.0.0 for Swiftgram 12.9.2
         shell: bash

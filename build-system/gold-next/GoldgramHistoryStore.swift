@@ -753,14 +753,21 @@ public final class GoldgramArchiveReader: NSObject {
            (SELECT r.content FROM revisions r
             WHERE r.peer_kind = m.peer_kind AND r.peer_id = m.peer_id
               AND r.message_id = m.message_id
-            ORDER BY r.version_index ASC LIMIT 1) AS first_known_text
+            ORDER BY r.version_index ASC LIMIT 1) AS first_known_text,
+           m.sender_kind,
+           EXISTS (SELECT 1 FROM events e
+             WHERE e.peer_kind = m.peer_kind AND e.peer_id = m.peer_id
+               AND e.message_id = m.message_id AND e.event_kind = 1) AS edited,
+           EXISTS (SELECT 1 FROM events e
+             WHERE e.peer_kind = m.peer_kind AND e.peer_id = m.peer_id
+               AND e.message_id = m.message_id AND e.event_kind = 2) AS delete_event
     FROM messages m
     WHERE m.peer_kind = ? AND m.peer_id = ?
       AND (m.is_deleted = 1 OR EXISTS (
            SELECT 1 FROM events e
            WHERE e.peer_kind = m.peer_kind AND e.peer_id = m.peer_id
              AND e.message_id = m.message_id AND e.event_kind IN (1, 2)))
-    ORDER BY COALESCE(m.sent_at, m.last_seen_at) DESC, m.message_id DESC
+    ORDER BY COALESCE(m.sent_at, m.last_seen_at) DESC, m.message_id DESC, m.peer_kind ASC, m.peer_id ASC
     LIMIT ? OFFSET ?;
     """
 
@@ -786,11 +793,28 @@ public final class GoldgramArchiveReader: NSObject {
         switch category {
         case 0: kinds = [0, 0]       // Personal
         case 1: kinds = [1, 2]       // Basic groups + supergroups
-        case 2: kinds = [3, 3]       // Channels
+        case 2: kinds = [2, 3]       // Channels + natively verified discussions in UI
         default: kinds = []
         }
+        let requestedSources = request["sources"] as? [[String: Any]] ?? []
+        var sources: [(kind: Int32, id: Int64)] = []
+        if mode == "combined" {
+            guard category == 2, !requestedSources.isEmpty, requestedSources.count <= 2 else {
+                completion(["status": "invalid_request", "items": []]); return
+            }
+            for source in requestedSources {
+                guard let rawKind = (source["peerKind"] as? NSNumber)?.int64Value,
+                      let kind = Int32(exactly: rawKind), kinds.contains(kind),
+                      let id = (source["peerId"] as? NSNumber)?.int64Value, id > 0 else {
+                    completion(["status": "invalid_request", "items": []]); return
+                }
+                if !sources.contains(where: { $0.kind == kind && $0.id == id }) {
+                    sources.append((kind, id))
+                }
+            }
+        }
         guard isSelected(accountId), !kinds.isEmpty,
-              mode == "dialogs" || mode == "messages",
+              mode == "dialogs" || mode == "messages" || mode == "combined",
               offset >= 0, offset <= 5000,
               limit >= 1, limit <= 50,
               mode != "messages" ||
@@ -801,7 +825,7 @@ public final class GoldgramArchiveReader: NSObject {
         GoldgramHistoryStore.storageQueue.async {
             let response = self.read(
                 accountId: accountId, mode: mode,
-                kinds: kinds, peerId: peerId, peerKind: scopedPeerKind,
+                kinds: kinds, peerId: peerId, peerKind: scopedPeerKind, sources: sources,
                 offset: Int32(offset), limit: Int32(limit)
             )
             DispatchQueue.main.async {
@@ -828,7 +852,8 @@ public final class GoldgramArchiveReader: NSObject {
 
     private static func read(
         accountId: Int64, mode: String, kinds: [Int32],
-        peerId: Int64, peerKind: Int32, offset: Int32, limit: Int32
+        peerId: Int64, peerKind: Int32, sources: [(kind: Int32, id: Int64)],
+        offset: Int32, limit: Int32
     ) -> [String: Any] {
         // Opening a missing DB in READONLY mode must never create one.
         let support = FileManager.default.urls(
@@ -867,7 +892,14 @@ public final class GoldgramArchiveReader: NSObject {
             return ["status": "incompatible_schema", "items": []]
         }
 
-        let sql = mode == "dialogs" ? dialogsSQL : messagesSQL
+        var sql = mode == "dialogs" ? dialogsSQL : messagesSQL
+        if mode == "combined" {
+            let predicate = sources.map { _ in "(m.peer_kind = ? AND m.peer_id = ?)" }.joined(separator: " OR ")
+            sql = sql.replacingOccurrences(
+                of: "WHERE m.peer_kind = ? AND m.peer_id = ?\n",
+                with: "WHERE (\(predicate))\n"
+            )
+        }
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK,
               let stmt = statement else {
@@ -877,7 +909,10 @@ public final class GoldgramArchiveReader: NSObject {
         defer { sqlite3_finalize(stmt) }
         let first: Int64 = mode == "dialogs" ? Int64(kinds[0]) : Int64(peerKind)
         let second: Int64 = mode == "dialogs" ? Int64(kinds[1]) : peerId
-        let parameters = [first, second, Int64(limit), Int64(offset)]
+        let scope: [Int64] = mode == "combined"
+            ? sources.flatMap { [Int64($0.kind), $0.id] }
+            : [first, second]
+        let parameters = scope + [Int64(limit), Int64(offset)]
         for (index, value) in parameters.enumerated() {
             guard sqlite3_bind_int64(stmt, Int32(index + 1), value) == SQLITE_OK else {
                 return ["status": "unavailable", "items": []]
@@ -911,10 +946,12 @@ public final class GoldgramArchiveReader: NSObject {
                     "senderId": nullableInt(stmt, 6),
                     "sentAt": nullableInt(stmt, 7),
                     "lastSeenAt": nullableInt(stmt, 8),
-                    "deleted": NSNumber(value: sqlite3_column_int(stmt, 9) == 1),
+                    "deleted": NSNumber(value: sqlite3_column_int(stmt, 9) == 1 || sqlite3_column_int(stmt, 15) == 1),
                     "latestText": text(stmt, 10),
                     "revisionCount": NSNumber(value: sqlite3_column_int64(stmt, 11)),
-                    "firstKnownText": text(stmt, 12)
+                    "firstKnownText": text(stmt, 12),
+                    "senderKind": nullableInt(stmt, 13),
+                    "edited": NSNumber(value: sqlite3_column_int(stmt, 14) == 1)
                 ])
             }
         }

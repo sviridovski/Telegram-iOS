@@ -54,6 +54,113 @@ private func goldgramNativeNavigateToMessage(
     return 1
 }
 
+// #80: one bounded, read-only Postbox transaction per archive page.
+// Names and current discussion association come from the authenticated host,
+// never from a global MX peer cache or matching titles/timestamps.
+@objc(GoldgramNativeArchiveMetadata)
+public final class GoldgramNativeArchiveMetadata: NSObject {
+    private static func peerId(kind: Int32, raw: Int64) -> PeerId? {
+        guard raw > 0 else { return nil }
+        let namespace: PeerId.Namespace
+        switch kind {
+        case 0: namespace = Namespaces.Peer.CloudUser
+        case 1: namespace = Namespaces.Peer.CloudGroup
+        case 2, 3: namespace = Namespaces.Peer.CloudChannel
+        default: return nil
+        }
+        return PeerId(namespace: namespace, id: PeerId.Id._internalFromInt64Value(raw))
+    }
+
+    @objc(resolve:completion:)
+    public static func resolve(_ request: NSDictionary, completion: @escaping (NSDictionary) -> Void) {
+        guard Thread.isMainThread,
+              let accountId = (request["accountId"] as? NSNumber)?.int64Value,
+              let entries = request["items"] as? [[String: Any]], entries.count <= 50,
+              let shared = goldgramNativeNavigationContext,
+              let primary = shared.sgPrimaryAccountContextForMigration(),
+              primary.account.peerId.id._internalGetInt64Value() == accountId
+        else { completion(["status": "account_changed", "items": []]); return }
+        let recordId = primary.account.id
+        let _ = (primary.account.postbox.transaction { transaction -> [[String: Any]] in
+            var result: [[String: Any]] = []
+            for entry in entries {
+                guard let raw = (entry["peerId"] as? NSNumber)?.int64Value,
+                      let rawKind = (entry["peerKind"] as? NSNumber)?.int64Value,
+                      let kind = Int32(exactly: rawKind),
+                      let id = self.peerId(kind: kind, raw: raw) else { continue }
+                let peer = transaction.getPeer(id)
+                var row: [String: Any] = ["peerKind": NSNumber(value: kind), "peerId": NSNumber(value: raw)]
+                if let peer { row["peerName"] = peer.compactDisplayTitle }
+                // A channel and its CURRENT linked discussion share a group key.
+                // This is not evidence for the parent news post of an old comment.
+                if let channel = peer as? TelegramChannel {
+                    switch channel.info {
+                    case .broadcast:
+                        row["channelId"] = NSNumber(value: raw)
+                        row["channelName"] = channel.title
+                    case .group: break
+                    }
+                    if let cached = transaction.getPeerCachedData(peerId: id) as? CachedChannelData,
+                       case let .known(linkedId) = cached.linkedDiscussionPeerId,
+                       let linkedId, let linked = transaction.getPeer(linkedId) as? TelegramChannel {
+                        // Reject a stale one-way link if the opposite peer
+                        // explicitly points to another discussion/channel.
+                        var reciprocal = true
+                        if let opposite = transaction.getPeerCachedData(peerId: linkedId) as? CachedChannelData,
+                           case let .known(backId) = opposite.linkedDiscussionPeerId {
+                            reciprocal = backId == id
+                        }
+                        if reciprocal {
+                            switch (channel.info, linked.info) {
+                            case (.group, .broadcast):
+                                row["channelId"] = NSNumber(value: linked.id.id._internalGetInt64Value())
+                                row["channelName"] = linked.title
+                                row["linkedPeerKind"] = NSNumber(value: 3)
+                                row["linkedPeerId"] = NSNumber(value: linked.id.id._internalGetInt64Value())
+                            case (.broadcast, .group):
+                                row["linkedPeerKind"] = NSNumber(value: 2)
+                                row["linkedPeerId"] = NSNumber(value: linked.id.id._internalGetInt64Value())
+                            default: break
+                            }
+                        }
+                    }
+                }
+                if let rawMessageId = (entry["messageId"] as? NSNumber)?.int64Value,
+                   let mid = Int32(exactly: rawMessageId), mid > 0 {
+                    row["messageId"] = NSNumber(value: mid)
+                    let message = transaction.getMessage(MessageId(peerId: id, namespace: Namespaces.Message.Cloud, id: mid))
+                    var author: Peer? = message?.author
+                    if author == nil,
+                       let savedSender = (entry["senderId"] as? NSNumber)?.int64Value,
+                       let savedKind = (entry["senderKind"] as? NSNumber)?.int32Value,
+                       let sender = self.peerId(kind: savedKind, raw: savedSender) {
+                        author = transaction.getPeer(sender)
+                    }
+                    if let author {
+                        row["senderName"] = author.compactDisplayTitle
+                    } else if kind == 3, let peer {
+                        // Publication source, not an invented administrator identity.
+                        row["senderName"] = peer.compactDisplayTitle
+                    }
+                    if ((entry["sentAt"] as? NSNumber)?.int64Value ?? 0) <= 0,
+                       let message, message.timestamp > 0 {
+                        row["sentAt"] = NSNumber(value: Int64(message.timestamp) * 1000)
+                    }
+                }
+                result.append(row)
+            }
+            return result
+        } |> deliverOnMainQueue).start(next: { rows in
+            guard let current = goldgramNativeNavigationContext?.sgPrimaryAccountContextForMigration(),
+                  current.account.id == recordId,
+                  current.account.peerId.id._internalGetInt64Value() == accountId else {
+                completion(["status": "account_changed", "items": []]); return
+            }
+            completion(["status": "ok", "items": rows])
+        })
+    }
+}
+
 private func goldgramRegisterNativeNavigation() {
     guard let handle = dlopen(nil, RTLD_NOW),
           let symbol = dlsym(handle, "goldgram_register_native_navigation_v1")

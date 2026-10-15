@@ -366,3 +366,23 @@ for before, after in clear_patches:
     mx_ui_source = mx_ui_source.replace(before, after)
 mx_ui_path.write_text(mx_ui_source)
 print("Goldgram #79: confirmed account-scoped clear history on root menu")
+
+# #80: C/ObjC block bridge to the host's account-scoped metadata resolver.
+metadata_source = pathlib.Path(__file__).with_name("GoldgramMetadataBridge.m")
+metadata_dest = root / "Sources/tgapiC/GoldgramMetadataBridge.m"
+metadata_header = root / "Sources/tgapiC/include/Tweak.h"
+if metadata_dest.exists() or not metadata_source.is_file():
+    raise SystemExit("Goldgram metadata bridge source mismatch")
+metadata_dest.write_text(metadata_source.read_text())
+header_source = metadata_header.read_text()
+metadata_anchor = "NSData *decompressGzip(const void *input, size_t inputLen);"
+if header_source.count(metadata_anchor) != 1:
+    raise SystemExit("Goldgram metadata C header anchor mismatch")
+metadata_header.write_text(header_source.replace(metadata_anchor, metadata_anchor + "\nvoid goldgramResolveNativeMetadata(NSDictionary * _Nonnull request, void (^ _Nonnull completion)(NSDictionary * _Nonnull response));"))
+print("Goldgram #80: native Postbox metadata bridge ready")
+
+grouping_source = pathlib.Path(__file__).with_name("GoldgramArchiveGrouping.swift")
+grouping_dest = root / "Sources/tgapi/GoldgramArchiveGrouping.swift"
+if grouping_dest.exists() or not grouping_source.is_file():
+    raise SystemExit("Goldgram archive grouping source mismatch")
+grouping_dest.write_text(grouping_source.read_text())
