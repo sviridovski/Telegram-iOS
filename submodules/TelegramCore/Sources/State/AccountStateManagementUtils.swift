@@ -114,6 +114,60 @@ private func goldgramArchivePrivateEdit(
     }
 }
 
+
+// Goldgram #75: live public text capture. CloudChannel namespace contains
+// both broadcast channels and groups; only TelegramChannel.info resolves kind.
+private typealias GoldgramPublicOriginalCallback = @convention(c) (
+    Int64, Int32, Int64, Int32, Int64, Int64, Int64, UnsafePointer<CChar>?
+) -> Void
+private let goldgramPublicOriginalCallback: GoldgramPublicOriginalCallback? = {
+    guard let handle = dlopen(nil, RTLD_NOW),
+          let symbol = dlsym(handle, "goldgram_archive_public_original_v1") else {
+        return nil
+    }
+    return unsafeBitCast(symbol, to: GoldgramPublicOriginalCallback.self)
+}()
+
+private func goldgramVerifiedPublicKind(peerId: PeerId, peer: Peer?) -> Int32? {
+    if peerId.namespace == Namespaces.Peer.CloudGroup {
+        return peer is TelegramGroup ? 1 : nil
+    }
+    if peerId.namespace == Namespaces.Peer.CloudChannel,
+       let channel = peer as? TelegramChannel {
+        switch channel.info {
+        case .group: return 2
+        case .broadcast: return 3
+        }
+    }
+    return nil
+}
+
+private func goldgramArchivePublicOriginal(
+    accountPeerId: PeerId, message: StoreMessage, peerKind: Int32
+) {
+    guard UserDefaults.standard.bool(forKey: "GoldgramSQLiteCaptureEnabled"),
+          let writer = goldgramPublicOriginalCallback,
+          peerKind >= 1, peerKind <= 3,
+          case let .Id(messageId) = message.id,
+          messageId.id > 0, !message.text.isEmpty else { return }
+    let accountId = accountPeerId.id._internalGetInt64Value()
+    let peerId = messageId.peerId.id._internalGetInt64Value()
+    guard accountId > 0, peerId > 0 else { return }
+    let senderId: Int64
+    if let author = message.authorId,
+       author.namespace == Namespaces.Peer.CloudUser {
+        senderId = author.id._internalGetInt64Value()
+    } else {
+        senderId = 0
+    }
+    let sentAt = message.timestamp > 0 ? Int64(message.timestamp) * 1000 : 0
+    let threadId = message.threadId ?? 0
+    message.text.withCString { pointer in
+        writer(accountId, peerKind, peerId, messageId.id,
+               senderId, sentAt, threadId, pointer)
+    }
+}
+
 private func reactionGeneratedEvent(_ previousReactions: ReactionsMessageAttribute?, _ updatedReactions: ReactionsMessageAttribute?, message: Message, transaction: Transaction) -> (reactionAuthor: Peer, reaction: MessageReaction.Reaction, message: Message, timestamp: Int32)? {
     if let updatedReactions = updatedReactions, !message.flags.contains(.Incoming), message.id.peerId.namespace == Namespaces.Peer.CloudUser {
         let prev = previousReactions?.reactions ?? []
@@ -1248,6 +1302,15 @@ private func finalStateWithUpdatesAndServerTime(accountPeerId: PeerId, postbox: 
                             var attributes = message.attributes
                             attributes.append(ChannelMessageStateVersionAttribute(pts: pts))
                             updatedState.addMessages([message.withUpdatedAttributes(attributes)], location: .UpperHistoryBlock)
+                            // Only accepted live channel/supergroup updates.
+                            if let kind = goldgramVerifiedPublicKind(
+                                peerId: message.id.peerId,
+                                peer: updatedState.peers[message.id.peerId]
+                            ) {
+                                goldgramArchivePublicOriginal(
+                                    accountPeerId: accountPeerId, message: message, peerKind: kind
+                                )
+                            }
                             updatedState.updateChannelState(message.id.peerId, pts: pts)
                             if case let .Id(id) = message.id {
                                 updatedState.updateChannelSynchronizedUntilMessage(id.peerId, id: id.id)
@@ -1274,6 +1337,14 @@ private func finalStateWithUpdatesAndServerTime(accountPeerId: PeerId, postbox: 
                 }
                 if let message = StoreMessage(apiMessage: apiMessage, accountPeerId: accountPeerId, peerIsForum: peerIsForum) {
                     goldgramArchivePersonalOriginal(accountPeerId: accountPeerId, message: message, live: true)
+                    if let kind = goldgramVerifiedPublicKind(
+                        peerId: message.id.peerId,
+                        peer: updatedState.peers[message.id.peerId]
+                    ) {
+                        goldgramArchivePublicOriginal(
+                            accountPeerId: accountPeerId, message: message, peerKind: kind
+                        )
+                    }
                     if let preCachedResources = apiMessage.preCachedResources {
                         for (resource, data) in preCachedResources {
                             updatedState.addPreCachedResource(resource, data: data)

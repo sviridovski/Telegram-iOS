@@ -484,9 +484,11 @@ private extension GoldgramHistoryStore {
     static func archiveIncoming(
         accountId: Int64, peerId: Int64, messageId: Int32,
         text: String, live: Bool,
-        senderId: Int64 = 0, sentAt: Int64 = 0, threadId: Int64 = 0
+        senderId: Int64 = 0, sentAt: Int64 = 0, threadId: Int64 = 0,
+        peerKind: Int32 = 0
     ) {
-        guard accountId > 0, peerId > 0, messageId > 0,
+        guard peerKind >= 0, peerKind <= 3,
+              accountId > 0, peerId > 0, messageId > 0,
               !text.isEmpty, text.utf8.count <= 65536 else { return }
         storageQueue.async {
             guard UserDefaults.standard.bool(forKey: "GoldgramSQLiteCaptureEnabled") else {
@@ -498,8 +500,8 @@ private extension GoldgramHistoryStore {
                 try archiveSQL("BEGIN IMMEDIATE;", db: db, ints: [])
                 do {
                     try archiveSQL(
-                        "INSERT OR IGNORE INTO dialogs (peer_kind, peer_id) VALUES (0, ?);",
-                        db: db, ints: [peerId]
+                        "INSERT OR IGNORE INTO dialogs (peer_kind, peer_id) VALUES (?, ?);",
+                        db: db, ints: [Int64(peerKind), peerId]
                     )
                     // Never overwrite a previous original or a migration.
                     // 'live' is true for a real updateNewMessage, false when
@@ -508,9 +510,9 @@ private extension GoldgramHistoryStore {
                     // provenance flag distinguishes live delivery from a
                     // catch-up where the first known text may already be edited.
                     try archiveSQL(
-                        "INSERT OR IGNORE INTO messages (peer_kind, peer_id, message_id, original_observed, capture_provenance, first_seen_at, last_seen_at, original_text) VALUES (0, ?, ?, ?, ?, ?, ?, ?);",
+                        "INSERT OR IGNORE INTO messages (peer_kind, peer_id, message_id, original_observed, capture_provenance, first_seen_at, last_seen_at, original_text) VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
                         db: db,
-                        ints: [peerId, Int64(messageId), live ? 1 : 0, live ? 1 : 2, now, now],
+                        ints: [Int64(peerKind), peerId, Int64(messageId), live ? 1 : 0, live ? 1 : 2, now, now],
                         text: text
                     )
                     // Also backfill missing metadata for existing #66 rows.
@@ -523,7 +525,7 @@ private extension GoldgramHistoryStore {
                             sender_id = COALESCE(sender_id, NULLIF(?, 0)),
                             sent_at = COALESCE(sent_at, NULLIF(?, 0)),
                             thread_id = COALESCE(thread_id, NULLIF(?, 0))
-                        WHERE peer_kind = 0 AND peer_id = ? AND message_id = ?;
+                        WHERE peer_kind = ? AND peer_id = ? AND message_id = ?;
                         """,
                         db: db,
                         ints: [
@@ -531,13 +533,13 @@ private extension GoldgramHistoryStore {
                             senderId > 0 ? senderId : 0,
                             sentAt > 0 ? sentAt : 0,
                             threadId > 0 ? threadId : 0,
-                            peerId, Int64(messageId)
+                            Int64(peerKind), peerId, Int64(messageId)
                         ]
                     )
                     try archiveSQL(
-                        "INSERT OR IGNORE INTO revisions (peer_kind, peer_id, message_id, version_index, observed_at, revision_provenance, content) VALUES (0, ?, ?, 0, ?, ?, ?);",
+                        "INSERT OR IGNORE INTO revisions (peer_kind, peer_id, message_id, version_index, observed_at, revision_provenance, content) VALUES (?, ?, ?, 0, ?, ?, ?);",
                         db: db,
-                        ints: [peerId, Int64(messageId), now, live ? 1 : 2],
+                        ints: [Int64(peerKind), peerId, Int64(messageId), now, live ? 1 : 2],
                         text: text
                     )
                     try archiveSQL("COMMIT;", db: db, ints: [])
@@ -630,8 +632,8 @@ public final class GoldgramArchiveReader: NSObject {
         defer { accountLock.unlock() }
         return selectedAccount > 0 ? NSNumber(value: selectedAccount) : nil
     }
-    // Both statements intentionally return only messages with observed edit
-    // or deletion events. Ordinary unedited incoming texts stay out of view.
+    // Personal rows remain event-only; groups/channels expose observed posts
+    // and comments as well as edits/deletions, without an MX legacy import.
     // One database per account; peer kind + peer ID scope every lookup.
     private static let dialogsSQL = """
     SELECT d.peer_kind, d.peer_id, COUNT(*) AS archived_count,
@@ -640,7 +642,8 @@ public final class GoldgramArchiveReader: NSObject {
     JOIN messages m
       ON m.peer_kind = d.peer_kind AND m.peer_id = d.peer_id
     WHERE d.peer_kind IN (?, ?)
-      AND (m.is_deleted = 1 OR EXISTS (
+      AND (m.peer_kind IN (1, 2, 3) AND m.original_text IS NOT NULL
+           OR m.is_deleted = 1 OR EXISTS (
            SELECT 1 FROM events e
            WHERE e.peer_kind = m.peer_kind AND e.peer_id = m.peer_id
              AND e.message_id = m.message_id AND e.event_kind IN (1, 2)))
@@ -666,7 +669,8 @@ public final class GoldgramArchiveReader: NSObject {
             ORDER BY r.version_index ASC LIMIT 1) AS first_known_text
     FROM messages m
     WHERE m.peer_kind = ? AND m.peer_id = ?
-      AND (m.is_deleted = 1 OR EXISTS (
+      AND (m.peer_kind IN (1, 2, 3) AND m.original_text IS NOT NULL
+           OR m.is_deleted = 1 OR EXISTS (
            SELECT 1 FROM events e
            WHERE e.peer_kind = m.peer_kind AND e.peer_id = m.peer_id
              AND e.message_id = m.message_id AND e.event_kind IN (1, 2)))
@@ -835,4 +839,22 @@ public final class GoldgramArchiveReader: NSObject {
 @_cdecl("goldgram_bind_active_account_v1")
 public func goldgramBindActiveAccountV1(_ id: Int64) {
     GoldgramArchiveReader.updateSelectedAccount(id)
+}
+
+
+// Goldgram #75: independent ABI for new observed group/channel texts.
+// Old personal writer ABIs are unchanged.
+@_cdecl("goldgram_archive_public_original_v1")
+public func goldgramArchivePublicOriginalV1(
+    accountId: Int64, peerKind: Int32, peerId: Int64,
+    messageId: Int32, senderId: Int64, sentAt: Int64,
+    threadId: Int64, content: UnsafePointer<CChar>?
+) {
+    guard peerKind >= 1, peerKind <= 3, let content = content else { return }
+    GoldgramHistoryStore.archiveIncoming(
+        accountId: accountId, peerId: peerId, messageId: messageId,
+        text: String(cString: content), live: true,
+        senderId: senderId, sentAt: sentAt, threadId: threadId,
+        peerKind: peerKind
+    )
 }
