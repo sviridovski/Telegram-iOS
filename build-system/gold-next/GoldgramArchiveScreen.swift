@@ -146,6 +146,33 @@ public final class GoldgramArchiveScreen: UITableViewController {
         return cell
     }
 
+    @objc(presentClearHistoryFromController:)
+    public static func presentClearHistory(from controller: UIViewController) {
+        guard let account = GoldgramArchiveReader.activeAccountId() else { return }
+        let alert = UIAlertController(
+            title: "Очистить логи?",
+            message: "Удалить всю локальную историю Goldgram текущего аккаунта: сохранённые тексты, редакции и записи об удалениях? Сообщения в Telegram останутся. При включённой записи новые события продолжат сохраняться.",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "Отмена", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Очистить", style: .destructive) { [weak controller] _ in
+            GoldgramArchiveReader.clearHistory(forAccount: account) { [weak controller] answer in
+                guard let controller else { return }
+                let status = answer["status"] as? String
+                let result = UIAlertController(
+                    title: status == "ok" ? "Логи очищены" : "Не удалось очистить логи",
+                    message: status == "ok" ? "Локальная история выбранного аккаунта удалена." :
+                        status == "account_changed" ? "Аккаунт изменён. Откройте Goldgram в нужном аккаунте и повторите очистку." :
+                        "Ошибка локального хранилища. Попробуйте ещё раз.",
+                    preferredStyle: .alert
+                )
+                result.addAction(UIAlertAction(title: "OK", style: .default))
+                controller.present(result, animated: true)
+            }
+        })
+        controller.present(alert, animated: true)
+    }
+
     private func showArchiveJumpFailure() {
         let alert = UIAlertController(
             title: "Переход недоступен",

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Goldgram #75: actual Swift DDL/query contracts for live public text."""
+"""Public baselines are stored, but #79 exposes only edit/deletion events."""
 from pathlib import Path
 import re
 import sqlite3
@@ -19,8 +19,8 @@ assert 'goldgramArchivePublicOriginal(' in host
 assert 'GoldgramSQLiteCaptureEnabled' in host
 assert 'peerKind: Int32 = 0' in store
 assert 'live: true' in store.split('public func goldgramArchivePublicOriginalV1(',1)[1]
-assert 'm.peer_kind IN (1, 2, 3) AND m.original_text IS NOT NULL' in block("dialogsSQL")
-assert 'm.peer_kind IN (1, 2, 3) AND m.original_text IS NOT NULL' in block("messagesSQL")
+assert 'm.original_text IS NOT NULL' not in block("dialogsSQL")
+assert 'm.original_text IS NOT NULL' not in block("messagesSQL")
 # Validate actual SQL placeholder positions, including the extra kind bind.
 incoming = store.split("static func archiveIncoming(",1)[1].split("\n}\n\n// Stable C ABI",1)[0]
 for fragment, count in [
@@ -62,16 +62,35 @@ def read_dialogs(db,kinds):
     return db.execute(dialogs,(*kinds,30,0)).fetchall()
 def read_messages(db,kind):
     return db.execute(messages,(kind,81,30,0)).fetchall()
-assert read_dialogs(a,(0,0)) == [], "Original-only private messages remain hidden"
-assert {(x[0],x[1]) for x in read_dialogs(a,(1,2))} == {(1,81),(2,81)}
-assert {(x[0],x[1]) for x in read_dialogs(a,(3,3))} == {(3,81)}
-for kind in (1,2,3):
-    item=read_messages(a,kind)[0]
-    assert item[0]==kind and item[3]==f"observed-{kind}" and item[4]==1
-assert read_messages(a,0) == []
-assert read_messages(b,3)[0][3] == "other-account"
-# Existing personal edits remain visible via the original event predicate.
-a.execute("INSERT INTO events(peer_kind,peer_id,message_id,event_kind,source,event_key,observed_at) VALUES(0,81,9,1,'test','edit-private',123)")
-a.commit()
-assert len(read_messages(a,0)) == 1
-print("Goldgram #75: live public browse groups/channels, isolated accounts, private event-only OK")
+# Every original-only category stays invisible, including upgraded #76 rows.
+for kinds in ((0,0), (1,2), (3,3)):
+    assert read_dialogs(a,kinds) == []
+for kind in range(4):
+    assert read_messages(a,kind) == []
+assert read_messages(b,3) == []
+# Real edit events expose one scoped message, even if the original is unknown
+# or the current text has reverted to the original. A version-0 baseline alone
+# is never proof of editing.
+for kind in range(4):
+    a.execute("INSERT INTO events(peer_kind,peer_id,message_id,event_kind,source,event_key,observed_at) VALUES(?,81,9,1,'test',?,123)",
+              (kind,f"edit-{kind}"))
+    assert len(read_messages(a,kind)) == 1
+    assert read_messages(b,kind) == []
+assert {x[0] for x in read_dialogs(a,(1,2))} == {1,2}
+assert len(read_dialogs(a,(3,3))) == 1
+# Ordinary messages in an edited dialog must not leak into pages/counts.
+observe(a,3,81,10,"unedited neighbor", sent=9999)
+assert [x[2] for x in read_messages(a,3)] == [9]
+assert read_dialogs(a,(3,3))[0][2] == 1
+# A dialog containing only unchanged messages stays absent.
+observe(a,3,99,9,"unedited other dialog")
+assert [x[1] for x in read_dialogs(a,(3,3))] == [81]
+# Deletion tombstones are still visible, without manufacturing an edit.
+observe(a,2,81,11,"deleted")
+a.execute("UPDATE messages SET is_deleted=1 WHERE peer_kind=2 AND message_id=11")
+assert {x[2] for x in read_messages(a,2)} == {9,11}
+# Event keys must include kind/peer/message, never just a global message ID.
+a.execute("DELETE FROM events WHERE peer_kind=1")
+assert read_messages(a,1) == []
+assert len(read_messages(a,2)) == 2
+print("Goldgram #79: original baselines hidden; edits/deletions visible, scoped counts/pages OK")

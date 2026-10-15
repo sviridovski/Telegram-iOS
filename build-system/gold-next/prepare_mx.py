@@ -328,3 +328,41 @@ if mx_ui_source.count(browser_entry) != 1:
 mx_ui_source = mx_ui_source.replace(browser_entry, "      NSInteger kind = indexPath.row - (NSInteger)groups[0].count;\n      Class browser = NSClassFromString(@\"GoldgramArchiveScreen\");\n      if (!browser || ![browser instancesRespondToSelector:@selector(initWithCategory:)]) return;\n      id controller = [[browser alloc] initWithCategory:kind];\n      if ([controller isKindOfClass:UIViewController.class]) {\n        [self.navigationController pushViewController:controller animated:YES];\n      }\n      return;")
 mx_ui_path.write_text(mx_ui_source)
 print("Goldgram #74: native SQLite browser wired to history folders")
+
+# Goldgram #79: root action, outside every original MX setting/folder index.
+clear_patches = [
+    ("- (instancetype)initWithCategory:(NSInteger)category;\n@end",
+     "- (instancetype)initWithCategory:(NSInteger)category;\n+ (void)presentClearHistoryFromController:(UIViewController *)controller;\n@end"),
+    ("  if (!self.goldgramSection) return 7;",
+     "  if (!self.goldgramSection) return 8;"),
+    ("  if (!self.goldgramSection) {\n    // Folder index:",
+     """  if (!self.goldgramSection && indexPath.row == 7) {
+    cell = [self normalCellFromTableView:tableView];
+    cell.textLabel.text = @"Очистить логи";
+    cell.textLabel.textColor = UIColor.systemRedColor;
+    cell.detailTextLabel.text = nil;
+    cell.accessoryView = nil;
+    cell.accessoryType = UITableViewCellAccessoryNone;
+    cell.imageView.image = [UIImage systemImageNamed:@"trash"];
+    cell.imageView.tintColor = UIColor.systemRedColor;
+    return cell;
+  }
+  if (!self.goldgramSection) {
+    // Folder index:"""),
+    ("  if (self.goldgramHistoryCategory) return;\n  if (!self.goldgramSection) {",
+     """  if (self.goldgramHistoryCategory) return;
+  if (!self.goldgramSection && indexPath.row == 7) {
+    Class browser = NSClassFromString(@"GoldgramArchiveScreen");
+    if ([browser respondsToSelector:@selector(presentClearHistoryFromController:)]) {
+      [browser presentClearHistoryFromController:self];
+    }
+    return;
+  }
+  if (!self.goldgramSection) {"""),
+]
+for before, after in clear_patches:
+    if mx_ui_source.count(before) != 1:
+        raise SystemExit("Goldgram #79 clear-history menu anchor mismatch")
+    mx_ui_source = mx_ui_source.replace(before, after)
+mx_ui_path.write_text(mx_ui_source)
+print("Goldgram #79: confirmed account-scoped clear history on root menu")

@@ -485,6 +485,25 @@ private extension GoldgramHistoryStore {
         }
     }
 
+    // Called only on storageQueue, in FIFO order with capture and reads.
+    // Keep the connection/schema/settings; cascade removes all message history.
+    static func clearHistory(accountId: Int64) throws {
+        let db = try archiveConnection(for: accountId)
+        try archiveSQL("BEGIN IMMEDIATE;", db: db, ints: [])
+        do {
+            try execute(clearHistorySQL, on: db)
+            try archiveSQL("COMMIT;", db: db, ints: [])
+        } catch {
+            try? archiveSQL("ROLLBACK;", db: db, ints: [])
+            throw error
+        }
+    }
+
+    private static let clearHistorySQL = """
+    DELETE FROM dialogs;
+    DELETE FROM unresolved_deletions;
+    """
+
     static func archiveIncoming(
         accountId: Int64, peerId: Int64, messageId: Int32,
         text: String, live: Bool,
@@ -667,14 +686,42 @@ public final class GoldgramArchiveReader: NSObject {
         return id > 0 && selectedAccount == id
     }
 
+    // The menu binds the account before confirmation. Never clear whichever
+    // account happens to be active by the time the queued action executes.
+    @objc(clearHistoryForAccount:completion:)
+    public static func clearHistory(
+        forAccount account: NSNumber,
+        completion: @escaping (NSDictionary) -> Void
+    ) {
+        let accountId = account.int64Value
+        guard isSelected(accountId) else {
+            completion(["status": "account_changed"])
+            return
+        }
+        GoldgramHistoryStore.storageQueue.async {
+            guard self.isSelected(accountId) else {
+                DispatchQueue.main.async { completion(["status": "account_changed"]) }
+                return
+            }
+            let status: String
+            do {
+                try GoldgramHistoryStore.clearHistory(accountId: accountId)
+                status = "ok"
+            } catch {
+                status = "unavailable"
+            }
+            DispatchQueue.main.async { completion(["status": status]) }
+        }
+    }
+
     @objc(activeAccountId)
     public static func activeAccountId() -> NSNumber? {
         accountLock.lock()
         defer { accountLock.unlock() }
         return selectedAccount > 0 ? NSNumber(value: selectedAccount) : nil
     }
-    // Personal rows remain event-only; groups/channels expose observed posts
-    // and comments as well as edits/deletions, without an MX legacy import.
+    // #79: every category shows only edit/deletion events. Original-only rows
+    // stay private baselines for future comparisons, never archive entries.
     // One database per account; peer kind + peer ID scope every lookup.
     private static let dialogsSQL = """
     SELECT d.peer_kind, d.peer_id, COUNT(*) AS archived_count,
@@ -683,8 +730,7 @@ public final class GoldgramArchiveReader: NSObject {
     JOIN messages m
       ON m.peer_kind = d.peer_kind AND m.peer_id = d.peer_id
     WHERE d.peer_kind IN (?, ?)
-      AND (m.peer_kind IN (1, 2, 3) AND m.original_text IS NOT NULL
-           OR m.is_deleted = 1 OR EXISTS (
+      AND (m.is_deleted = 1 OR EXISTS (
            SELECT 1 FROM events e
            WHERE e.peer_kind = m.peer_kind AND e.peer_id = m.peer_id
              AND e.message_id = m.message_id AND e.event_kind IN (1, 2)))
@@ -710,8 +756,7 @@ public final class GoldgramArchiveReader: NSObject {
             ORDER BY r.version_index ASC LIMIT 1) AS first_known_text
     FROM messages m
     WHERE m.peer_kind = ? AND m.peer_id = ?
-      AND (m.peer_kind IN (1, 2, 3) AND m.original_text IS NOT NULL
-           OR m.is_deleted = 1 OR EXISTS (
+      AND (m.is_deleted = 1 OR EXISTS (
            SELECT 1 FROM events e
            WHERE e.peer_kind = m.peer_kind AND e.peer_id = m.peer_id
              AND e.message_id = m.message_id AND e.event_kind IN (1, 2)))
