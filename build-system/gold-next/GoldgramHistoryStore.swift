@@ -613,10 +613,47 @@ public func goldgramArchiveEditV1(
 // Goldgram #72: bounded, read-only account-scoped history queries.
 // This is the data contract for future category/dialog screens; it does not
 // open the UI, infer the current account, or import legacy MX defaults.
+
+// #78: callable only on the main thread from the archive UI.
+// The native host owns actual Telegram account records and navigation.
+// Failure to register keeps archive data fully read-only and navigational
+// requests disabled; cached peer IDs never authorize another account.
+typealias GoldgramNativeNavigate = @convention(c) (
+    Int64, Int32, Int64, Int32
+) -> Int32
+
 @objc(GoldgramArchiveReader)
 public final class GoldgramArchiveReader: NSObject {
     private static let accountLock = NSLock()
     private static var selectedAccount: Int64 = 0
+    private static var nativeNavigate: GoldgramNativeNavigate?
+
+    static func registerNativeNavigation(_ callback: GoldgramNativeNavigate?) {
+        accountLock.lock()
+        nativeNavigate = callback
+        accountLock.unlock()
+    }
+
+    @objc(navigateToMessage:)
+    public static func navigateToMessage(_ request: NSDictionary) -> Bool {
+        guard Thread.isMainThread,
+              let accountId = (request["accountId"] as? NSNumber)?.int64Value,
+              let peerId = (request["peerId"] as? NSNumber)?.int64Value,
+              let rawKind = (request["peerKind"] as? NSNumber)?.intValue,
+              let peerKind = Int32(exactly: rawKind),
+              let rawMessageId = (request["messageId"] as? NSNumber)?.int64Value,
+              let messageId = Int32(exactly: rawMessageId),
+              accountId > 0, peerId > 0, messageId > 0,
+              (0...3).contains(peerKind) else { return false }
+        accountLock.lock()
+        let allowed = selectedAccount == accountId
+        let navigation = nativeNavigate
+        accountLock.unlock()
+        guard allowed, let navigation else { return false }
+        // This confirms native navigation was requested, not that a deleted
+        // or inaccessible message still exists in Telegram.
+        return navigation(accountId, peerKind, peerId, messageId) == 1
+    }
 
     static func updateSelectedAccount(_ id: Int64) {
         accountLock.lock()
@@ -879,4 +916,14 @@ public func goldgramArchivePublicEditV1(
         senderId: senderId, sentAt: sentAt, threadId: threadId,
         editedAt: editedAt, peerKind: peerKind
     )
+}
+
+// TelegramUI registers a main-thread native navigator (pointer only).
+// A separate C bridge means Mx never imports TelegramUI/Core types.
+@_cdecl("goldgram_register_native_navigation_v1")
+public func goldgramRegisterNativeNavigationV1(_ rawCallback: UnsafeMutableRawPointer?) {
+    let typed: GoldgramNativeNavigate? = rawCallback.map {
+        unsafeBitCast($0, to: GoldgramNativeNavigate.self)
+    }
+    GoldgramArchiveReader.registerNativeNavigation(typed)
 }

@@ -82,6 +82,7 @@ jobs:
           python3 build-system/gold-next/test_sqlite_browser.py
           python3 build-system/gold-next/test_sqlite_public_capture.py
           python3 build-system/gold-next/test_sqlite_public_edits.py
+          python3 build-system/gold-next/test_sqlite_native_jump.py
 
       - name: Build Mx 1.0.0 for Swiftgram 12.9.2
         shell: bash

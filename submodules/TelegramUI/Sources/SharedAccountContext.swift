@@ -14,6 +14,56 @@ private func goldgramPublishSelectedAccount(_ accountId: Int64) {
     typealias Callback = @convention(c) (Int64) -> Void
     unsafeBitCast(symbol, to: Callback.self)(max(0, accountId))
 }
+
+// Goldgram #78 — native peer/message jump with authoritative account context.
+// The weak handle never outlives SharedAccountContextImpl.
+private weak var goldgramNativeNavigationContext: SharedAccountContextImpl?
+private typealias GoldgramNativeNavigator = @convention(c) (
+    Int64, Int32, Int64, Int32
+) -> Int32
+
+private func goldgramNativeNavigateToMessage(
+    accountId: Int64, peerKind: Int32, rawPeerId: Int64,
+    rawMessageId: Int32
+) -> Int32 {
+    guard Thread.isMainThread, accountId > 0, rawPeerId > 0,
+          rawMessageId > 0, (0...3).contains(peerKind),
+          let shared = goldgramNativeNavigationContext,
+          let primary = shared.sgPrimaryAccountContextForMigration(),
+          primary.account.peerId.id._internalGetInt64Value() == accountId
+    else { return 0 }
+    let namespace: PeerId.Namespace
+    switch peerKind {
+    case 0: namespace = Namespaces.Peer.CloudUser
+    case 1: namespace = Namespaces.Peer.CloudGroup
+    case 2, 3: namespace = Namespaces.Peer.CloudChannel
+    default: return 0
+    }
+    let peerId = PeerId(
+        namespace: namespace,
+        id: PeerId.Id._internalFromInt64Value(rawPeerId)
+    )
+    let messageId = MessageId(
+        peerId: peerId, namespace: Namespaces.Message.Cloud,
+        id: rawMessageId
+    )
+    shared.navigateToChat(
+        accountId: primary.account.id,
+        peerId: peerId, messageId: messageId
+    )
+    return 1
+}
+
+private func goldgramRegisterNativeNavigation() {
+    guard let handle = dlopen(nil, RTLD_NOW),
+          let symbol = dlsym(handle, "goldgram_register_native_navigation_v1")
+    else { return }
+    typealias RegisterCallback = @convention(c) (UnsafeMutableRawPointer?) -> Void
+    let register = unsafeBitCast(symbol, to: RegisterCallback.self)
+    let callback: GoldgramNativeNavigator = goldgramNativeNavigateToMessage
+    register(unsafeBitCast(callback, to: UnsafeMutableRawPointer.self))
+}
+
 import UIKit
 import AsyncDisplayKit
 import Postbox
@@ -829,6 +879,8 @@ public final class SharedAccountContextImpl: SharedAccountContext {
                     self.activeAccountsValue!.currentAuth = authAccount
                 }
                 if hadUpdates {
+                    goldgramNativeNavigationContext = self
+                    goldgramRegisterNativeNavigation()
                     goldgramPublishSelectedAccount(primary?.account.peerId.id._internalGetInt64Value() ?? 0)
                     self.activeAccountsValue!.accounts.sort(by: { $0.2 < $1.2 })
                     self.activeAccountsPromise.set(.single(self.activeAccountsValue!))
@@ -1816,6 +1868,7 @@ public final class SharedAccountContextImpl: SharedAccountContext {
         
         assert(Queue.mainQueue().isCurrent())
         goldgramPublishSelectedAccount(0)
+        goldgramNativeNavigationContext = nil
         var chatsBadge: String?
         if let rootController = self.mainWindow?.viewController as? TelegramRootController {
             if let tabsController = rootController.viewControllers.first as? TabBarController {

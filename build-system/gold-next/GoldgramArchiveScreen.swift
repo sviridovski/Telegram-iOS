@@ -133,7 +133,8 @@ public final class GoldgramArchiveScreen: UITableViewController {
                 } else {
                     cell.detailTextLabel?.text = "Сообщение #\(msgId)"
                 }
-                cell.selectionStyle = .none
+                cell.selectionStyle = .default
+                cell.accessoryType = .disclosureIndicator
             }
         } else if hasMore {
             cell.textLabel?.text = "Загрузить ещё"
@@ -145,14 +146,42 @@ public final class GoldgramArchiveScreen: UITableViewController {
         return cell
     }
 
+    private func showArchiveJumpFailure() {
+        let alert = UIAlertController(
+            title: "Переход недоступен",
+            message: "Не удалось открыть сообщение в текущем аккаунте. Удалённые или недоступные сообщения останутся только в локальном архиве.",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
+    }
+
     public override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
         if hasMore && indexPath.row == items.count {
             load(reset: false)
             return
         }
-        guard peerId == nil, items.indices.contains(indexPath.row) else { return }
+        guard items.indices.contains(indexPath.row) else { return }
         let entry = items[indexPath.row]
+        if let peerId, let peerKind, let accountId = boundAccount {
+            guard (entry["deleted"] as? NSNumber)?.boolValue != true,
+                  let number = entry["messageId"] as? NSNumber else {
+                showArchiveJumpFailure()
+                return
+            }
+            let request: NSDictionary = [
+                "accountId": NSNumber(value: accountId),
+                "peerKind": NSNumber(value: peerKind),
+                "peerId": NSNumber(value: peerId),
+                "messageId": number
+            ]
+            if !GoldgramArchiveReader.navigateToMessage(request) {
+                showArchiveJumpFailure()
+            }
+            return
+        }
+        guard peerId == nil else { return }
         guard let id = (entry["peerId"] as? NSNumber)?.int64Value, id > 0,
               let kind = (entry["peerKind"] as? NSNumber)?.int32Value else { return }
         let child = GoldgramArchiveScreen(category: category, peerId: id, peerKind: kind)
