@@ -378,7 +378,7 @@ header_source = metadata_header.read_text()
 metadata_anchor = "NSData *decompressGzip(const void *input, size_t inputLen);"
 if header_source.count(metadata_anchor) != 1:
     raise SystemExit("Goldgram metadata C header anchor mismatch")
-metadata_header.write_text(header_source.replace(metadata_anchor, metadata_anchor + "\nvoid goldgramResolveNativeMetadata(NSDictionary * _Nonnull request, void (^ _Nonnull completion)(NSDictionary * _Nonnull response));"))
+metadata_header.write_text(header_source.replace(metadata_anchor, "NSData * _Null_unspecified decompressGzip(const void * _Null_unspecified input, size_t inputLen);\nvoid goldgramResolveNativeMetadata(NSDictionary * _Nonnull request, void (^ _Nonnull completion)(NSDictionary * _Nonnull response));"))
 print("Goldgram #80: native Postbox metadata bridge ready")
 
 grouping_source = pathlib.Path(__file__).with_name("GoldgramArchiveGrouping.swift")
