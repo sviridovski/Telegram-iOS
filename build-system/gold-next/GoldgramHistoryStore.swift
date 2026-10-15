@@ -609,6 +609,27 @@ public func goldgramArchiveEditV1(
 // open the UI, infer the current account, or import legacy MX defaults.
 @objc(GoldgramArchiveReader)
 public final class GoldgramArchiveReader: NSObject {
+    private static let accountLock = NSLock()
+    private static var selectedAccount: Int64 = 0
+
+    static func updateSelectedAccount(_ id: Int64) {
+        accountLock.lock()
+        selectedAccount = max(0, id)
+        accountLock.unlock()
+    }
+
+    private static func isSelected(_ id: Int64) -> Bool {
+        accountLock.lock()
+        defer { accountLock.unlock() }
+        return id > 0 && selectedAccount == id
+    }
+
+    @objc(activeAccountId)
+    public static func activeAccountId() -> NSNumber? {
+        accountLock.lock()
+        defer { accountLock.unlock() }
+        return selectedAccount > 0 ? NSNumber(value: selectedAccount) : nil
+    }
     // Both statements intentionally return only messages with observed edit
     // or deletion events. Ordinary unedited incoming texts stay out of view.
     // One database per account; peer kind + peer ID scope every lookup.
@@ -678,7 +699,7 @@ public final class GoldgramArchiveReader: NSObject {
         case 2: kinds = [3, 3]       // Channels
         default: kinds = []
         }
-        guard accountId > 0, !kinds.isEmpty,
+        guard isSelected(accountId), !kinds.isEmpty,
               mode == "dialogs" || mode == "messages",
               offset >= 0, offset <= 5000,
               limit >= 1, limit <= 50,
@@ -694,7 +715,7 @@ public final class GoldgramArchiveReader: NSObject {
                 offset: Int32(offset), limit: Int32(limit)
             )
             DispatchQueue.main.async {
-                completion(response as NSDictionary)
+                completion(self.isSelected(accountId) ? response as NSDictionary : ["status": "account_changed", "items": []])
             }
         }
     }
@@ -809,4 +830,9 @@ public final class GoldgramArchiveReader: NSObject {
         }
         return ["status": "ok", "items": rows, "hasMore": rows.count == Int(limit)]
     }
+}
+
+@_cdecl("goldgram_bind_active_account_v1")
+public func goldgramBindActiveAccountV1(_ id: Int64) {
+    GoldgramArchiveReader.updateSelectedAccount(id)
 }

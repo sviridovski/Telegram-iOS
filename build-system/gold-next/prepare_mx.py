@@ -311,3 +311,20 @@ for before, after in mx_history_patches:
     mx_ui_source = mx_ui_source.replace(before, after)
 mx_ui_path.write_text(mx_ui_source)
 print("Goldgram #71: personal/groups/channels entry points; SQLite reader pending")
+
+# Goldgram #74: compile a native archive browser without modifying legacy MX.
+goldgram_browser = pathlib.Path(__file__).with_name("GoldgramArchiveScreen.swift")
+goldgram_browser_dest = root / "Sources/tgapi/GoldgramArchiveScreen.swift"
+if not goldgram_browser.is_file() or goldgram_browser_dest.exists():
+    raise SystemExit("Goldgram browser source missing or unexpected upstream file")
+goldgram_browser_dest.write_text(goldgram_browser.read_text())
+browser_header = "#import <UIKit/UIKit.h>"
+if mx_ui_source.count(browser_header) != 1:
+    raise SystemExit("Goldgram #74 browser header mismatch")
+mx_ui_source = mx_ui_source.replace(browser_header, "#import <UIKit/UIKit.h>\n\n// Runtime-only interface: does not link the Mx menu against a Swift class.\n@interface NSObject (GoldgramBrowserFactory)\n- (instancetype)initWithCategory:(NSInteger)category;\n@end")
+browser_entry = "      Mx *folder = [Mx new];\n      folder.goldgramSection = @(MISC);\n      folder.goldgramMiscCategory = @(0);\n      folder.goldgramHistoryCategory = @(indexPath.row - (NSInteger)groups[0].count);\n      [self.navigationController pushViewController:folder animated:YES];\n      return;"
+if mx_ui_source.count(browser_entry) != 1:
+    raise SystemExit("Goldgram #74 history entry mismatch")
+mx_ui_source = mx_ui_source.replace(browser_entry, "      NSInteger kind = indexPath.row - (NSInteger)groups[0].count;\n      Class browser = NSClassFromString(@\"GoldgramArchiveScreen\");\n      if (!browser || ![browser instancesRespondToSelector:@selector(initWithCategory:)]) return;\n      id controller = [[browser alloc] initWithCategory:kind];\n      if ([controller isKindOfClass:UIViewController.class]) {\n        [self.navigationController pushViewController:controller animated:YES];\n      }\n      return;")
+mx_ui_path.write_text(mx_ui_source)
+print("Goldgram #74: native SQLite browser wired to history folders")

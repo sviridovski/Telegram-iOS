@@ -5,6 +5,15 @@ import SGProUI
 import SGSimpleSettings
 //
 import Foundation
+import Darwin
+
+// Native selected Telegram account only; never cached MxLastKnownUserId.
+private func goldgramPublishSelectedAccount(_ accountId: Int64) {
+    guard let handle = dlopen(nil, RTLD_NOW),
+          let symbol = dlsym(handle, "goldgram_bind_active_account_v1") else { return }
+    typealias Callback = @convention(c) (Int64) -> Void
+    unsafeBitCast(symbol, to: Callback.self)(max(0, accountId))
+}
 import UIKit
 import AsyncDisplayKit
 import Postbox
@@ -820,6 +829,7 @@ public final class SharedAccountContextImpl: SharedAccountContext {
                     self.activeAccountsValue!.currentAuth = authAccount
                 }
                 if hadUpdates {
+                    goldgramPublishSelectedAccount(primary?.account.peerId.id._internalGetInt64Value() ?? 0)
                     self.activeAccountsValue!.accounts.sort(by: { $0.2 < $1.2 })
                     self.activeAccountsPromise.set(.single(self.activeAccountsValue!))
                     
@@ -1805,6 +1815,7 @@ public final class SharedAccountContextImpl: SharedAccountContext {
         }
         
         assert(Queue.mainQueue().isCurrent())
+        goldgramPublishSelectedAccount(0)
         var chatsBadge: String?
         if let rootController = self.mainWindow?.viewController as? TelegramRootController {
             if let tabsController = rootController.viewControllers.first as? TabBarController {
