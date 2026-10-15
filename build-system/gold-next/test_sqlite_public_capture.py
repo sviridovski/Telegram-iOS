@@ -6,7 +6,7 @@ import sqlite3
 
 root = Path(__file__).parent
 store = (root / "GoldgramHistoryStore.swift").read_text()
-host = (root.parents[2] / "submodules/TelegramCore/Sources/State/AccountStateManagementUtils.swift").read_text()
+host = (root.parents[1] / "submodules/TelegramCore/Sources/State/AccountStateManagementUtils.swift").read_text()
 def block(name):
     m = re.search(r"private static let " + name + r' = """\n(.*?)\n    """', store, re.S)
     assert m, name
