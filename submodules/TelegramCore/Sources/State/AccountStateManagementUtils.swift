@@ -168,6 +168,47 @@ private func goldgramArchivePublicOriginal(
     }
 }
 
+
+// #77: edits from validated Telegram group/channel update events only.
+private typealias GoldgramPublicEditCallback = @convention(c) (
+    Int64, Int32, Int64, Int32, Int64, Int64, Int64, Int64,
+    UnsafePointer<CChar>?
+) -> Void
+private let goldgramPublicEditCallback: GoldgramPublicEditCallback? = {
+    guard let handle = dlopen(nil, RTLD_NOW),
+          let symbol = dlsym(handle, "goldgram_archive_public_edit_v1") else {
+        return nil
+    }
+    return unsafeBitCast(symbol, to: GoldgramPublicEditCallback.self)
+}()
+
+private func goldgramArchivePublicEdit(
+    accountPeerId: PeerId, message: StoreMessage,
+    peerKind: Int32, editedAt: Int64
+) {
+    guard UserDefaults.standard.bool(forKey: "GoldgramSQLiteCaptureEnabled"),
+          let writer = goldgramPublicEditCallback,
+          peerKind >= 1, peerKind <= 3,
+          case let .Id(messageId) = message.id,
+          messageId.id > 0, !message.text.isEmpty else { return }
+    let accountId = accountPeerId.id._internalGetInt64Value()
+    let peerId = messageId.peerId.id._internalGetInt64Value()
+    guard accountId > 0, peerId > 0 else { return }
+    let senderId: Int64
+    if let author = message.authorId,
+       author.namespace == Namespaces.Peer.CloudUser {
+        senderId = author.id._internalGetInt64Value()
+    } else {
+        senderId = 0
+    }
+    let sentAt = message.timestamp > 0 ? Int64(message.timestamp) * 1000 : 0
+    let threadId = message.threadId ?? 0
+    message.text.withCString { pointer in
+        writer(accountId, peerKind, peerId, messageId.id,
+               senderId, sentAt, threadId, editedAt, pointer)
+    }
+}
+
 private func reactionGeneratedEvent(_ previousReactions: ReactionsMessageAttribute?, _ updatedReactions: ReactionsMessageAttribute?, message: Message, transaction: Transaction) -> (reactionAuthor: Peer, reaction: MessageReaction.Reaction, message: Message, timestamp: Int32)? {
     if let updatedReactions = updatedReactions, !message.flags.contains(.Incoming), message.id.peerId.namespace == Namespaces.Peer.CloudUser {
         let prev = previousReactions?.reactions ?? []
@@ -1175,6 +1216,23 @@ private func finalStateWithUpdatesAndServerTime(accountPeerId: PeerId, postbox: 
                             var attributes = message.attributes
                             attributes.append(ChannelMessageStateVersionAttribute(pts: pts))
                             updatedState.editMessage(messageId, message: message.withUpdatedAttributes(attributes))
+                            // Never mark stale/hole-filled updates as new revisions.
+                            if let kind = goldgramVerifiedPublicKind(
+                                peerId: message.id.peerId,
+                                peer: updatedState.peers[message.id.peerId]
+                            ) {
+                                let serverEditAt: Int64
+                                if case let .message(data) = apiMessage,
+                                   let date = data.editDate, date > 0 {
+                                    serverEditAt = Int64(date) * 1000
+                                } else {
+                                    serverEditAt = 0
+                                }
+                                goldgramArchivePublicEdit(
+                                    accountPeerId: accountPeerId, message: message,
+                                    peerKind: kind, editedAt: serverEditAt
+                                )
+                            }
                             updatedState.updateChannelState(peerId, pts: pts)
                         } else {
                             if !missingUpdatesFromChannels.contains(peerId) {
@@ -1264,6 +1322,15 @@ private func finalStateWithUpdatesAndServerTime(accountPeerId: PeerId, postbox: 
                         accountPeerId: accountPeerId, message: message,
                         serverEditAt: editedAt
                     )
+                    if let kind = goldgramVerifiedPublicKind(
+                        peerId: message.id.peerId,
+                        peer: updatedState.peers[message.id.peerId]
+                    ) {
+                        goldgramArchivePublicEdit(
+                            accountPeerId: accountPeerId, message: message,
+                            peerKind: kind, editedAt: editedAt
+                        )
+                    }
                     for media in message.media {
                         if let media = media as? TelegramMediaAction {
                             if case .historyCleared = media.action {
