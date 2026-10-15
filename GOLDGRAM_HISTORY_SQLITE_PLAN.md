@@ -1,3 +1,16 @@
+## CURRENT HANDOFF — 2026-10-15, #78 device navigation verified; event filter + clear logs in CI #79
+
+- User verified #78 navigation works. New regression report: archive includes ordinary unedited group messages (screenshots: peer 1428816434, message 397130). Root cause is the #75/76 reader predicate allowing any original_text for public peers, not false edit events in the writer.
+- App commit **714390587c189bfb2532fa4ef7164aedd9b723bb** (same tree as local 5ab916b) on gold-next removes the original-only branch from BOTH dialogsSQL and messagesSQL. All categories now require edit/deletion events or a deletion tombstone; baseline originals remain stored for later comparison. Existing unedited rows become hidden without deleting real history. No schema or host hook changes.
+- Added root-menu **Очистить логи** (8th row after 7 existing folders), explicit confirmation, clears all SQLite dialogs/messages/revisions/events and unresolved deletions for the bound active account; retains settings/schema, Telegram messages and independent old MX defaults. Runs on the same FIFO storage queue as writes/reads; transaction rollback on error. Subsequent capture remains enabled if previously enabled. This is logical history deletion, not a secure-erasure guarantee.
+- Checks PASS: all 8 Python SQLite/browser/navigation suites, exact pinned MX prepare pipeline and generated root/action/category routing, git diff --check. Regression fixtures cover unchanged neighbors/dialogs, event-only counts, peer/account isolation, tombstones, transaction/cascade/rollback, retention preservation and writes after clear. Full iOS compilation and device testing NOT performed.
+- **Actions #79** run ID **38720104041**, https://github.com/sviridovski/Telegram-iOS/actions/runs/38720104041 — **IN PROGRESS** at handoff. Full compilation and device acceptance still pending.
+- User explicitly authorized publication: **«Разрешаю»**. Code sent through connected GitHub to **gold-next**, commit 714390587c189bfb2532fa4ef7164aedd9b723bb. Direct CLI push lacked credentials; remote API tree exactly matches the reviewed local tree 2304fe16e0279bf498b32574754629719cf57831. No CI success claimed.
+
+- Next: obtain actual workflow run_number, verify compiler/build, then user tests unchanged messages absent, real edited rows present/tappable and clear action empties local archive. Names/authors, verified source-channel/comment mapping and inline original/dimmed edits remain future tasks. RAM/thermal work stays deferred.
+
+---
+
 ## CURRENT HANDOFF — 2026-10-15, #77 device verified / #78 native archive navigation in CI
 
 - **#77** `f2b9fcd9907475c7a5c4de97dbcb7b09d9004142`, Actions [#77](https://github.com/sviridovski/Telegram-iOS/actions/runs/38680046444): **CI completed success**. User installed #77 and sent screenshots: discussion group `1412957693` had two original-only observed texts; group `1306751210` displayed two entries **“Оригинал неизвестен”** with dimmed **“Редакция: …”**, showing some real public edit readback, plus two original messages. **Do not infer original pre-edit text for the two unknowns.** Device UI works but not yet names/authors, linked parent news post or navigation.
