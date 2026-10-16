@@ -90,7 +90,7 @@ public final class GoldgramNativeArchiveMetadata: NSObject {
                       let id = self.peerId(kind: kind, raw: raw) else { continue }
                 let peer = transaction.getPeer(id)
                 var row: [String: Any] = ["peerKind": NSNumber(value: kind), "peerId": NSNumber(value: raw)]
-                if let peer { row["peerName"] = peer.compactDisplayTitle }
+                if let peer { row["peerName"] = EnginePeer(peer).compactDisplayTitle }
                 // A channel and its CURRENT linked discussion share a group key.
                 // This is not evidence for the parent news post of an old comment.
                 if let channel = peer as? TelegramChannel {
@@ -137,10 +137,10 @@ public final class GoldgramNativeArchiveMetadata: NSObject {
                         author = transaction.getPeer(sender)
                     }
                     if let author {
-                        row["senderName"] = author.compactDisplayTitle
+                        row["senderName"] = EnginePeer(author).compactDisplayTitle
                     } else if kind == 3, let peer {
                         // Publication source, not an invented administrator identity.
-                        row["senderName"] = peer.compactDisplayTitle
+                        row["senderName"] = EnginePeer(peer).compactDisplayTitle
                     }
                     if ((entry["sentAt"] as? NSNumber)?.int64Value ?? 0) <= 0,
                        let message, message.timestamp > 0 {
@@ -181,6 +181,7 @@ import TelegramPresentationData
 import TelegramCallsUI
 import TelegramUIPreferences
 import TelegramStringFormatting
+import LocalizedPeerData
 import AccountContext
 import DeviceLocationManager
 import ItemListUI
