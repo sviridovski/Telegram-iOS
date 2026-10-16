@@ -18,12 +18,16 @@ def add(kind,peer,mid,source=None,event=1,original=None,latest='headline',server
 add(3,10,1,'telegram_edit_update') # user's screenshot: unknown original + unproven notification
 add(3,10,2,'telegram_edit_update',original='same',latest='same',server=10)
 add(3,10,3,'telegram_edit_update',original='A',latest='B',server=10) # credible legacy difference
-add(3,10,4,'goldgram_native_v1',latest='changed')
+add(3,10,4,'goldgram_native_live_v2',latest='changed')
 add(3,10,5,'goldgram_native_retained_v1',event=2,latest='[Фото]',deleted=1,time=500)
 add(2,20,5,'goldgram_native_retained_v1',event=2,latest='comment',deleted=1,time=600)
 add(0,30,5,'goldgram_native_retained_v1',event=2,latest='[Видео]',deleted=1,time=400)
 add(1,40,5,'goldgram_native_v1',event=2,latest='unavailable',deleted=1,time=300)
 add(3,10,6,None,latest='normal untouched post')
+# #84 observation-only history backfill is no longer an accepted new edit.
+add(3,10,7,'goldgram_native_v1',latest='old edited text',server=10)
+add(3,10,8,'goldgram_native_v1',original='old A',latest='old B',server=10)
+
 rows=db.execute(block('messagesSQL'),(3,10,30,0)).fetchall()
 assert {x[2] for x in rows}=={3,4,5}, 'reject legacy false/unchanged, retain proven events'
 photo=next(x for x in rows if x[2]==5)

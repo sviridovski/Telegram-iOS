@@ -92,6 +92,52 @@ public final class GoldgramNativeArchiveMetadata: NSObject {
               primary.account.peerId.id._internalGetInt64Value() == accountId
         else { completion(["status": "account_changed", "items": []]); return }
         let recordId = primary.account.id
+        if request["action"] as? String == "prepare_jump" || request["action"] as? String == "open_message" {
+            guard entries.count == 1, let row = entries.first,
+                  let raw = (row["peerId"] as? NSNumber)?.int64Value,
+                  let kind = (row["peerKind"] as? NSNumber)?.int32Value,
+                  let peer = self.peerId(kind: kind, raw: raw),
+                  let rawMessage = (row["messageId"] as? NSNumber)?.int64Value,
+                  let mid = Int32(exactly: rawMessage), mid > 0 else {
+                completion(["status": "invalid", "items": []]); return
+            }
+            let id = MessageId(peerId: peer, namespace: Namespaces.Message.Cloud, id: mid)
+            let deleted = row["deleted"] as? Bool == true
+            let finish: (Message?) -> Void = { message in
+                guard let current = goldgramNativeNavigationContext?.sgPrimaryAccountContextForMigration(),
+                      current.account.id == recordId,
+                      current.account.peerId.id._internalGetInt64Value() == accountId else {
+                    completion(["status": "account_changed", "items": []]); return
+                }
+                guard let message else { completion(["status": "content_missing", "items": []]); return }
+                let ready = {
+                    guard let current = goldgramNativeNavigationContext?.sgPrimaryAccountContextForMigration(),
+                          current.account.id == recordId else {
+                        completion(["status": "account_changed", "items": []]); return
+                    }
+                    if request["action"] as? String == "open_message" {
+                        shared.navigateToChat(accountId: recordId, peerId: peer, messageId: id)
+                    }
+                    completion(["status": "ok", "items": []])
+                }
+                if message.localTags.contains(goldgramDeletedMessageTag) {
+                    goldgramRestoreRetainedMedia(accountId: accountId, mediaBox: primary.account.postbox.mediaBox,
+                        media: message.media, completion: ready)
+                } else { ready() }
+            }
+            let _ = (primary.account.postbox.transaction { transaction -> Message? in
+                return goldgramRestoreSnapshot(transaction: transaction, id: id, deleted: deleted)
+            } |> deliverOnMainQueue).start(next: { message in
+                if message != nil || deleted { finish(message); return }
+                // Live edits can be outside the current history window. Ask
+                // Telegram for this exact ID once, only on a user tap.
+                let _ = (primary.engine.messages.getMessagesLoadIfNecessary([id])
+                    |> deliverOnMainQueue).start(next: { result in
+                        if case let .result(messages) = result { finish(messages.first(where: { $0.id == id })) }
+                    }, error: { _ in completion(["status": "content_missing", "items": []]) })
+            })
+            return
+        }
         if request["action"] as? String == "purge_retained" {
             let _ = (primary.account.postbox.transaction { transaction -> Void in
                 var ids: [MessageId] = []
@@ -102,9 +148,22 @@ public final class GoldgramNativeArchiveMetadata: NSObject {
                           let rawMessage = (row["messageId"] as? NSNumber)?.int64Value,
                           let mid = Int32(exactly: rawMessage), mid > 0 else { continue }
                     let id = MessageId(peerId: peer, namespace: Namespaces.Message.Cloud, id: mid)
-                    if transaction.getMessage(id)?.localTags.contains(goldgramDeletedMessageTag) == true { ids.append(id) }
+                    if let message = transaction.getMessage(id) {
+                        if message.localTags.contains(goldgramDeletedMessageTag) { ids.append(id) }
+                        else if message.attributes.contains(where: { $0 is GoldgramMessageHistoryAttribute }) {
+                            transaction.updateMessage(id, update: { current in
+                                return .update(StoreMessage(id: current.id, customStableId: nil,
+                                    globallyUniqueId: current.globallyUniqueId, groupingKey: current.groupingKey,
+                                    threadId: current.threadId, timestamp: current.timestamp, flags: StoreMessageFlags(current.flags),
+                                    tags: current.tags, globalTags: current.globalTags, localTags: current.localTags,
+                                    forwardInfo: current.forwardInfo.map(StoreMessageForwardInfo.init), authorId: current.author?.id,
+                                    text: current.text, attributes: current.attributes.filter { !($0 is GoldgramMessageHistoryAttribute) }, media: current.media))
+                            })
+                        }
+                    }
                 }
                 transaction.deleteMessages(ids, forEachMedia: nil)
+                if request["clearMedia"] as? Bool == true { goldgramClearSnapshots(transaction: transaction, accountPeerId: primary.account.peerId) }
             } |> deliverOnMainQueue).start(completed: {
                 if request["clearMedia"] as? Bool == true {
                     goldgramClearRetainedMedia(accountId: accountId) { completion(["status": "ok", "items": []]) }

@@ -15,6 +15,7 @@ public final class GoldgramArchiveScreen: UITableViewController {
     private var hasMore = false
     private var inFlight = false
     private var generation = 0
+    private var openingMessage = false
     private var status = "Загрузка истории…"
     private let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -255,14 +256,53 @@ public final class GoldgramArchiveScreen: UITableViewController {
         controller.present(alert, animated: true)
     }
 
-    private func showArchiveJumpFailure() {
-        let alert = UIAlertController(
-            title: "Переход недоступен",
-            message: "Не удалось открыть сообщение в текущем аккаунте. Удалённые или недоступные сообщения останутся только в локальном архиве.",
-            preferredStyle: .alert
-        )
-        alert.addAction(UIAlertAction(title: "OK", style: .default))
-        present(alert, animated: true)
+    private func showLocalRecord(_ entry: [String: Any], accountChanged: Bool = false) {
+        let controller = UIViewController()
+        controller.title = accountChanged ? "Аккаунт изменился" : "Сохранённая запись"
+        controller.view.backgroundColor = .systemBackground
+        let text = UITextView()
+        text.isEditable = false
+        text.font = UIFont.systemFont(ofSize: 16)
+        text.backgroundColor = .clear
+        text.textColor = .label
+        text.textContainerInset = UIEdgeInsets(top: 20, left: 16, bottom: 30, right: 16)
+        let original = entry["originalText"] as? String
+        let latest = entry["latestText"] as? String
+        let body = [original, latest == original ? nil : latest].compactMap { $0 }.joined(separator: "\n\n")
+        text.text = accountChanged ? "Вернись в аккаунт, в котором сохранена эта запись." :
+            body + "\n\n" + ((entry["deleted"] as? NSNumber)?.boolValue == true ?
+                "Если сообщение не было получено до удаления, Telegram уже не отдаст его текст или медиа. Сохранён только факт удаления." :
+                "Сообщение сейчас недоступно в Telegram. Здесь показан сохранённый текст.")
+        text.translatesAutoresizingMaskIntoConstraints = false
+        controller.view.addSubview(text)
+        NSLayoutConstraint.activate([
+            text.topAnchor.constraint(equalTo: controller.view.safeAreaLayoutGuide.topAnchor),
+            text.bottomAnchor.constraint(equalTo: controller.view.bottomAnchor),
+            text.leadingAnchor.constraint(equalTo: controller.view.leadingAnchor),
+            text.trailingAnchor.constraint(equalTo: controller.view.trailingAnchor)
+        ])
+        navigationController?.pushViewController(controller, animated: true)
+    }
+
+    private func openMessage(_ entry: [String: Any], accountId: Int64) {
+        guard !openingMessage else { return }
+        openingMessage = true
+        var request: [AnyHashable: Any] = ["action": "prepare_jump", "accountId": NSNumber(value: accountId), "items": [entry]]
+        goldgramResolveNativeMetadata(request) { [weak self] response in
+            guard let self else { return }
+            self.openingMessage = false
+            let status = (response as NSDictionary)["status"] as? String
+            guard status == "ok", self.boundAccount == accountId else {
+                self.showLocalRecord(entry, accountChanged: status == "account_changed"); return
+            }
+            request["action"] = "open_message"
+            let open = { goldgramResolveNativeMetadata(request) { _ in } }
+            // Finish dismissing UIKit's archive/menu sheet before the native
+            // Telegram navigation mutates its own controller stack.
+            if let presenter = self.navigationController?.presentingViewController ?? self.presentingViewController {
+                presenter.dismiss(animated: true, completion: open)
+            } else { open() }
+        }
     }
 
     public override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
@@ -271,15 +311,7 @@ public final class GoldgramArchiveScreen: UITableViewController {
         guard displayItems.indices.contains(indexPath.row) else { return }
         let entry = displayItems[indexPath.row]
         if sources != nil, let accountId = boundAccount {
-            guard ((entry["deleted"] as? NSNumber)?.boolValue != true || (entry["retained"] as? NSNumber)?.boolValue == true),
-                  let number = entry["messageId"] as? NSNumber,
-                  let peerId = entry["peerId"] as? NSNumber,
-                  let peerKind = entry["peerKind"] as? NSNumber else {
-                showArchiveJumpFailure(); return
-            }
-            let request: NSDictionary = ["accountId": NSNumber(value: accountId),
-                "peerKind": peerKind, "peerId": peerId, "messageId": number]
-            if !GoldgramArchiveReader.navigateToMessage(request) { showArchiveJumpFailure() }
+            openMessage(entry, accountId: accountId)
             return
         }
         guard let members = entry["sources"] as? [[String: Any]], !members.isEmpty else { return }

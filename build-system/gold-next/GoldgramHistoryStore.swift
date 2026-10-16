@@ -488,7 +488,7 @@ private extension GoldgramHistoryStore {
     static func retainedIdsForClear(accountId: Int64) throws -> [[String: Any]] {
         let db = try archiveConnection(for: accountId)
         var statement: OpaquePointer?
-        let sql = "SELECT m.peer_kind,m.peer_id,m.message_id FROM messages m WHERE EXISTS (SELECT 1 FROM events e WHERE e.peer_kind=m.peer_kind AND e.peer_id=m.peer_id AND e.message_id=m.message_id AND e.event_kind=2 AND e.source='goldgram_native_retained_v1');"
+        let sql = "SELECT m.peer_kind,m.peer_id,m.message_id FROM messages m WHERE EXISTS (SELECT 1 FROM events e WHERE e.peer_kind=m.peer_kind AND e.peer_id=m.peer_id AND e.message_id=m.message_id AND (e.event_kind=2 OR (e.event_kind=1 AND e.source='goldgram_native_live_v2')));"
         let code = sqlite3_prepare_v2(db, sql, -1, &statement, nil)
         guard code == SQLITE_OK, let stmt = statement else { throw StorageError.sqlite(code) }
         defer { sqlite3_finalize(stmt) }
@@ -755,7 +755,7 @@ public final class GoldgramArchiveReader: NSObject {
       AND (m.is_deleted = 1 OR EXISTS (
            SELECT 1 FROM events e
            WHERE e.peer_kind = m.peer_kind AND e.peer_id = m.peer_id
-             AND e.message_id = m.message_id AND (e.event_kind = 2 OR (e.event_kind = 1 AND (e.source = 'goldgram_native_v1' OR (e.server_time > 0 AND m.original_observed = 1 AND EXISTS (
+             AND e.message_id = m.message_id AND (e.event_kind = 2 OR (e.event_kind = 1 AND (e.source = 'goldgram_native_live_v2' OR (e.source != 'goldgram_native_v1' AND e.server_time > 0 AND m.original_observed = 1 AND EXISTS (
                SELECT 1 FROM revisions vr WHERE vr.peer_kind=m.peer_kind AND vr.peer_id=m.peer_id
                  AND vr.message_id=m.message_id AND vr.content != m.original_text)))))))
     GROUP BY d.peer_kind, d.peer_id
@@ -781,7 +781,7 @@ public final class GoldgramArchiveReader: NSObject {
            m.sender_kind,
            EXISTS (SELECT 1 FROM events e
              WHERE e.peer_kind = m.peer_kind AND e.peer_id = m.peer_id
-               AND e.message_id = m.message_id AND e.event_kind = 1 AND (e.source = 'goldgram_native_v1' OR (e.server_time > 0 AND m.original_observed = 1 AND EXISTS (
+               AND e.message_id = m.message_id AND e.event_kind = 1 AND (e.source = 'goldgram_native_live_v2' OR (e.source != 'goldgram_native_v1' AND e.server_time > 0 AND m.original_observed = 1 AND EXISTS (
                SELECT 1 FROM revisions vr WHERE vr.peer_kind=m.peer_kind AND vr.peer_id=m.peer_id
                  AND vr.message_id=m.message_id AND vr.content != m.original_text)))) AS edited,
            EXISTS (SELECT 1 FROM events e
@@ -796,7 +796,7 @@ public final class GoldgramArchiveReader: NSObject {
       AND (m.is_deleted = 1 OR EXISTS (
            SELECT 1 FROM events e
            WHERE e.peer_kind = m.peer_kind AND e.peer_id = m.peer_id
-             AND e.message_id = m.message_id AND (e.event_kind = 2 OR (e.event_kind = 1 AND (e.source = 'goldgram_native_v1' OR (e.server_time > 0 AND m.original_observed = 1 AND EXISTS (
+             AND e.message_id = m.message_id AND (e.event_kind = 2 OR (e.event_kind = 1 AND (e.source = 'goldgram_native_live_v2' OR (e.source != 'goldgram_native_v1' AND e.server_time > 0 AND m.original_observed = 1 AND EXISTS (
                SELECT 1 FROM revisions vr WHERE vr.peer_kind=m.peer_kind AND vr.peer_id=m.peer_id
                  AND vr.message_id=m.message_id AND vr.content != m.original_text)))))))
     ORDER BY COALESCE(m.sent_at, m.last_seen_at) DESC, m.message_id DESC, m.peer_kind ASC, m.peer_id ASC
@@ -1062,19 +1062,6 @@ public func goldgramRegisterNativeNavigationV1(_ rawCallback: UnsafeMutableRawPo
 
 // #83: authenticated native replay is the sole producer of new history events.
 private extension GoldgramHistoryStore {
-    static func hasNativeEdit(db: OpaquePointer, scope: [Int64]) throws -> Bool {
-        var statement: OpaquePointer?
-        let status = sqlite3_prepare_v2(db, "SELECT 1 FROM events WHERE peer_kind=? AND peer_id=? AND message_id=? AND event_kind=1 AND source='goldgram_native_v1' LIMIT 1;", -1, &statement, nil)
-        guard status == SQLITE_OK, let stmt = statement else { throw StorageError.sqlite(status) }
-        defer { sqlite3_finalize(stmt) }
-        for (index, value) in scope.enumerated() {
-            guard sqlite3_bind_int64(stmt, Int32(index+1), value) == SQLITE_OK else { throw StorageError.sqlite(SQLITE_ERROR) }
-        }
-        let step = sqlite3_step(stmt)
-        guard step == SQLITE_ROW || step == SQLITE_DONE else { throw StorageError.sqlite(step) }
-        return step == SQLITE_ROW
-    }
-
     static func nativeEvent(_ payload: [String: Any]) -> Bool {
         guard let account = (payload["accountId"] as? NSNumber)?.int64Value, account > 0,
               let kind = (payload["peerKind"] as? NSNumber)?.int32Value,
@@ -1100,7 +1087,6 @@ private extension GoldgramHistoryStore {
         guard before == nil || before!.utf8.count <= 65536 else { return false }
         let known = payload["originalObserved"] as? Bool == true
         let retained = payload["retained"] as? Bool == true
-        let observationOnly = payload["observationOnly"] as? Bool == true
         let sender = (payload["senderId"] as? NSNumber)?.int64Value ?? 0
         let senderKind = (payload["senderKind"] as? NSNumber)?.int64Value ?? 0
         let sent = (payload["sentAt"] as? NSNumber)?.int64Value ?? 0
@@ -1119,10 +1105,6 @@ private extension GoldgramHistoryStore {
                 try archiveSQL("BEGIN IMMEDIATE;", db: db, ints: [])
                 do {
                     let scope = [Int64(kind), peer, Int64(id)]
-                    if observationOnly, try hasNativeEdit(db: db, scope: scope),
-                       try lastSavedRevision(db: db, peerId: peer, messageId: id, peerKind: kind)?.text == content {
-                        try archiveSQL("COMMIT;", db: db, ints: []); return
-                    }
                     try archiveSQL("INSERT OR IGNORE INTO dialogs(peer_kind,peer_id) VALUES(?,?);", db: db, ints: [Int64(kind),peer])
                     let baseline = before ?? (event == 2 ? content : nil)
                     try archiveSQL("INSERT OR IGNORE INTO messages(peer_kind,peer_id,message_id,first_seen_at,last_seen_at,original_observed,original_text) VALUES(?,?,?,?,?,?,?);", db: db, ints: scope + [now,now,known ? 1 : 0], text: known ? baseline : nil)
@@ -1138,7 +1120,7 @@ private extension GoldgramHistoryStore {
                         guard last?.index != Int64.max else { throw StorageError.sqlite(SQLITE_TOOBIG) }
                         try archiveSQL("INSERT INTO revisions(peer_kind,peer_id,message_id,version_index,observed_at,server_edit_at,revision_provenance,content) VALUES(?,?,?,?,?,NULLIF(?,0),3,?);", db: db, ints: scope + [(last?.index ?? -1)+1,now,edited], text: content)
                     }
-                    let source = event == 2 && retained ? "goldgram_native_retained_v1" : "goldgram_native_v1"
+                    let source = event == 2 && retained ? "goldgram_native_retained_v1" : event == 1 ? "goldgram_native_live_v2" : "goldgram_native_v1"
                     // source is a fixed enum above, never a user-supplied SQL fragment.
                     try archiveSQL("INSERT OR IGNORE INTO events(peer_kind,peer_id,message_id,event_kind,source,server_time,observed_at,event_key) VALUES(?,?,?,?, '\(source)',NULLIF(?,0),?,?);", db: db, ints: scope + [Int64(event),edited,now], text: key)
                     try archiveSQL("COMMIT;", db: db, ints: [])

@@ -445,6 +445,15 @@ public class ChatMessageTextBubbleContentNode: ChatMessageBubbleContentNode {
                 }
                 
                 
+                let goldgramHistory = item.message.attributes.first(where: { $0 is GoldgramMessageHistoryAttribute }) as? GoldgramMessageHistoryAttribute
+                var goldgramAllowsHistory = true
+                if let subject = item.associatedData.subject, case .messageOptions = subject { goldgramAllowsHistory = false }
+                let showGoldgramHistory = goldgramAllowsHistory && goldgramHistory?.revisions.isEmpty == false && item.attributes.updatingMedia == nil && !isTranslating
+                if showGoldgramHistory, let history = goldgramHistory {
+                    rawText = history.baseline.isEmpty ? "[Медиа / без текста]" : history.baseline
+                    messageEntities = history.baseline.isEmpty ? [] : history.entities
+                }
+
                 if incoming && item.associatedData.isSuspiciousPeer, let entities = messageEntities {
                     messageEntities = entities.filter { entity in
                         switch entity.type {
@@ -632,6 +641,23 @@ public class ChatMessageTextBubbleContentNode: ChatMessageBubbleContentNode {
                     attributedText = updatedString
                 }
                                 
+                if showGoldgramHistory, let history = goldgramHistory {
+                    let combined = NSMutableAttributedString(attributedString: attributedText)
+                    let paragraph = NSMutableParagraphStyle()
+                    paragraph.firstLineHeadIndent = 12
+                    paragraph.headIndent = 12
+                    let gray = messageTheme.primaryTextColor.withAlphaComponent(0.55)
+                    if !history.originalObserved {
+                        combined.insert(NSAttributedString(string: "Первая сохранённая версия\n", font: textFont, textColor: gray), at: 0)
+                    }
+                    for (index, revision) in history.revisions.enumerated() {
+                        combined.append(NSAttributedString(string: "\n\nИзменение \(index + 1)\n\(revision)", attributes: [
+                            .font: textFont, .foregroundColor: gray, .paragraphStyle: paragraph
+                        ]))
+                    }
+                    attributedText = combined
+                }
+
                 var customTruncationToken: ((UIFont, Bool) -> NSAttributedString?)?
                 var maximumNumberOfLines: Int = 0
                 if item.presentationData.isPreview {
@@ -1659,7 +1685,7 @@ public class ChatMessageTextBubbleContentNode: ChatMessageBubbleContentNode {
                 let enableCopy = (!item.associatedData.isCopyProtectionEnabled && !item.message.isCopyProtected()) || item.message.id.peerId.isVerificationCodes
                 textSelectionNode.enableCopy = enableCopy
                 
-                var enableQuote = !item.message.text.isEmpty
+                var enableQuote = !item.message.text.isEmpty && !item.message.attributes.contains(where: { $0 is GoldgramMessageHistoryAttribute })
                 var enableOtherActions = true
                 if let subject = item.associatedData.subject, case let .messageOptions(_, _, info) = subject, case .reply = info {
                     enableOtherActions = false
@@ -1820,7 +1846,7 @@ public class ChatMessageTextBubbleContentNode: ChatMessageBubbleContentNode {
         let offset = range.location
         
         var entities: [MessageTextEntity] = []
-        if let textEntitiesAttribute = item.message.textEntitiesAttribute {
+        if !item.message.attributes.contains(where: { $0 is GoldgramMessageHistoryAttribute }), let textEntitiesAttribute = item.message.textEntitiesAttribute {
             entities = messageTextEntitiesInRange(entities: textEntitiesAttribute.entities, range: range, onlyQuoteable: true)
         }
         

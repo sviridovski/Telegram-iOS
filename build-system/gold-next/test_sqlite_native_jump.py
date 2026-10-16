@@ -15,7 +15,10 @@ checks = {
     "message target": "Namespaces.Message.Cloud" in host,
     "removed guesswork": "MxLastKnownUserId" not in screen,
     "reader method": '@objc(navigateToMessage:)' in store,
-    "row action": "GoldgramArchiveReader.navigateToMessage(request)" in screen,
+    "row action": '"action": "prepare_jump"' in screen and 'request["action"] = "open_message"' in screen,
+    "async native check": "goldgramRestoreSnapshot(transaction:" in host and "getMessagesLoadIfNecessary([id])" in host,
+    "sheet dismissal order": "presenter.dismiss(animated: true, completion: open)" in screen,
+    "missing content detail": "showLocalRecord(entry" in screen and "showArchiveJumpFailure" not in screen,
     "tombstone safe": 'entry["deleted"] as? NSNumber' in screen,
     "non-overridden revisions": 'latestText' in screen and 'originalText' in screen,
 }

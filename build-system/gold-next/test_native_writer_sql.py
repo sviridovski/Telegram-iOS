@@ -25,7 +25,7 @@ for kind,peer in ((0,10),(1,20),(2,30),(3,40)):
  db.execute(sql('UPDATE messages SET sender_kind'),scope+[0,99,12345,0,200,0])
  db.execute(sql('INSERT INTO revisions(peer_kind,peer_id,message_id,version_index,observed_at,revision_provenance'),scope+[100,1,'Original'])
  db.execute(sql('INSERT INTO revisions(peer_kind,peer_id,message_id,version_index,observed_at,server_edit_at'),scope+[1,200,201,'Changed'])
- event=sql('INSERT OR IGNORE INTO events').replace(r'\(source)','goldgram_native_v1')
+ event=sql('INSERT OR IGNORE INTO events').replace(r'\(source)','goldgram_native_live_v2')
  db.execute(event,scope+[1,201,200,f'edit:{kind}:{peer}'])
  db.commit()
  message=db.execute('SELECT original_text,original_observed,sender_id,sent_at,is_deleted FROM messages WHERE peer_kind=? AND peer_id=?',scope[:2]).fetchone()

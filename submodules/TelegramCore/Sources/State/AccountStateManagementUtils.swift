@@ -4701,7 +4701,11 @@ func replayFinalState(
                     }
                 }
             case let .DeleteMessagesWithGlobalIds(rawIds):
-                let resolved = transaction.messageIdsForGlobalIds(rawIds)
+                var resolved = transaction.messageIdsForGlobalIds(rawIds)
+                if goldgramNativeHistoryEnabled() {
+                    let known = Set(resolved.map { $0.id })
+                    resolved.append(contentsOf: rawIds.filter { !known.contains($0) }.compactMap { goldgramSnapshotGlobalId(transaction: transaction, id: $0) })
+                }
                 let kept = Set(resolved.filter { goldgramRetainDeletion(accountPeerId: accountPeerId, transaction: transaction, mediaBox: mediaBox, id: $0) }.map { $0.id })
                 let resolvedIds = Set(resolved.map { $0.id })
                 goldgramUnresolvedDeletions(accountPeerId: accountPeerId, ids: rawIds.filter { !resolvedIds.contains($0) })

@@ -2,9 +2,9 @@
 struct NativeEventPolicyFixture {
     static func main() {
         func record(_ old: String?, _ text: String, date: Int32 = 10, hidden: Bool = false,
-                    oldMedia: [String] = [], media: [String] = [], entities: Bool = false) -> Bool {
+                    oldMedia: [String] = [], media: [String] = [], entities: Bool = false, since: Int32 = 0, previousDate: Int32 = 0) -> Bool {
             return GoldgramEventPolicy.shouldArchiveEdit(previousText: old, currentText: text,
-                previousMedia: oldMedia, currentMedia: media, entitiesChanged: entities, editDate: date, hidden: hidden)
+                previousMedia: oldMedia, currentMedia: media, entitiesChanged: entities, editDate: date, hidden: hidden, captureSince: since, previousEditDate: previousDate)
         }
         precondition(!record("same", "same"), "reaction/view metadata isn't an edit")
         precondition(!record(nil, "headline", date: 0), "unknown original + no edit date isn't proof")
@@ -15,6 +15,18 @@ struct NativeEventPolicyFixture {
         precondition(record("same", "same", entities: true), "actual formatting change")
         precondition(record("", "", oldMedia: ["photo1"], media: ["photo2"]), "actual media replacement")
         precondition(record("B", "A"), "reverting is also a content edit")
-        print("Goldgram #83: actual native event policy rejects metadata and accepts text/media/revert edits")
+        precondition(!record(nil, "old history", date: 9, since: 10), "scrolling old edited history must not log it")
+        precondition(!record("old A", "old B", date: 9, since: 10), "a historical difference is not a new edit")
+        precondition(record("old message", "edited now", date: 11, since: 10), "old sent date must not block a NEW edit")
+        precondition(!record("same", "same", date: 11, since: 10), "reloading an already known edit is not another event")
+        precondition(!record("newer", "stale reply", date: 11, since: 10, previousDate: 12), "older history responses cannot reverse the revision sequence")
+        var previous = "A"
+        var captured: [String] = []
+        for text in ["B", "B", "C", "A", "A"] {
+            if record(previous, text, date: 20, since: 10) { captured.append(text) }
+            previous = text
+        }
+        precondition(captured == ["B", "C", "A"], "all distinct delivered edits, including a revert; no reload duplicates")
+        print("Goldgram #85: actual native event policy rejects metadata and accepts text/media/revert edits")
     }
 }

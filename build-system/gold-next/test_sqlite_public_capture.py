@@ -72,7 +72,7 @@ assert read_messages(b,3) == []
 # or the current text has reverted to the original. A version-0 baseline alone
 # is never proof of editing.
 for kind in range(4):
-    a.execute("INSERT INTO events(peer_kind,peer_id,message_id,event_kind,source,event_key,observed_at) VALUES(?,81,9,1,'goldgram_native_v1',?,123)",
+    a.execute("INSERT INTO events(peer_kind,peer_id,message_id,event_kind,source,event_key,observed_at) VALUES(?,81,9,1,'goldgram_native_live_v2',?,123)",
               (kind,f"edit-{kind}"))
     assert len(read_messages(a,kind)) == 1
     assert read_messages(b,kind) == []

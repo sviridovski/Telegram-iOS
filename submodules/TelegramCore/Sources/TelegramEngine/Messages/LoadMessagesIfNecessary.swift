@@ -99,6 +99,8 @@ func _internal_getMessagesLoadIfNecessary(_ messageIds: [MessageId], postbox: Po
             |> then(combineLatest(signals) |> mapToSignal { results -> Signal<GetMessagesResult, GetMessagesError> in
                 return postbox.transaction { transaction -> GetMessagesResult in
                     for (peer, messages, chats, users) in results {
+                        let parsedPeers = AccumulatedPeers(transaction: transaction, chats: chats, users: users)
+                        updatePeers(transaction: transaction, accountPeerId: accountPeerId, peers: parsedPeers)
                         if !messages.isEmpty {
                             var storeMessages: [StoreMessage] = []
                             
@@ -107,11 +109,10 @@ func _internal_getMessagesLoadIfNecessary(_ messageIds: [MessageId], postbox: Po
                                     storeMessages.append(message)
                                 }
                             }
-                            _ = transaction.addMessages(storeMessages, location: .Random)
+                            let prepared = storeMessages.map { goldgramPrepareIncoming(accountPeerId: accountPeerId, transaction: transaction, message: $0) }
+                            _ = transaction.addMessages(prepared, location: .Random)
                         }
-                        
-                        let parsedPeers = AccumulatedPeers(transaction: transaction, chats: chats, users: users)
-                        updatePeers(transaction: transaction, accountPeerId: accountPeerId, peers: parsedPeers)
+
                     }
                     var loadedMessages:[Message] = []
                     for messageId in missingMessageIds {
