@@ -4423,7 +4423,7 @@ func replayFinalState(
     for operation in optimizedOperations(finalState.state.operations) {
         switch operation {
             case let .AddMessages(rawMessages, location):
-                let messages = rawMessages.map { goldgramPrepareIncoming(accountPeerId: accountPeerId, transaction: transaction, message: $0) }
+                var messages = rawMessages.map { goldgramPrepareIncoming(accountPeerId: accountPeerId, transaction: transaction, message: $0) }
                 if case .UpperHistoryBlock = location {
                     for message in messages {
                         if case let .Id(id) = message.id {
@@ -4499,8 +4499,6 @@ func replayFinalState(
                         }
                     }
                 }
-            
-                var messages = messages
             
                 if case .UpperHistoryBlock = location {
                     for i in 0 ..< messages.count {
