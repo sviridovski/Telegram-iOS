@@ -1,3 +1,13 @@
+## CURRENT HANDOFF — 2026-10-16, #83 host compiler failure -> #84 binding correction
+
+- User reports #83 RED. Verified Actions 38857348647, job 116831692833: validation step 9 SUCCESS (11 Python suites, actual Swift grouping/native-policy executables, iOS SQLite store typecheck), Mx build SUCCESS, injector installation SUCCESS; Build clean Swiftgram FAILED. No IPA produced.
+- Exact first compiler failure: AccountStateManagementUtils.swift:4503 invalid redeclaration of `messages`. New AddMessages native preparation introduced a `let messages` in the same switch-case scope as the existing `var messages = messages`. Subsequent Incoming/Unsent/copyProtection type inference errors occur downstream in that case. No other Swift error appeared in the captured log; full compilation may expose later issues.
+- #84 correction uses ONE mutable prepared `messages` binding at case entry and removes the redundant later declaration. Native preparation still happens before Postbox insertion; existing typing-draft custom stable ID mutation remains in place. Exactly one source file changed, no new functionality.
+- Code f39e48d2904a54eade73b50ddfbf705c52748347; reviewed/remote tree b7c9e953d860ecd0efdab26ea9febde4b3378854. Actions #84 https://github.com/sviridovski/Telegram-iOS/actions/runs/38935241309 launched (initially QUEUED). All 11 local Python suites and git diff --check PASS. These checks do not substitute for TelegramCore/TelegramUI compilation; full CI, symbol/package checks and device behavior remain UNVERIFIED.
+- Continue the SAME #83 native history atom. Do not add functionality before CI and user acceptance. If #84 fails, inspect its actual first failed step/log. All #83 event/media limits and proposed device tests below remain applicable. Do not call #84 GREEN or installable until its full run succeeds.
+
+---
+
 ## CURRENT HANDOFF — 2026-10-16, #82 GREEN/device regression report -> #83 unified native event atom
 
 - Verified Actions #82 (38835596892) completed SUCCESS. User installed code with names/authors visible, but reports deletion archive absent, intermittent edited archive despite MX pencil, and false edited entry opening a post without a visible edit. Inline screenshots compare another client retaining deleted media and this client's unknown-original entry. Attached scratch copies unavailable; images were visible inline. Do not treat #82 as event-capture acceptance.
