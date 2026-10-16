@@ -1,3 +1,14 @@
+## CURRENT HANDOFF — 2026-10-16, #81 host compiler error -> #82 EnginePeer fix in CI
+
+- User reports #81 red. Verified Actions #81 (38777652225), job 116569357514: Python/Swift grouping validation PASS, **Mx compilation PASS**, injector installation PASS, **Build clean Swiftgram FAILED**. No IPA uploaded.
+- Exact compiler error: SharedAccountContext.swift:93:54, value of type 'any Peer' has no member 'compactDisplayTitle'. This is the new GoldgramNativeArchiveMetadata resolver; two sender-label accesses have the same type mistake. #81 fixed the #80 C-header failure; that previous failure is no longer active.
+- Verified current source definitions before fixing: EnginePeer.init(_ peer: Peer) is public in TelegramCore/Sources/TelegramEngine/Peers/Peer.swift:591; compactDisplayTitle is public extension EnginePeer in LocalizedPeerData/Sources/PeerTitle.swift:7. TelegramUI/BUILD already declares LocalizedPeerData dependency.
+- **#82 correction** code **0494e7dde285edc1070a012e405a45f8a7b72820**, https://github.com/sviridovski/Telegram-iOS/actions/runs/38835596892, **IN PROGRESS**. Exactly one source file changed: all three raw Peer title accesses now use EnginePeer(peer/author).compactDisplayTitle; explicit import LocalizedPeerData added. Reviewed tree 0ad36208bf4d93e7896eebefdaf46254bfcf8e80 matches remote commit. No new functionality, UI logic, DB, dependencies, bundle IDs, capture or media retention changes.
+- All 9 local Python suites PASS and git diff --check PASS. Existing actual Swift grouping and Mx compiler were already green in #81. Full #82 host compilation/device acceptance still pending; do not call GREEN or installable yet.
+- Next: verify #82 CI; if red inspect only its actual failed compiler/build step. After GREEN, user tests named folders, verified channel/discussion grouping, author/time and jumps. Inline dimmed deleted messages/media remain requested NEXT, not implemented in this correction. Do not advance another functional atom before device acceptance.
+
+---
+
 ## CURRENT HANDOFF — 2026-10-15, #80 compiler fix -> #81; inline deleted history requested next
 
 - **#80 RED**: job 116562539429, Mx step 10. All 9 Python suites AND actual Swift grouping executable passed. Swift Clang module import then failed at tgapiC/include/Tweak.h:7:35: pointer missing nullability type specifier, and GoldgramArchiveScreen.swift import tgapiC consequently failed. Adding explicit nullability for the new function exposed incomplete annotations on existing decompressGzip. No host build or IPA produced.
