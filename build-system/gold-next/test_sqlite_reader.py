@@ -38,7 +38,7 @@ for db in (a, b):
             VALUES (?,?,7,'Начало',1,100,200)""", (kind, peer))
         db.execute("""INSERT INTO events
             (peer_kind,peer_id,message_id,event_kind,source,event_key,observed_at)
-            VALUES (?,?,7,1,'test',?,200)""", (kind, peer, f"test-{kind}-{peer}"))
+            VALUES (?,?,7,1,'goldgram_native_v1',?,200)""", (kind, peer, f"test-{kind}-{peer}"))
 a.execute("""INSERT INTO revisions
     (peer_kind,peer_id,message_id,version_index,content,observed_at)
     VALUES (0,10,7,0,'Начало',100)""")

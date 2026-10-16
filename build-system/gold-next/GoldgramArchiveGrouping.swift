@@ -32,17 +32,24 @@ enum GoldgramArchiveGrouping {
                 members.append(["peerKind": NSNumber(value: sourceKind), "peerId": NSNumber(value: sourceId)])
             }
             addSource(kind, id)
-            if category == 2,
+            if (category == 2 || category == 3),
                let linkedKind = (entry["linkedPeerKind"] as? NSNumber)?.int32Value,
                let linkedId = (entry["linkedPeerId"] as? NSNumber)?.int64Value {
                 addSource(linkedKind, linkedId)
             }
             group["sources"] = members
+            group["lastEventAt"] = NSNumber(value: max((group["lastEventAt"] as? NSNumber)?.int64Value ?? 0,
+                (entry["lastMessageAt"] as? NSNumber)?.int64Value ?? 0))
             group["messageCount"] = NSNumber(value: ((group["messageCount"] as? NSNumber)?.intValue ?? 0)
                 + ((entry["messageCount"] as? NSNumber)?.intValue ?? 0))
             groups[key] = group
         }
         return groups.keys.sorted { a, b in
+            if category == 3 {
+                let left = (groups[a]?["lastEventAt"] as? NSNumber)?.int64Value ?? 0
+                let right = (groups[b]?["lastEventAt"] as? NSNumber)?.int64Value ?? 0
+                if left != right { return left > right }
+            }
             let lhs = groups[a]?["displayName"] as? String ?? a
             let rhs = groups[b]?["displayName"] as? String ?? b
             let order = lhs.localizedCaseInsensitiveCompare(rhs)

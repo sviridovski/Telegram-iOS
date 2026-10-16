@@ -485,6 +485,24 @@ private extension GoldgramHistoryStore {
         }
     }
 
+    static func retainedIdsForClear(accountId: Int64) throws -> [[String: Any]] {
+        let db = try archiveConnection(for: accountId)
+        var statement: OpaquePointer?
+        let sql = "SELECT m.peer_kind,m.peer_id,m.message_id FROM messages m WHERE EXISTS (SELECT 1 FROM events e WHERE e.peer_kind=m.peer_kind AND e.peer_id=m.peer_id AND e.message_id=m.message_id AND e.event_kind=2 AND e.source='goldgram_native_retained_v1');"
+        let code = sqlite3_prepare_v2(db, sql, -1, &statement, nil)
+        guard code == SQLITE_OK, let stmt = statement else { throw StorageError.sqlite(code) }
+        defer { sqlite3_finalize(stmt) }
+        var rows: [[String: Any]] = []
+        while true {
+            let step = sqlite3_step(stmt)
+            if step == SQLITE_DONE { break }
+            guard step == SQLITE_ROW else { throw StorageError.sqlite(step) }
+            rows.append(["peerKind": NSNumber(value: sqlite3_column_int(stmt,0)),
+                "peerId": NSNumber(value: sqlite3_column_int64(stmt,1)), "messageId": NSNumber(value: sqlite3_column_int64(stmt,2))])
+        }
+        return rows
+    }
+
     // Called only on storageQueue, in FIFO order with capture and reads.
     // Keep the connection/schema/settings; cascade removes all message history.
     static func clearHistory(accountId: Int64) throws {
@@ -704,13 +722,16 @@ public final class GoldgramArchiveReader: NSObject {
                 return
             }
             let status: String
+            var retained: [[String: Any]] = []
             do {
+                retained = try GoldgramHistoryStore.retainedIdsForClear(accountId: accountId)
                 try GoldgramHistoryStore.clearHistory(accountId: accountId)
                 status = "ok"
             } catch {
                 status = "unavailable"
             }
-            DispatchQueue.main.async { completion(["status": status]) }
+            let retainedItems = retained
+            DispatchQueue.main.async { completion(["status": status, "retainedItems": retainedItems]) }
         }
     }
 
@@ -725,7 +746,8 @@ public final class GoldgramArchiveReader: NSObject {
     // One database per account; peer kind + peer ID scope every lookup.
     private static let dialogsSQL = """
     SELECT d.peer_kind, d.peer_id, COUNT(*) AS archived_count,
-           MAX(COALESCE(m.sent_at, m.last_seen_at)) AS newest_at
+           MAX(COALESCE((SELECT MAX(e.observed_at) FROM events e WHERE e.peer_kind=m.peer_kind
+             AND e.peer_id=m.peer_id AND e.message_id=m.message_id),m.last_seen_at)) AS newest_at
     FROM dialogs d
     JOIN messages m
       ON m.peer_kind = d.peer_kind AND m.peer_id = d.peer_id
@@ -733,7 +755,9 @@ public final class GoldgramArchiveReader: NSObject {
       AND (m.is_deleted = 1 OR EXISTS (
            SELECT 1 FROM events e
            WHERE e.peer_kind = m.peer_kind AND e.peer_id = m.peer_id
-             AND e.message_id = m.message_id AND e.event_kind IN (1, 2)))
+             AND e.message_id = m.message_id AND (e.event_kind = 2 OR (e.event_kind = 1 AND (e.source = 'goldgram_native_v1' OR (e.server_time > 0 AND m.original_observed = 1 AND EXISTS (
+               SELECT 1 FROM revisions vr WHERE vr.peer_kind=m.peer_kind AND vr.peer_id=m.peer_id
+                 AND vr.message_id=m.message_id AND vr.content != m.original_text)))))))
     GROUP BY d.peer_kind, d.peer_id
     ORDER BY newest_at DESC, d.peer_kind ASC, d.peer_id ASC
     LIMIT ? OFFSET ?;
@@ -757,16 +781,24 @@ public final class GoldgramArchiveReader: NSObject {
            m.sender_kind,
            EXISTS (SELECT 1 FROM events e
              WHERE e.peer_kind = m.peer_kind AND e.peer_id = m.peer_id
-               AND e.message_id = m.message_id AND e.event_kind = 1) AS edited,
+               AND e.message_id = m.message_id AND e.event_kind = 1 AND (e.source = 'goldgram_native_v1' OR (e.server_time > 0 AND m.original_observed = 1 AND EXISTS (
+               SELECT 1 FROM revisions vr WHERE vr.peer_kind=m.peer_kind AND vr.peer_id=m.peer_id
+                 AND vr.message_id=m.message_id AND vr.content != m.original_text)))) AS edited,
            EXISTS (SELECT 1 FROM events e
              WHERE e.peer_kind = m.peer_kind AND e.peer_id = m.peer_id
-               AND e.message_id = m.message_id AND e.event_kind = 2) AS delete_event
+               AND e.message_id = m.message_id AND e.event_kind = 2) AS delete_event,
+           (SELECT MIN(e.observed_at) FROM events e WHERE e.peer_kind=m.peer_kind
+             AND e.peer_id=m.peer_id AND e.message_id=m.message_id AND e.event_kind=2) AS deleted_at,
+           EXISTS (SELECT 1 FROM events e WHERE e.peer_kind=m.peer_kind AND e.peer_id=m.peer_id
+             AND e.message_id=m.message_id AND e.event_kind=2 AND e.source='goldgram_native_retained_v1') AS retained
     FROM messages m
     WHERE m.peer_kind = ? AND m.peer_id = ?
       AND (m.is_deleted = 1 OR EXISTS (
            SELECT 1 FROM events e
            WHERE e.peer_kind = m.peer_kind AND e.peer_id = m.peer_id
-             AND e.message_id = m.message_id AND e.event_kind IN (1, 2)))
+             AND e.message_id = m.message_id AND (e.event_kind = 2 OR (e.event_kind = 1 AND (e.source = 'goldgram_native_v1' OR (e.server_time > 0 AND m.original_observed = 1 AND EXISTS (
+               SELECT 1 FROM revisions vr WHERE vr.peer_kind=m.peer_kind AND vr.peer_id=m.peer_id
+                 AND vr.message_id=m.message_id AND vr.content != m.original_text)))))))
     ORDER BY COALESCE(m.sent_at, m.last_seen_at) DESC, m.message_id DESC, m.peer_kind ASC, m.peer_id ASC
     LIMIT ? OFFSET ?;
     """
@@ -794,12 +826,13 @@ public final class GoldgramArchiveReader: NSObject {
         case 0: kinds = [0, 0]       // Personal
         case 1: kinds = [1, 2]       // Basic groups + supergroups
         case 2: kinds = [2, 3]       // Channels + natively verified discussions in UI
+        case 3: kinds = [0, 1, 2, 3] // Deleted-only folder, all cloud peer kinds
         default: kinds = []
         }
         let requestedSources = request["sources"] as? [[String: Any]] ?? []
         var sources: [(kind: Int32, id: Int64)] = []
         if mode == "combined" {
-            guard category == 2, !requestedSources.isEmpty, requestedSources.count <= 2 else {
+            guard (category == 2 || category == 3), !requestedSources.isEmpty, requestedSources.count <= 2 else {
                 completion(["status": "invalid_request", "items": []]); return
             }
             for source in requestedSources {
@@ -825,7 +858,7 @@ public final class GoldgramArchiveReader: NSObject {
         GoldgramHistoryStore.storageQueue.async {
             let response = self.read(
                 accountId: accountId, mode: mode,
-                kinds: kinds, peerId: peerId, peerKind: scopedPeerKind, sources: sources,
+                kinds: kinds, peerId: peerId, peerKind: scopedPeerKind, sources: sources, deletedOnly: category == 3,
                 offset: Int32(offset), limit: Int32(limit)
             )
             DispatchQueue.main.async {
@@ -852,7 +885,7 @@ public final class GoldgramArchiveReader: NSObject {
 
     private static func read(
         accountId: Int64, mode: String, kinds: [Int32],
-        peerId: Int64, peerKind: Int32, sources: [(kind: Int32, id: Int64)],
+        peerId: Int64, peerKind: Int32, sources: [(kind: Int32, id: Int64)], deletedOnly: Bool,
         offset: Int32, limit: Int32
     ) -> [String: Any] {
         // Opening a missing DB in READONLY mode must never create one.
@@ -893,6 +926,21 @@ public final class GoldgramArchiveReader: NSObject {
         }
 
         var sql = mode == "dialogs" ? dialogsSQL : messagesSQL
+        if mode == "dialogs" {
+            let placeholders = kinds.map { _ in "?" }.joined(separator: ", ")
+            sql = sql.replacingOccurrences(of: "WHERE d.peer_kind IN (?, ?)", with: "WHERE d.peer_kind IN (\(placeholders))")
+        }
+        if deletedOnly {
+            let deletedPredicate = "AND (m.is_deleted=1 OR EXISTS (SELECT 1 FROM events de WHERE de.peer_kind=m.peer_kind AND de.peer_id=m.peer_id AND de.message_id=m.message_id AND de.event_kind=2)) "
+            if mode == "dialogs" {
+                if let start = sql.range(of: "MAX(COALESCE("), let end = sql.range(of: " AS newest_at") {
+                    sql.replaceSubrange(start.lowerBound..<end.lowerBound, with: "MAX(COALESCE((SELECT MIN(de.observed_at) FROM events de WHERE de.peer_kind=m.peer_kind AND de.peer_id=m.peer_id AND de.message_id=m.message_id AND de.event_kind=2),m.last_seen_at))")
+                }
+                sql = sql.replacingOccurrences(of: "GROUP BY d.peer_kind", with: deletedPredicate + "GROUP BY d.peer_kind")
+            } else {
+                sql = sql.replacingOccurrences(of: "ORDER BY COALESCE(m.sent_at, m.last_seen_at) DESC", with: deletedPredicate + "ORDER BY COALESCE((SELECT MIN(de.observed_at) FROM events de WHERE de.peer_kind=m.peer_kind AND de.peer_id=m.peer_id AND de.message_id=m.message_id AND de.event_kind=2),m.last_seen_at) DESC")
+            }
+        }
         if mode == "combined" {
             let predicate = sources.map { _ in "(m.peer_kind = ? AND m.peer_id = ?)" }.joined(separator: " OR ")
             sql = sql.replacingOccurrences(
@@ -911,7 +959,7 @@ public final class GoldgramArchiveReader: NSObject {
         let second: Int64 = mode == "dialogs" ? Int64(kinds[1]) : peerId
         let scope: [Int64] = mode == "combined"
             ? sources.flatMap { [Int64($0.kind), $0.id] }
-            : [first, second]
+            : mode == "dialogs" ? kinds.map { Int64($0) } : [first, second]
         let parameters = scope + [Int64(limit), Int64(offset)]
         for (index, value) in parameters.enumerated() {
             guard sqlite3_bind_int64(stmt, Int32(index + 1), value) == SQLITE_OK else {
@@ -951,7 +999,9 @@ public final class GoldgramArchiveReader: NSObject {
                     "revisionCount": NSNumber(value: sqlite3_column_int64(stmt, 11)),
                     "firstKnownText": text(stmt, 12),
                     "senderKind": nullableInt(stmt, 13),
-                    "edited": NSNumber(value: sqlite3_column_int(stmt, 14) == 1)
+                    "edited": NSNumber(value: sqlite3_column_int(stmt, 14) == 1),
+                    "deletedAt": nullableInt(stmt, 16),
+                    "retained": NSNumber(value: sqlite3_column_int(stmt, 17) == 1)
                 ])
             }
         }
@@ -1008,4 +1058,102 @@ public func goldgramRegisterNativeNavigationV1(_ rawCallback: UnsafeMutableRawPo
         unsafeBitCast($0, to: GoldgramNativeNavigate.self)
     }
     GoldgramArchiveReader.registerNativeNavigation(typed)
+}
+
+// #83: authenticated native replay is the sole producer of new history events.
+private extension GoldgramHistoryStore {
+    static func hasNativeEdit(db: OpaquePointer, scope: [Int64]) throws -> Bool {
+        var statement: OpaquePointer?
+        let status = sqlite3_prepare_v2(db, "SELECT 1 FROM events WHERE peer_kind=? AND peer_id=? AND message_id=? AND event_kind=1 AND source='goldgram_native_v1' LIMIT 1;", -1, &statement, nil)
+        guard status == SQLITE_OK, let stmt = statement else { throw StorageError.sqlite(status) }
+        defer { sqlite3_finalize(stmt) }
+        for (index, value) in scope.enumerated() {
+            guard sqlite3_bind_int64(stmt, Int32(index+1), value) == SQLITE_OK else { throw StorageError.sqlite(SQLITE_ERROR) }
+        }
+        let step = sqlite3_step(stmt)
+        guard step == SQLITE_ROW || step == SQLITE_DONE else { throw StorageError.sqlite(step) }
+        return step == SQLITE_ROW
+    }
+
+    static func nativeEvent(_ payload: [String: Any]) -> Bool {
+        guard let account = (payload["accountId"] as? NSNumber)?.int64Value, account > 0,
+              let kind = (payload["peerKind"] as? NSNumber)?.int32Value,
+              let peer = (payload["peerId"] as? NSNumber)?.int64Value,
+              let rawId = (payload["messageId"] as? NSNumber)?.int64Value,
+              let id = Int32(exactly: rawId), id > 0,
+              let event = (payload["eventKind"] as? NSNumber)?.int32Value, (1...2).contains(event),
+              UserDefaults.standard.bool(forKey: "GoldgramSQLiteCaptureEnabled") else { return false }
+        let now = Int64(Date().timeIntervalSince1970 * 1000)
+        if kind == -1 && peer == 0 && event == 2 {
+            storageQueue.async {
+                do {
+                    let db = try archiveConnection(for: account)
+                    try archiveSQL("INSERT OR IGNORE INTO unresolved_deletions(message_id, observed_at, update_key) VALUES(?, ?, ?);", db: db, ints: [Int64(id), now], text: "native.global")
+                } catch { }
+            }
+            return true
+        }
+        guard (0...3).contains(kind), peer > 0,
+              let content = payload["text"] as? String, content.utf8.count <= 65536,
+              event == 2 || (payload["visibleEdit"] as? Bool == true && (payload["beforeText"] == nil || payload["changed"] as? Bool == true)) else { return false }
+        let before = payload["beforeText"] as? String
+        guard before == nil || before!.utf8.count <= 65536 else { return false }
+        let known = payload["originalObserved"] as? Bool == true
+        let retained = payload["retained"] as? Bool == true
+        let observationOnly = payload["observationOnly"] as? Bool == true
+        let sender = (payload["senderId"] as? NSNumber)?.int64Value ?? 0
+        let senderKind = (payload["senderKind"] as? NSNumber)?.int64Value ?? 0
+        let sent = (payload["sentAt"] as? NSNumber)?.int64Value ?? 0
+        let thread = (payload["threadId"] as? NSNumber)?.int64Value ?? 0
+        let edited = (payload["editedAt"] as? NSNumber)?.int64Value ?? 0
+        // Stable content transition identity; Swift's randomized Hasher is not persisted.
+        let parts = [before ?? "", content, String(describing: payload["beforeMediaKeys"] ?? ""),
+            String(describing: payload["mediaKeys"] ?? ""), String(edited)]
+        let identity = parts.map { "\($0.utf8.count):\($0)" }.joined()
+        var hash: UInt64 = 14695981039346656037
+        for byte in identity.utf8 { hash = (hash ^ UInt64(byte)) &* 1099511628211 }
+        let key = event == 2 ? "native.delete.\(kind).\(peer).\(id)" : "native.edit.\(kind).\(peer).\(id).\(hash)"
+        storageQueue.async {
+            do {
+                let db = try archiveConnection(for: account)
+                try archiveSQL("BEGIN IMMEDIATE;", db: db, ints: [])
+                do {
+                    let scope = [Int64(kind), peer, Int64(id)]
+                    if observationOnly, try hasNativeEdit(db: db, scope: scope),
+                       try lastSavedRevision(db: db, peerId: peer, messageId: id, peerKind: kind)?.text == content {
+                        try archiveSQL("COMMIT;", db: db, ints: []); return
+                    }
+                    try archiveSQL("INSERT OR IGNORE INTO dialogs(peer_kind,peer_id) VALUES(?,?);", db: db, ints: [Int64(kind),peer])
+                    let baseline = before ?? (event == 2 ? content : nil)
+                    try archiveSQL("INSERT OR IGNORE INTO messages(peer_kind,peer_id,message_id,first_seen_at,last_seen_at,original_observed,original_text) VALUES(?,?,?,?,?,?,?);", db: db, ints: scope + [now,now,known ? 1 : 0], text: known ? baseline : nil)
+                    if known, let baseline {
+                        try archiveSQL("UPDATE messages SET original_observed=1, original_text=?4 WHERE peer_kind=?1 AND peer_id=?2 AND message_id=?3 AND original_observed=0;", db: db, ints: scope, text: baseline)
+                    }
+                    try archiveSQL("UPDATE messages SET sender_kind=COALESCE(sender_kind,CASE WHEN ?4 BETWEEN 0 AND 3 THEN ?4 ELSE NULL END),sender_id=COALESCE(sender_id,NULLIF(?5,0)),sent_at=COALESCE(sent_at,NULLIF(?6,0)),thread_id=COALESCE(thread_id,NULLIF(?7,0)),last_seen_at=MAX(last_seen_at,?8),is_deleted=MAX(is_deleted,?9) WHERE peer_kind=?1 AND peer_id=?2 AND message_id=?3;", db: db, ints: scope + [senderKind,sender,sent,thread,now,event == 2 ? 1 : 0])
+                    if try lastSavedRevision(db: db, peerId: peer, messageId: id, peerKind: kind) == nil, let baseline {
+                        try archiveSQL("INSERT INTO revisions(peer_kind,peer_id,message_id,version_index,observed_at,revision_provenance,content) VALUES(?,?,?,0,?,?,?);", db: db, ints: scope + [now,known ? 1 : 2], text: baseline)
+                    }
+                    let last = try lastSavedRevision(db: db, peerId: peer, messageId: id, peerKind: kind)
+                    if last?.text != content {
+                        guard last?.index != Int64.max else { throw StorageError.sqlite(SQLITE_TOOBIG) }
+                        try archiveSQL("INSERT INTO revisions(peer_kind,peer_id,message_id,version_index,observed_at,server_edit_at,revision_provenance,content) VALUES(?,?,?,?,?,NULLIF(?,0),3,?);", db: db, ints: scope + [(last?.index ?? -1)+1,now,edited], text: content)
+                    }
+                    let source = event == 2 && retained ? "goldgram_native_retained_v1" : "goldgram_native_v1"
+                    // source is a fixed enum above, never a user-supplied SQL fragment.
+                    try archiveSQL("INSERT OR IGNORE INTO events(peer_kind,peer_id,message_id,event_kind,source,server_time,observed_at,event_key) VALUES(?,?,?,?, '\(source)',NULLIF(?,0),?,?);", db: db, ints: scope + [Int64(event),edited,now], text: key)
+                    try archiveSQL("COMMIT;", db: db, ints: [])
+                } catch {
+                    try? archiveSQL("ROLLBACK;", db: db, ints: []); throw error
+                }
+            } catch { /* No message content or identifiers in logs. */ }
+        }
+        return true // enqueued, not a synchronous claim of SQLite commit
+    }
+}
+
+@_cdecl("goldgram_capture_event_v1")
+public func goldgramCaptureEventV1(_ raw: UnsafePointer<CChar>?) -> Int32 {
+    guard let raw, let data = String(cString: raw).data(using: .utf8), data.count <= 300000,
+          let payload = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return 0 }
+    return GoldgramHistoryStore.nativeEvent(payload) ? 1 : 0
 }

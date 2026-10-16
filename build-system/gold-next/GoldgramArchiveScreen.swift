@@ -40,7 +40,7 @@ public final class GoldgramArchiveScreen: UITableViewController {
     public override func viewDidLoad() {
         super.viewDidLoad()
         title = displayName ?? (category == 0 ? "Личные сообщения" :
-             category == 1 ? "Группы и чаты" : "Каналы")
+             category == 1 ? "Группы и чаты" : category == 3 ? "Удалённые сообщения" : "Каналы")
         tableView.rowHeight = UITableView.automaticDimension
         tableView.estimatedRowHeight = 110
     }
@@ -121,7 +121,7 @@ public final class GoldgramArchiveScreen: UITableViewController {
         let first = sources?.first
         let request: NSDictionary = [
             "accountId": NSNumber(value: active), "category": NSNumber(value: category),
-            "mode": sources == nil ? "dialogs" : category == 2 ? "combined" : "messages",
+            "mode": sources == nil ? "dialogs" : (category == 2 || category == 3) ? "combined" : "messages",
             "peerId": first?["peerId"] ?? NSNumber(value: 0),
             "peerKind": first?["peerKind"] ?? NSNumber(value: -1),
             "sources": sources ?? [],
@@ -167,8 +167,14 @@ public final class GoldgramArchiveScreen: UITableViewController {
             let entry = displayItems[indexPath.row]
             if sources == nil {
                 cell.textLabel?.text = entry["displayName"] as? String
-                cell.detailTextLabel?.text = category == 2 ? "Публикации и обсуждение" :
-                    "Сохранённых записей: \((entry["messageCount"] as? NSNumber)?.intValue ?? 0)"
+                if category == 3 {
+                    let last = (entry["lastEventAt"] as? NSNumber)?.int64Value ?? 0
+                    let time = last > 0 ? dateFormatter.string(from: Date(timeIntervalSince1970: Double(last) / 1000)) : "Время неизвестно"
+                    cell.detailTextLabel?.text = "\((entry["messageCount"] as? NSNumber)?.intValue ?? 0) удалено · \(time)"
+                } else {
+                    cell.detailTextLabel?.text = category == 2 ? "Публикации и обсуждение" :
+                        "Сохранённых записей: \((entry["messageCount"] as? NSNumber)?.intValue ?? 0)"
+                }
             } else {
                 let original = entry["originalText"] as? String
                 let latest = entry["latestText"] as? String
@@ -181,9 +187,13 @@ public final class GoldgramArchiveScreen: UITableViewController {
                 let state = removed ? (edited ? "Удалено · изменено" : "Удалено") : "Изменено"
                 let kind = (entry["peerKind"] as? NSNumber)?.int32Value ?? -1
                 let location = kind == 3 ? "Публикация" : (entry["channelId"] as? NSNumber) != nil ? "Обсуждение" : "Сообщение"
-                cell.textLabel?.text = "\(sender) · \(date)\n\(original ?? "Оригинал неизвестен")"
+                let body = category == 3 ? latest ?? original ?? "Содержимое недоступно" : original ?? "Оригинал неизвестен"
+                cell.textLabel?.text = "\(sender) · \(date)\n\(body)"
                 var details = ["\(state) · \(location)", entry["peerName"] as? String ?? Self.fallbackName(entry)]
-                if let latest, latest != original { details.append("Редакция: \(latest)") }
+                if let deletedAt = (entry["deletedAt"] as? NSNumber)?.int64Value, removed {
+                    details.append("Удаление замечено: \(dateFormatter.string(from: Date(timeIntervalSince1970: Double(deletedAt) / 1000)))")
+                }
+                if category != 3, let latest, latest != original { details.append("Редакция: \(latest)") }
                 cell.detailTextLabel?.text = details.joined(separator: "\n")
             }
             cell.selectionStyle = .default
@@ -199,6 +209,19 @@ public final class GoldgramArchiveScreen: UITableViewController {
         return cell
     }
 
+    private static func purgeRetained(_ items: [[String: Any]], account: NSNumber, offset: Int = 0, completion: @escaping (Bool) -> Void) {
+        let end = min(offset + 50, items.count)
+        let page = Array(items[offset..<end])
+        let request: [AnyHashable: Any] = ["action": "purge_retained", "accountId": account,
+            "items": page, "clearMedia": end == items.count]
+        goldgramResolveNativeMetadata(request) { answer in
+            let response = answer as NSDictionary
+            guard response["status"] as? String == "ok" else { completion(false); return }
+            if end == items.count { completion(true) }
+            else { purgeRetained(items, account: account, offset: end, completion: completion) }
+        }
+    }
+
     @objc(presentClearHistoryFromController:)
     public static func presentClearHistory(from controller: UIViewController) {
         guard let account = GoldgramArchiveReader.activeAccountId() else { return }
@@ -212,15 +235,21 @@ public final class GoldgramArchiveScreen: UITableViewController {
             GoldgramArchiveReader.clearHistory(forAccount: account) { [weak controller] answer in
                 guard let controller else { return }
                 let status = answer["status"] as? String
+                let showResult: (Bool) -> Void = { purged in
                 let result = UIAlertController(
-                    title: status == "ok" ? "Логи очищены" : "Не удалось очистить логи",
-                    message: status == "ok" ? "Локальная история выбранного аккаунта удалена." :
+                    title: status == "ok" && purged ? "Логи очищены" : "Не удалось полностью очистить логи",
+                    message: status == "ok" && purged ? "Локальная история выбранного аккаунта удалена." :
                         status == "account_changed" ? "Аккаунт изменён. Откройте Goldgram в нужном аккаунте и повторите очистку." :
                         "Ошибка локального хранилища. Попробуйте ещё раз.",
                     preferredStyle: .alert
                 )
                 result.addAction(UIAlertAction(title: "OK", style: .default))
                 controller.present(result, animated: true)
+                }
+                if status == "ok" {
+                    let retained = answer["retainedItems"] as? [[String: Any]] ?? []
+                    purgeRetained(retained, account: account, completion: showResult)
+                } else { showResult(false) }
             }
         })
         controller.present(alert, animated: true)
@@ -242,7 +271,7 @@ public final class GoldgramArchiveScreen: UITableViewController {
         guard displayItems.indices.contains(indexPath.row) else { return }
         let entry = displayItems[indexPath.row]
         if sources != nil, let accountId = boundAccount {
-            guard (entry["deleted"] as? NSNumber)?.boolValue != true,
+            guard ((entry["deleted"] as? NSNumber)?.boolValue != true || (entry["retained"] as? NSNumber)?.boolValue == true),
                   let number = entry["messageId"] as? NSNumber,
                   let peerId = entry["peerId"] as? NSNumber,
                   let peerKind = entry["peerKind"] as? NSNumber else {

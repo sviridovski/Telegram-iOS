@@ -386,3 +386,46 @@ grouping_dest = root / "Sources/tgapi/GoldgramArchiveGrouping.swift"
 if grouping_dest.exists() or not grouping_source.is_file():
     raise SystemExit("Goldgram archive grouping source mismatch")
 grouping_dest.write_text(grouping_source.read_text())
+
+# #83: Native, authenticated Postbox handling must see the ORIGINAL deletion
+# IDs. Disable both MX neutralizers only when the new host bridge is present
+# AND the user enabled Goldgram capture. Legacy behavior remains otherwise.
+parser_source = parser_path.read_text()
+anchor = '        let defaults = UserDefaults.standard\n        let antiRevoke = defaults.bool(forKey: "MxAntiRevoke")'
+if parser_source.count(anchor) != 1:
+    raise SystemExit("Goldgram native deletion parser anchor mismatch")
+parser_source = parser_source.replace(anchor, '        if UserDefaults.standard.bool(forKey: "GoldgramSQLiteCaptureEnabled") && goldgramNativeHostPresent() { return nil }\n' + anchor)
+parser_path.write_text(parser_source)
+hooks_path = root / "Sources/tgapi/Hooks.xm"
+hooks_source = hooks_path.read_text()
+anchor = '    BOOL antiSelfDestruct = [defaults boolForKey:kAntiSelfDestruct];'
+if hooks_source.count(anchor) != 1:
+    raise SystemExit("Goldgram raw deletion neutralizer anchor mismatch")
+hooks_source = '#import <dlfcn.h>\n' + hooks_source.replace(anchor, anchor + '\n    if ([defaults boolForKey:@"GoldgramSQLiteCaptureEnabled"] && dlsym(RTLD_DEFAULT, "goldgram_native_history_host_v1")) { antiRevoke = NO; antiSelfDestruct = NO; }')
+hooks_path.write_text(hooks_source)
+header_source = metadata_header.read_text()
+metadata_header.write_text(header_source + '\nBOOL goldgramNativeHostPresent(void);\n')
+
+# A fifth subfolder in MISC (Privacy & Functions); original MX row IDs unchanged.
+patches = [
+    ('if (!self.goldgramMiscCategory) return 4;', 'if (!self.goldgramMiscCategory) return 5;'),
+    ('@"Другие инструменты"];', '@"Другие инструменты", @"Удалённые сообщения"];'),
+    ('@"Other tools"];', '@"Other tools", @"Deleted messages"];'),
+    ('@"wand.and.stars"];', '@"wand.and.stars", @"trash"];'),
+    ('      if (indexPath.row < 0 || indexPath.row >= (NSInteger)[Mx goldgramMiscRows].count) return;',
+     '''      if (indexPath.row == 4) {
+        Class browser = NSClassFromString(@"GoldgramArchiveScreen");
+        if (browser && [browser instancesRespondToSelector:@selector(initWithCategory:)]) {
+          id controller = [[browser alloc] initWithCategory:3];
+          if ([controller isKindOfClass:UIViewController.class]) [self.navigationController pushViewController:controller animated:YES];
+        }
+        return;
+      }
+      if (indexPath.row < 0 || indexPath.row >= (NSInteger)[Mx goldgramMiscRows].count) return;'''),
+]
+for before, after in patches:
+    if mx_ui_source.count(before) != 1:
+        raise SystemExit("Goldgram #83 deleted-folder menu anchor mismatch: " + before)
+    mx_ui_source = mx_ui_source.replace(before, after)
+mx_ui_path.write_text(mx_ui_source)
+print("Goldgram #83: native delete events and dedicated deleted folder wired")

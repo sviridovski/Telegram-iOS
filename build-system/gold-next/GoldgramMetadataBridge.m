@@ -1,5 +1,10 @@
 #import <Foundation/Foundation.h>
 #import "Tweak.h"
+#import <dlfcn.h>
+
+BOOL goldgramNativeHostPresent(void) {
+    return dlsym(RTLD_DEFAULT, "goldgram_native_history_host_v1") != NULL;
+}
 
 @interface NSObject (GoldgramNativeArchiveMetadataContract)
 + (void)resolve:(NSDictionary *)request completion:(void (^)(NSDictionary *))completion;

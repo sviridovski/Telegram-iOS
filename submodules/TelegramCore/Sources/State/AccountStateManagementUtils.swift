@@ -88,7 +88,7 @@ private let goldgramEditCallback: GoldgramEditCallback? = {
 private func goldgramArchivePrivateEdit(
     accountPeerId: PeerId, message: StoreMessage, serverEditAt: Int64
 ) {
-    guard UserDefaults.standard.bool(forKey: "GoldgramSQLiteCaptureEnabled"),
+    guard !goldgramNativeHistoryEnabled(), UserDefaults.standard.bool(forKey: "GoldgramSQLiteCaptureEnabled"),
           let writer = goldgramEditCallback,
           case let .Id(messageId) = message.id,
           messageId.peerId.namespace == Namespaces.Peer.CloudUser,
@@ -186,7 +186,7 @@ private func goldgramArchivePublicEdit(
     accountPeerId: PeerId, message: StoreMessage,
     peerKind: Int32, editedAt: Int64
 ) {
-    guard UserDefaults.standard.bool(forKey: "GoldgramSQLiteCaptureEnabled"),
+    guard !goldgramNativeHistoryEnabled(), UserDefaults.standard.bool(forKey: "GoldgramSQLiteCaptureEnabled"),
           let writer = goldgramPublicEditCallback,
           peerKind >= 1, peerKind <= 3,
           case let .Id(messageId) = message.id,
@@ -4422,7 +4422,8 @@ func replayFinalState(
     
     for operation in optimizedOperations(finalState.state.operations) {
         switch operation {
-            case let .AddMessages(messages, location):
+            case let .AddMessages(rawMessages, location):
+                let messages = rawMessages.map { goldgramPrepareIncoming(accountPeerId: accountPeerId, transaction: transaction, message: $0) }
                 if case .UpperHistoryBlock = location {
                     for message in messages {
                         if case let .Id(id) = message.id {
@@ -4701,7 +4702,12 @@ func replayFinalState(
                         let _ = transaction.addMessages(messages, location: .Random)
                     }
                 }
-            case let .DeleteMessagesWithGlobalIds(ids):
+            case let .DeleteMessagesWithGlobalIds(rawIds):
+                let resolved = transaction.messageIdsForGlobalIds(rawIds)
+                let kept = Set(resolved.filter { goldgramRetainDeletion(accountPeerId: accountPeerId, transaction: transaction, mediaBox: mediaBox, id: $0) }.map { $0.id })
+                let resolvedIds = Set(resolved.map { $0.id })
+                goldgramUnresolvedDeletions(accountPeerId: accountPeerId, ids: rawIds.filter { !resolvedIds.contains($0) })
+                let ids = rawIds.filter { !kept.contains($0) }
                 var resourceIds: [MediaResourceId] = []
                 transaction.deleteMessagesWithGlobalIds(ids, forEachMedia: { media in
                     addMessageMediaResourceIdsToRemove(media: media, resourceIds: &resourceIds)
@@ -4710,7 +4716,8 @@ func replayFinalState(
                     let _ = mediaBox.removeCachedResources(Array(Set(resourceIds)), force: true).start()
                 }
                 deletedMessageIds.append(contentsOf: ids.map { .global($0) })
-            case let .DeleteMessages(ids):
+            case let .DeleteMessages(rawIds):
+                let ids = rawIds.filter { !goldgramRetainDeletion(accountPeerId: accountPeerId, transaction: transaction, mediaBox: mediaBox, id: $0) }
                 _internal_deleteMessages(transaction: transaction, mediaBox: mediaBox, ids: ids, manualAddMessageThreadStatsDifference: { id, add, remove in
                     addMessageThreadStatsDifference(threadKey: id, remove: remove, addedMessagePeer: nil, addedMessageId: nil, isOutgoing: false)
                 })
@@ -4720,9 +4727,21 @@ func replayFinalState(
                     updatePeerChatInclusionWithMinTimestamp(transaction: transaction, id: id.peerId, minTimestamp: message.timestamp, forceRootGroupIfNotExists: false)
                 }
                 var resourceIds: [MediaResourceId] = []
-                transaction.deleteMessagesInRange(peerId: id.peerId, namespace: id.namespace, minId: 1, maxId: id.id, forEachMedia: { media in
-                    addMessageMediaResourceIdsToRemove(media: media, resourceIds: &resourceIds)
-                })
+                if goldgramNativeHistoryEnabled(), id.namespace == Namespaces.Message.Cloud {
+                    var scoped: [MessageId] = []
+                    transaction.withAllMessages(peerId: id.peerId, namespace: id.namespace) { message in
+                        if message.id.id > 0 && message.id.id <= id.id { scoped.append(message.id) }
+                        return true
+                    }
+                    let removed = scoped.filter { !goldgramRetainDeletion(accountPeerId: accountPeerId, transaction: transaction, mediaBox: mediaBox, id: $0) }
+                    transaction.deleteMessages(removed, forEachMedia: { media in
+                        addMessageMediaResourceIdsToRemove(media: media, resourceIds: &resourceIds)
+                    })
+                } else {
+                    transaction.deleteMessagesInRange(peerId: id.peerId, namespace: id.namespace, minId: 1, maxId: id.id, forEachMedia: { media in
+                        addMessageMediaResourceIdsToRemove(media: media, resourceIds: &resourceIds)
+                    })
+                }
                 if !resourceIds.isEmpty {
                     let _ = mediaBox.removeCachedResources(Array(Set(resourceIds)), force: true).start()
                 }
@@ -4747,7 +4766,8 @@ func replayFinalState(
                 if changedGroup {
                     invalidateGroupStats.insert(Namespaces.PeerGroup.archive)
                 }
-            case let .EditMessage(id, message):
+            case let .EditMessage(id, rawMessage):
+                let message = goldgramPrepareIncoming(accountPeerId: accountPeerId, transaction: transaction, message: rawMessage)
                 var generatedEvent: (reactionAuthor: Peer, reaction: MessageReaction.Reaction, message: Message, timestamp: Int32)?
                 transaction.updateMessage(id, update: { previousMessage in
                     var updatedFlags = message.flags

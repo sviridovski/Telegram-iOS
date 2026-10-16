@@ -47,10 +47,21 @@ private func goldgramNativeNavigateToMessage(
         peerId: peerId, namespace: Namespaces.Message.Cloud,
         id: rawMessageId
     )
-    shared.navigateToChat(
-        accountId: primary.account.id,
-        peerId: peerId, messageId: messageId
-    )
+    let recordId = primary.account.id
+    let _ = (primary.account.postbox.transaction { transaction -> Message? in
+        return transaction.getMessage(messageId)
+    } |> deliverOnMainQueue).start(next: { message in
+        let navigate = {
+            guard let current = goldgramNativeNavigationContext?.sgPrimaryAccountContextForMigration(),
+                  current.account.id == recordId,
+                  current.account.peerId.id._internalGetInt64Value() == accountId else { return }
+            shared.navigateToChat(accountId: current.account.id, peerId: peerId, messageId: messageId)
+        }
+        if let message, message.localTags.contains(goldgramDeletedMessageTag) {
+            goldgramRestoreRetainedMedia(accountId: accountId, mediaBox: primary.account.postbox.mediaBox,
+                media: message.media, completion: navigate)
+        } else { navigate() }
+    })
     return 1
 }
 
@@ -81,6 +92,26 @@ public final class GoldgramNativeArchiveMetadata: NSObject {
               primary.account.peerId.id._internalGetInt64Value() == accountId
         else { completion(["status": "account_changed", "items": []]); return }
         let recordId = primary.account.id
+        if request["action"] as? String == "purge_retained" {
+            let _ = (primary.account.postbox.transaction { transaction -> Void in
+                var ids: [MessageId] = []
+                for row in entries {
+                    guard let raw = (row["peerId"] as? NSNumber)?.int64Value,
+                          let kind = (row["peerKind"] as? NSNumber)?.int32Value,
+                          let peer = self.peerId(kind: kind, raw: raw),
+                          let rawMessage = (row["messageId"] as? NSNumber)?.int64Value,
+                          let mid = Int32(exactly: rawMessage), mid > 0 else { continue }
+                    let id = MessageId(peerId: peer, namespace: Namespaces.Message.Cloud, id: mid)
+                    if transaction.getMessage(id)?.localTags.contains(goldgramDeletedMessageTag) == true { ids.append(id) }
+                }
+                transaction.deleteMessages(ids, forEachMedia: nil)
+            } |> deliverOnMainQueue).start(completed: {
+                if request["clearMedia"] as? Bool == true {
+                    goldgramClearRetainedMedia(accountId: accountId) { completion(["status": "ok", "items": []]) }
+                } else { completion(["status": "ok", "items": []]) }
+            })
+            return
+        }
         let _ = (primary.account.postbox.transaction { transaction -> [[String: Any]] in
             var result: [[String: Any]] = []
             for entry in entries {

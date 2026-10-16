@@ -570,6 +570,7 @@ private func mapVisibility(_ visibility: ListViewItemNodeVisibility, boundsSize:
 }
 
 public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewItemNode {
+    private var goldgramRestoredMessageKey: String?
     public class ContentContainer {
         public let contentMessageStableId: UInt32
         public let sourceNode: ContextExtractedContentContainingNode
@@ -3982,6 +3983,36 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
             return
         }
         
+        // Native retained messages keep their actual Telegram IDs and media.
+        // Always reset alpha/badge for recycled ordinary bubbles.
+        let bubbleMessages = item.content.map { $0.0 }
+        let deletedMessages = bubbleMessages.filter { $0.localTags.contains(goldgramDeletedMessageTag) }
+        let archivedDeletion = !deletedMessages.isEmpty
+        let mixedDeletion = archivedDeletion && deletedMessages.count != bubbleMessages.count
+        strongSelf.alpha = archivedDeletion && !mixedDeletion ? 0.58 : 1.0
+        let badgeTag = 873301
+        if archivedDeletion {
+            let badge = (strongSelf.view.viewWithTag(badgeTag) as? UILabel) ?? UILabel()
+            badge.tag = badgeTag
+            badge.text = "🗑"
+            badge.font = UIFont.systemFont(ofSize: 12)
+            badge.accessibilityLabel = "Удалено"
+            badge.isUserInteractionEnabled = false
+            badge.frame = CGRect(x: max(0, backgroundFrame.maxX - 19), y: backgroundFrame.minY + 2, width: 17, height: 16)
+            if badge.superview == nil { strongSelf.view.addSubview(badge) }
+            strongSelf.view.bringSubviewToFront(badge)
+            let accountId = item.context.account.peerId.id._internalGetInt64Value()
+            let key = "\(accountId):" + deletedMessages.map { String(describing: $0.id) }.joined(separator: ",")
+            if strongSelf.goldgramRestoredMessageKey != key {
+                strongSelf.goldgramRestoredMessageKey = key
+                goldgramRestoreRetainedMedia(accountId: accountId, mediaBox: item.context.account.postbox.mediaBox,
+                    media: deletedMessages.flatMap { $0.media }, completion: {})
+            }
+        } else {
+            strongSelf.view.viewWithTag(badgeTag)?.removeFromSuperview()
+            strongSelf.goldgramRestoredMessageKey = nil
+        }
+
         strongSelf.currentInputParams = inputParams
         strongSelf.currentApplyParams = applyInfo
         strongSelf.contentLayoutInsets = layoutInsets
@@ -5200,6 +5231,7 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
             }
             
             let contentNode = strongSelf.contentNodes[contentNodeIndex]
+            contentNode.alpha = mixedDeletion && contentNode.item?.message.localTags.contains(goldgramDeletedMessageTag) == true ? 0.58 : 1.0
             
             if contentNode.disablesClipping {
                 shouldClipOnTransitions = false

@@ -61,3 +61,13 @@ for binary in [executable, mx]:
             raise SystemExit(f"Missing dependency of {binary.name}: {dependency}")
 
 print("OK Mx runtime, host loader, localization, dependencies and TGExtra cleanup")
+
+# Native handling must be reachable before bypassing MX neutralization.
+core = app / "Frameworks/TelegramCoreFramework.framework/TelegramCoreFramework"
+if not core.is_file():
+    raise SystemExit("Goldgram native history host framework missing")
+for binary, symbol in [(core, "goldgram_native_history_host_v1"), (mx, "goldgram_capture_event_v1")]:
+    exported = subprocess.check_output(["nm", "-gU", str(binary)], text=True)
+    if symbol not in exported:
+        raise SystemExit("Goldgram native history symbol missing: " + symbol)
+print("OK Goldgram authenticated native history host/writer symbols")

@@ -21,7 +21,7 @@ def add(db,kind,peer,mid,sent,edit=True,deleted=False):
         VALUES(?,?,?,'Original',1,1,9999999,0,4321,?,?)''',(kind,peer,mid,sent,int(deleted)))
     if edit or deleted:
         db.execute('''INSERT INTO events(peer_kind,peer_id,message_id,event_kind,source,event_key,observed_at)
-            VALUES(?,?,?,?,'test',?,2)''',(kind,peer,mid,2 if deleted else 1,f'{kind}-{peer}-{mid}'))
+            VALUES(?,?,?,?,'goldgram_native_v1',?,2)''',(kind,peer,mid,2 if deleted else 1,f'{kind}-{peer}-{mid}'))
 
 a,b=setup(),setup()
 # Identical message IDs in channel and discussion must survive separately;

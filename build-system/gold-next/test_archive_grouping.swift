@@ -33,6 +33,13 @@ struct TestArchiveGrouping {
         let unknown = GoldgramArchiveGrouping.folders([["peerKind": 3, "peerId": 900]], category: 2)
         precondition(unknown[0]["displayName"] as? String == "Канал #900")
         precondition(GoldgramArchiveGrouping.folders([], category: 2).isEmpty)
+        var deletedPost = post; deletedPost["lastMessageAt"] = 300
+        var deletedComment = comment; deletedComment["lastMessageAt"] = 400
+        var deletedOther = unlinked; deletedOther["lastMessageAt"] = 500
+        let deleted = GoldgramArchiveGrouping.folders([deletedPost, deletedComment, deletedOther], category: 3)
+        precondition(deleted.count == 2)
+        precondition(deleted[0]["displayName"] as? String == "Обычная группа", "Latest deletion first")
+        precondition((deleted[1]["sources"] as! [[String: Any]]).count == 2)
         print("Goldgram #80: actual Swift grouping identity, linked sources, pagination merge, names/sort OK")
     }
 }
