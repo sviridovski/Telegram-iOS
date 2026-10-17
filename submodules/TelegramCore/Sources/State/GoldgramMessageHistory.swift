@@ -36,47 +36,24 @@ public final class GoldgramMessageHistoryAttribute: MessageAttribute {
 // Stock Core collections are 0...55; application collections start at +64.
 private let goldgramSnapshotCollection: Int8 = -100
 private let goldgramArchivedSnapshotCollection: Int8 = -101
-private struct GoldgramSnapshot: Codable {
-    let peer: Int64
-    let namespace: Int32
-    let id: Int32
-    let unique: Int64?
-    let grouping: Int64?
-    let thread: Int64?
-    let timestamp: Int32
-    let flags: UInt32
-    let tags: UInt32
-    let globalTags: UInt32
-    let localTags: UInt32
-    let author: Int64?
-    let text: String
-    let objects: Data
-    let forwardAuthor: Int64?
-    let forwardSource: Int64?
-    let forwardMessage: MessageId?
-    let forwardDate: Int32?
-    let forwardSignature: String?
-    let forwardPsa: String?
-    let forwardFlags: Int32?
-
+private extension GoldgramSnapshot {
     init?(_ message: StoreMessage) {
         guard case let .Id(id) = message.id else { return nil }
-        self.peer = id.peerId.toInt64(); self.namespace = id.namespace; self.id = id.id
-        self.unique = message.globallyUniqueId; self.grouping = message.groupingKey; self.thread = message.threadId
-        self.timestamp = message.timestamp; self.flags = message.flags.rawValue
-        self.tags = message.tags.rawValue; self.globalTags = message.globalTags.rawValue; self.localTags = message.localTags.rawValue
-        self.author = message.authorId?.toInt64(); self.text = message.text
         let encoder = PostboxEncoder()
         encoder.encodeGenericObjectArray(message.attributes.map { $0 as PostboxCoding }, forKey: "a")
         encoder.encodeGenericObjectArray(message.media.map { $0 as PostboxCoding }, forKey: "m")
-        self.objects = encoder.makeData()
-        self.forwardAuthor = message.forwardInfo?.authorId?.toInt64()
-        self.forwardSource = message.forwardInfo?.sourceId?.toInt64()
-        self.forwardMessage = message.forwardInfo?.sourceMessageId
-        self.forwardDate = message.forwardInfo?.date
-        self.forwardSignature = message.forwardInfo?.authorSignature
-        self.forwardPsa = message.forwardInfo?.psaType
-        self.forwardFlags = message.forwardInfo?.flags.rawValue
+        self.init(peer: id.peerId.toInt64(), namespace: id.namespace, id: id.id,
+            unique: message.globallyUniqueId, grouping: message.groupingKey, thread: message.threadId,
+            timestamp: message.timestamp, flags: Int32(bitPattern: message.flags.rawValue),
+            tags: Int32(bitPattern: message.tags.rawValue), globalTags: Int32(bitPattern: message.globalTags.rawValue),
+            localTags: Int32(bitPattern: message.localTags.rawValue), author: message.authorId?.toInt64(),
+            text: message.text, objects: encoder.makeData(), forwardAuthor: message.forwardInfo?.authorId?.toInt64(),
+            forwardSource: message.forwardInfo?.sourceId?.toInt64(),
+            forwardMessagePeer: message.forwardInfo?.sourceMessageId?.peerId.toInt64(),
+            forwardMessageNamespace: message.forwardInfo?.sourceMessageId?.namespace,
+            forwardMessageId: message.forwardInfo?.sourceMessageId?.id, forwardDate: message.forwardInfo?.date,
+            forwardSignature: message.forwardInfo?.authorSignature, forwardPsa: message.forwardInfo?.psaType,
+            forwardFlags: message.forwardInfo?.flags.rawValue)
     }
     var message: StoreMessage {
         let decoder = PostboxDecoder(buffer: MemoryBuffer(data: self.objects))
@@ -84,15 +61,19 @@ private struct GoldgramSnapshot: Codable {
         let decodedMedia: [PostboxCoding] = decoder.decodeObjectArrayForKey("m")
         let attributes = decodedAttributes.compactMap { $0 as? MessageAttribute }
         let media = decodedMedia.compactMap { $0 as? Media }
+        let sourceMessageId: MessageId?
+        if let peer = self.forwardMessagePeer, let namespace = self.forwardMessageNamespace, let id = self.forwardMessageId {
+            sourceMessageId = MessageId(peerId: PeerId(peer), namespace: namespace, id: id)
+        } else { sourceMessageId = nil }
         let forward = self.forwardDate.map { date in
             StoreMessageForwardInfo(authorId: self.forwardAuthor.map(PeerId.init), sourceId: self.forwardSource.map(PeerId.init),
-                sourceMessageId: self.forwardMessage, date: date, authorSignature: self.forwardSignature,
+                sourceMessageId: sourceMessageId, date: date, authorSignature: self.forwardSignature,
                 psaType: self.forwardPsa, flags: MessageForwardInfo.Flags(rawValue: self.forwardFlags ?? 0))
         }
         return StoreMessage(id: MessageId(peerId: PeerId(self.peer), namespace: self.namespace, id: self.id),
             customStableId: nil, globallyUniqueId: self.unique, groupingKey: self.grouping, threadId: self.thread,
-            timestamp: self.timestamp, flags: StoreMessageFlags(rawValue: self.flags), tags: MessageTags(rawValue: self.tags),
-            globalTags: GlobalMessageTags(rawValue: self.globalTags), localTags: LocalMessageTags(rawValue: self.localTags),
+            timestamp: self.timestamp, flags: StoreMessageFlags(rawValue: UInt32(bitPattern: self.flags)), tags: MessageTags(rawValue: UInt32(bitPattern: self.tags)),
+            globalTags: GlobalMessageTags(rawValue: UInt32(bitPattern: self.globalTags)), localTags: LocalMessageTags(rawValue: UInt32(bitPattern: self.localTags)),
             forwardInfo: forward, authorId: self.author.map(PeerId.init), text: self.text, attributes: attributes, media: media)
     }
 }
