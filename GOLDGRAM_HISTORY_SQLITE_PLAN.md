@@ -1,3 +1,13 @@
+## CURRENT HANDOFF — 2026-10-17, #86 test harness dependencies -> #87 (same startup correction)
+
+- #86 (38994842548), job 117285013365, FAILED validation step 9 BEFORE Mx/host. Existing Python suites and Swift grouping passed, but the new runtime fixture compiler could not find mdb_cmp_memn and postboxLog. These are real Postbox support functions, not an app compiler error or a result of running the startup regression yet. No IPA produced. This fixture wiring error was mine; do not call #86 successful.
+- Exact native source owners verified: mdb_cmp_memn is defined in Postbox/Sources/ValueBoxKey.swift; postboxLog is in Postbox/Sources/PostboxLogging.swift. #87 adds BOTH unmodified production files to the standalone codec fixture compile. No stub/mocked functions, no changes to #86 application fix or #85 features. One runner file changed (2 insertions, 1 deletion).
+- #87 code **85421b6b6e84c434b234b9f997232da3e5647f2f**, https://github.com/sviridovski/Telegram-iOS/actions/runs/38995184124, job 117286064473. Local a603f47c, reviewed/remote tree **336fe573e7e91b62d512895328130407ba212d8a**. Full app code is the #86 signed-bit-pattern codec correction below; no new functional atom.
+- Observed #87 validation step 9 completed SUCCESS: all Python suites, actual Swift grouping/policy executables, actual iOS SQLite store typecheck, and NEW real Postbox codec runtime fixture PASS. The runner requires the old unsigned-zero snapshot representation to terminate with SIGILL/SIGTRAP and the fixed production record to round-trip every field and all zero/high/all-bit masks. This executed successfully on macOS CI, not merely a compile. Step 10 Mx build was IN PROGRESS; full native host, package/symbol checks and iPhone launch remain UNVERIFIED. Local runner Python syntax and git diff --check also PASS.
+- Next: complete full host/IPA checks; codec runtime is already confirmed PASS. After GREEN install #87 OVER #85 and verify repeated launch/catch-up with capture ON before resuming inline history/deletion device tests. No forced reinstall or log deletion. Source analysis plus observed black-launch-to-home video is not a symbolicated device crash log. All #85 feature limits and #86 root-cause details below still apply.
+
+---
+
 ## CURRENT HANDOFF — 2026-10-17, #85 GREEN but startup crash -> #86 Postbox codec correction
 
 - Verified full Actions #85 (38980680964), job 117240571423, completed SUCCESS including native host/IPA. User installed #85 and reports immediate exit. Local 5-second screen recording was inspected via extracted frames: black launch screen then return to SpringBoard. Video has no symbolicated crash stack; do not claim device stack verification.
