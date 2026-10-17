@@ -121,23 +121,25 @@ public func goldgramSnapshotAuthor(transaction: Transaction, id: MessageId) -> (
 func goldgramSnapshotGlobalId(transaction: Transaction, id: Int32) -> MessageId? {
     return transaction.retrieveItemCacheEntry(id: goldgramGlobalKey(id))?.get(GoldgramSnapshotSlot.self)?.id
 }
-func goldgramSaveSnapshot(transaction: Transaction, message: StoreMessage) {
-    guard case let .Id(id) = message.id, id.namespace == Namespaces.Message.Cloud else { return }
+@discardableResult
+func goldgramSaveSnapshot(transaction: Transaction, message: StoreMessage) -> Bool {
+    guard case let .Id(id) = message.id, id.namespace == Namespaces.Message.Cloud else { return false }
     let previousAuthor = goldgramSnapshotAuthor(transaction: transaction, id: id)
     let authorId = message.authorId ?? previousAuthor?.id
     let authorName = authorId.flatMap { transaction.getPeer($0) }.flatMap(goldgramPeerDisplayName) ?? previousAuthor?.name
-    guard let snapshot = GoldgramSnapshot(message, authorId: authorId, authorName: authorName), let entry = CodableEntry(snapshot) else { return }
+    guard let snapshot = GoldgramSnapshot(message, authorId: authorId, authorName: authorName), let entry = CodableEntry(snapshot) else { return false }
     let archived = message.localTags.contains(goldgramDeletedMessageTag) || message.attributes.contains(where: { $0 is GoldgramMessageHistoryAttribute })
     let key = goldgramSnapshotKey(id, archived: archived)
     if archived {
-        if transaction.retrieveItemCacheEntry(id: key) != entry { transaction.putItemCacheEntry(id: key, entry: entry) }
+        let changed = transaction.retrieveItemCacheEntry(id: key) != entry
+        if changed { transaction.putItemCacheEntry(id: key, entry: entry) }
         if id.peerId.namespace != Namespaces.Peer.CloudChannel, let slot = CodableEntry(GoldgramSnapshotSlot(id: id)) {
             transaction.putItemCacheEntry(id: goldgramGlobalKey(id.id), entry: slot)
         }
-        return
+        return changed
     }
     let existing = transaction.retrieveItemCacheEntry(id: key)
-    if existing == entry { return }
+    if existing == entry { return false }
     if existing == nil {
         let cursorKey = goldgramSlotKey(-1)
         let next = transaction.retrieveItemCacheEntry(id: cursorKey)?.get(GoldgramSnapshotCursor.self)?.next ?? 0
@@ -157,6 +159,7 @@ func goldgramSaveSnapshot(transaction: Transaction, message: StoreMessage) {
         }
     }
     transaction.putItemCacheEntry(id: key, entry: entry)
+    return true
 }
 public func goldgramClearSnapshots(transaction: Transaction, accountPeerId: PeerId) {
     transaction.clearItemCacheCollection(collectionId: goldgramSnapshotCollection)

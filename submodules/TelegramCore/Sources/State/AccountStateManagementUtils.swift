@@ -38,7 +38,7 @@ private let goldgramOriginalCallbackV2: GoldgramOriginalCallbackV2? = {
 private func goldgramArchivePersonalOriginal(
     accountPeerId: PeerId, message: StoreMessage, live: Bool
 ) {
-    guard UserDefaults.standard.bool(forKey: "GoldgramSQLiteCaptureEnabled"),
+    guard !goldgramNativeHistoryEnabled(), UserDefaults.standard.bool(forKey: "GoldgramSQLiteCaptureEnabled"),
           goldgramOriginalCallbackV2 != nil || goldgramOriginalCallback != nil,
           case let .Id(messageId) = message.id,
           messageId.peerId.namespace == Namespaces.Peer.CloudUser,
@@ -145,7 +145,7 @@ private func goldgramVerifiedPublicKind(peerId: PeerId, peer: Peer?) -> Int32? {
 private func goldgramArchivePublicOriginal(
     accountPeerId: PeerId, message: StoreMessage, peerKind: Int32
 ) {
-    guard UserDefaults.standard.bool(forKey: "GoldgramSQLiteCaptureEnabled"),
+    guard !goldgramNativeHistoryEnabled(), UserDefaults.standard.bool(forKey: "GoldgramSQLiteCaptureEnabled"),
           let writer = goldgramPublicOriginalCallback,
           peerKind >= 1, peerKind <= 3,
           case let .Id(messageId) = message.id,
@@ -4770,6 +4770,13 @@ func replayFinalState(
                 }
             case let .EditMessage(id, rawMessage):
                 let message = rawMessage
+                // updateMessage does not invoke its closure for a missing row.
+                // Save the actually received full edit even outside loaded history.
+                if goldgramNativeHistoryEnabled(), id.namespace == Namespaces.Message.Cloud,
+                   transaction.getMessage(id) == nil {
+                    let _ = transaction.addMessages([message], location: .Random)
+                    continue
+                }
                 var generatedEvent: (reactionAuthor: Peer, reaction: MessageReaction.Reaction, message: Message, timestamp: Int32)?
                 transaction.updateMessage(id, update: { previousMessage in
                     var updatedFlags = message.flags

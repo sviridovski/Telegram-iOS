@@ -2,6 +2,7 @@ import Foundation
 import Darwin
 import Postbox
 import SwiftSignalKit
+import TelegramApi
 
 @inline(never)
 @_cdecl("goldgram_native_history_host_v1")
@@ -171,7 +172,23 @@ func goldgramPrepareIncoming(accountPeerId: PeerId, transaction: Transaction, me
             localTags: prepared.localTags, forwardInfo: prepared.forwardInfo, authorId: sender, text: prepared.text,
             attributes: prepared.attributes, media: prepared.media)
     }
-    goldgramSaveSnapshot(transaction: transaction, message: prepared)
+    goldgramRememberDiscussion(transaction: transaction, peerId: id.peerId)
+    if goldgramSaveSnapshot(transaction: transaction, message: prepared),
+       let kind = goldgramKind(id.peerId, transaction.getPeer(id.peerId)) {
+        // Observation has no edit/delete event. Keep received content in SQLite
+        // too, so losing a ring snapshot cannot turn a known body into a receipt.
+        let sender = prepared.authorId
+        let _ = goldgramWrite([
+            "accountId": accountPeerId.id._internalGetInt64Value(), "peerKind": kind,
+            "peerId": id.peerId.id._internalGetInt64Value(), "messageId": id.id, "eventKind": 0,
+            "text": goldgramArchiveText(prepared.text, prepared.media),
+            "originalObserved": !prepared.attributes.contains(where: { $0 is EditedMessageAttribute }),
+            "senderId": sender?.id._internalGetInt64Value() ?? 0,
+            "senderKind": sender.flatMap { goldgramKind($0, transaction.getPeer($0)) } ?? -1,
+            "sentAt": Int64(prepared.timestamp) * 1000, "threadId": prepared.threadId ?? 0,
+            "editedAt": Int64(incomingDate) * 1000
+        ])
+    }
     return prepared
 }
 
@@ -215,6 +232,7 @@ public func goldgramRestoreSnapshot(transaction: Transaction, id: MessageId, del
 func goldgramRetainDeletion(accountPeerId: PeerId, transaction: Transaction, mediaBox: MediaBox, id: MessageId) -> Bool {
     guard goldgramNativeHistoryEnabled(), id.namespace == Namespaces.Message.Cloud, id.id > 0,
           let kind = goldgramKind(id.peerId, transaction.getPeer(id.peerId)) else { return false }
+    goldgramRememberDiscussion(transaction: transaction, peerId: id.peerId, explicitlyOpened: true)
     let message = goldgramRestoreSnapshot(transaction: transaction, id: id)
     let sender = message?.author?.id ?? goldgramSnapshotAuthor(transaction: transaction, id: id)?.id
     let payload: [String: Any] = [
@@ -311,5 +329,130 @@ public func goldgramClearRetainedMedia(accountId: Int64, completion: @escaping (
     goldgramMediaQueue.async {
         try? FileManager.default.removeItem(at: goldgramMediaDirectory(accountId))
         DispatchQueue.main.async(execute: completion)
+    }
+}
+
+// Account-local, bounded list of accessible discussions. Merely receiving a
+// broadcast post does not subscribe the client to all its group's comments.
+private struct GoldgramDiscussionTarget: Codable {
+    let peer: Int64
+    let seen: Int64
+}
+private struct GoldgramDiscussionTargets: Codable {
+    let items: [GoldgramDiscussionTarget]
+}
+private let goldgramDiscussionTargetsKey = ItemCacheEntryId(collectionId: -102, key: ValueBoxKey(length: 0))
+
+func goldgramRememberDiscussion(transaction: Transaction, peerId: PeerId, explicitlyOpened: Bool = false) {
+    guard goldgramNativeHistoryEnabled(), let channel = transaction.getPeer(peerId) as? TelegramChannel else { return }
+    let linked: PeerId?
+    if let cached = transaction.getPeerCachedData(peerId: peerId) as? CachedChannelData,
+       case let .known(id) = cached.linkedDiscussionPeerId { linked = id } else { linked = nil }
+    if case .broadcast = channel.info {
+        if let linked, let group = transaction.getPeer(linked) as? TelegramChannel, case .group = group.info {
+            goldgramRememberDiscussion(transaction: transaction, peerId: linked, explicitlyOpened: true)
+        }
+        return
+    }
+    guard explicitlyOpened || linked != nil else { return }
+    let now = Int64(Date().timeIntervalSince1970)
+    let old = transaction.retrieveItemCacheEntry(id: goldgramDiscussionTargetsKey)?.get(GoldgramDiscussionTargets.self)?.items ?? []
+    // Avoid rewriting the watch list on every received comment/reaction.
+    if let current = old.first(where: { $0.peer == peerId.toInt64() }), now - current.seen < 60 { return }
+    var items = old.filter { $0.peer != peerId.toInt64() && now - $0.seen < 86400 }
+    items.insert(GoldgramDiscussionTarget(peer: peerId.toInt64(), seen: now), at: 0)
+    if let entry = CodableEntry(GoldgramDiscussionTargets(items: Array(items.prefix(4)))) {
+        transaction.putItemCacheEntry(id: goldgramDiscussionTargetsKey, entry: entry)
+    }
+}
+
+// Seed only the latest 100 accessible messages, once per active subscription.
+// This neither marks history read nor joins a group, and downloads no media.
+private func goldgramSeedDiscussion(account: Account, peerId: PeerId) -> Signal<Never, NoError> {
+    return account.postbox.transaction { transaction -> (TelegramChannel, Api.InputPeer)? in
+        guard goldgramNativeHistoryEnabled(), let peer = transaction.getPeer(peerId) as? TelegramChannel,
+              case .group = peer.info, let input = apiInputPeer(peer) else { return nil }
+        return (peer, input)
+    }
+    |> mapToSignal { value -> Signal<Never, NoError> in
+        guard let (peer, input) = value else { return .complete() }
+        return account.network.request(Api.functions.messages.getHistory(peer: input, offsetId: 0, offsetDate: 0, addOffset: 0, limit: 100, maxId: 0, minId: 0, hash: 0))
+        |> map(Optional.init)
+        |> `catch` { _ -> Signal<Api.messages.Messages?, NoError> in .single(nil) }
+        |> mapToSignal { response -> Signal<Never, NoError> in
+            guard let response else { return .complete() }
+            return account.postbox.transaction { transaction -> Void in
+                guard goldgramNativeHistoryEnabled() else { return }
+                let messages: [Api.Message]
+                let chats: [Api.Chat]
+                let users: [Api.User]
+                switch response {
+                case let .messages(data): messages = data.messages; chats = data.chats; users = data.users
+                case let .messagesSlice(data): messages = data.messages; chats = data.chats; users = data.users
+                case let .channelMessages(data): messages = data.messages; chats = data.chats; users = data.users
+                case .messagesNotModified: return
+                }
+                updatePeers(transaction: transaction, accountPeerId: account.peerId,
+                    peers: AccumulatedPeers(transaction: transaction, chats: chats, users: users))
+                let stored = messages.compactMap { StoreMessage(apiMessage: $0, accountPeerId: account.peerId, peerIsForum: peer.isForumOrMonoForum) }
+                let _ = transaction.addMessages(stored, location: .Random)
+            }
+            |> ignoreValues
+        }
+    }
+}
+
+private final class GoldgramDiscussionMonitor {
+    private let account: Account
+    private let refresh = MetaDisposable()
+    private var subscriptions: [PeerId: Disposable] = [:]
+
+    init(account: Account, queue: Queue) {
+        self.account = account
+        let tick: Signal<Void, NoError> = .single(())
+        let clock = tick |> then(Signal<Void, NoError>.complete() |> delay(15.0, queue: queue)) |> restart
+        self.refresh.set((clock
+        |> mapToSignal { _ -> Signal<[PeerId], NoError> in
+            return account.postbox.transaction { transaction -> [PeerId] in
+                guard goldgramNativeHistoryEnabled() else { return [] }
+                let now = Int64(Date().timeIntervalSince1970)
+                let items = transaction.retrieveItemCacheEntry(id: goldgramDiscussionTargetsKey)?.get(GoldgramDiscussionTargets.self)?.items ?? []
+                return items.filter { now - $0.seen < 86400 }.prefix(4).compactMap { item in
+                    let id = PeerId(item.peer)
+                    guard let peer = transaction.getPeer(id) as? TelegramChannel, case .group = peer.info else { return nil }
+                    return id
+                }
+            }
+        }
+        |> deliverOn(queue)).start(next: { [weak self] ids in
+            guard let self else { return }
+            let wanted = Set(ids)
+            for id in Array(self.subscriptions.keys) where !wanted.contains(id) {
+                self.subscriptions.removeValue(forKey: id)?.dispose()
+            }
+            for id in ids where self.subscriptions[id] == nil {
+                let disposable = DisposableSet()
+                // Reuse the stock reference-counted poller: server timeout,
+                // pts-gap handling and dedup are shared with an open chat.
+                disposable.add(account.viewTracker.polledChannel(peerId: id).start())
+                disposable.add(goldgramSeedDiscussion(account: account, peerId: id).start())
+                self.subscriptions[id] = disposable
+            }
+        }))
+    }
+    func stop() {
+        self.refresh.dispose()
+        for disposable in self.subscriptions.values { disposable.dispose() }
+        self.subscriptions.removeAll()
+    }
+}
+
+// The UI owns this subscription strictly while the selected account's app is
+// in foreground. No timers/connections remain when it switches or backgrounds.
+public func goldgramMonitorDiscussions(account: Account) -> Signal<Never, NoError> {
+    return Signal { _ in
+        let queue = Queue(name: "GoldgramDiscussionMonitor")
+        let impl = QueueLocalObject(queue: queue, generate: { GoldgramDiscussionMonitor(account: account, queue: queue) })
+        return ActionDisposable { impl.with { $0.stop() } }
     }
 }

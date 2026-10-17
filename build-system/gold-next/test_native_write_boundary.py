@@ -22,4 +22,14 @@ for path in ['submodules/TelegramCore/Sources/TelegramEngine/Messages/ReplyThrea
 assert 'transaction.updateMessage(id, preprocess: false' in u
 assert 'transaction.addMessages([restored], location: .Random, preprocess: false)' in n
 assert 'goldgramSnapshotAuthor(transaction: transaction, id: id)?.id' in n
+state = (r/'submodules/TelegramCore/Sources/State/AccountStateManagementUtils.swift').read_text()
+edit = state.split('case let .EditMessage(id, rawMessage):', 1)[1].split('case let .UpdateMessagePoll', 1)[0]
+assert edit.index('transaction.addMessages([message], location: .Random)') < edit.index('transaction.updateMessage(id'), 'Missing native row still saves full delivered edit'
+assert 'transaction.getMessage(id) == nil' in edit
+assert '"eventKind": 0' in n, 'Received bodies also persist outside the bounded Postbox baseline ring'
+assert 'goldgramMonitorDiscussions(account: account)' in u and 'applicationBindings.applicationInForeground' in u
+assert 'case .group = peer.info' in n and 'prefix(4)' in n, 'Monitor is limited to accessible groups and bounded'
+assert 'viewTracker.polledChannel(peerId: id)' in n and 'limit: 100' in n
+assert 'readHistory(' not in n and 'joinChannel(' not in n, 'Monitoring must not mark read or join chats'
+assert 'self.goldgramDiscussionMonitorDisposable.dispose()' in u
 print('Goldgram #88: account-local capture boundary covers discussion/chat-list writes and preserves maintenance bypasses')

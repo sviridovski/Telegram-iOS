@@ -52,9 +52,14 @@ enum GoldgramHistoryStore {
             .appendingPathComponent("Accounts", isDirectory: true)
             .appendingPathComponent(String(accountId), isDirectory: true)
 
+        #if os(iOS)
         let protectedAttributes: [FileAttributeKey: Any] = [
             .protectionKey: FileProtectionType.completeUntilFirstUserAuthentication
         ]
+        #else
+        // macOS runs the same writer/queue against real SQLite in CI.
+        let protectedAttributes: [FileAttributeKey: Any] = [:]
+        #endif
         try fileManager.createDirectory(
             at: directory,
             withIntermediateDirectories: true,
@@ -770,7 +775,8 @@ public final class GoldgramArchiveReader: NSObject {
            (SELECT r.content FROM revisions r
             WHERE r.peer_kind = m.peer_kind AND r.peer_id = m.peer_id
               AND r.message_id = m.message_id
-            ORDER BY r.version_index DESC LIMIT 1) AS latest_text,
+            ORDER BY CASE WHEN m.is_deleted=1 AND r.content='[Содержимое не было получено]' THEN 1 ELSE 0 END ASC,
+                     r.version_index DESC LIMIT 1) AS latest_text,
            (SELECT COUNT(*) FROM revisions r
             WHERE r.peer_kind = m.peer_kind AND r.peer_id = m.peer_id
               AND r.message_id = m.message_id) AS revision_count,
@@ -1068,7 +1074,7 @@ private extension GoldgramHistoryStore {
               let peer = (payload["peerId"] as? NSNumber)?.int64Value,
               let rawId = (payload["messageId"] as? NSNumber)?.int64Value,
               let id = Int32(exactly: rawId), id > 0,
-              let event = (payload["eventKind"] as? NSNumber)?.int32Value, (1...2).contains(event),
+              let event = (payload["eventKind"] as? NSNumber)?.int32Value, (0...2).contains(event),
               UserDefaults.standard.bool(forKey: "GoldgramSQLiteCaptureEnabled") else { return false }
         let now = Int64(Date().timeIntervalSince1970 * 1000)
         if kind == -1 && peer == 0 && event == 2 {
@@ -1082,7 +1088,7 @@ private extension GoldgramHistoryStore {
         }
         guard (0...3).contains(kind), peer > 0,
               let content = payload["text"] as? String, content.utf8.count <= 65536,
-              event == 2 || (payload["visibleEdit"] as? Bool == true && (payload["beforeText"] == nil || payload["changed"] as? Bool == true)) else { return false }
+              event != 1 || (payload["visibleEdit"] as? Bool == true && (payload["beforeText"] == nil || payload["changed"] as? Bool == true)) else { return false }
         let before = payload["beforeText"] as? String
         guard before == nil || before!.utf8.count <= 65536 else { return false }
         let known = payload["originalObserved"] as? Bool == true
@@ -1106,7 +1112,7 @@ private extension GoldgramHistoryStore {
                 do {
                     let scope = [Int64(kind), peer, Int64(id)]
                     try archiveSQL("INSERT OR IGNORE INTO dialogs(peer_kind,peer_id) VALUES(?,?);", db: db, ints: [Int64(kind),peer])
-                    let baseline = before ?? (event == 2 ? content : nil)
+                    let baseline = before ?? (event != 1 ? content : nil)
                     try archiveSQL("INSERT OR IGNORE INTO messages(peer_kind,peer_id,message_id,first_seen_at,last_seen_at,original_observed,original_text) VALUES(?,?,?,?,?,?,?);", db: db, ints: scope + [now,now,known ? 1 : 0], text: known ? baseline : nil)
                     if known, let baseline {
                         try archiveSQL("UPDATE messages SET original_observed=1, original_text=?4 WHERE peer_kind=?1 AND peer_id=?2 AND message_id=?3 AND original_observed=0;", db: db, ints: scope, text: baseline)
@@ -1116,13 +1122,18 @@ private extension GoldgramHistoryStore {
                         try archiveSQL("INSERT INTO revisions(peer_kind,peer_id,message_id,version_index,observed_at,revision_provenance,content) VALUES(?,?,?,0,?,?,?);", db: db, ints: scope + [now,known ? 1 : 2], text: baseline)
                     }
                     let last = try lastSavedRevision(db: db, peerId: peer, messageId: id, peerKind: kind)
-                    if last?.text != content {
+                    // A delete receipt with no native body must never replace
+                    // text already saved by an earlier observation in SQLite.
+                    let hasContent = event != 2 || retained
+                    if hasContent && last?.text != content {
                         guard last?.index != Int64.max else { throw StorageError.sqlite(SQLITE_TOOBIG) }
                         try archiveSQL("INSERT INTO revisions(peer_kind,peer_id,message_id,version_index,observed_at,server_edit_at,revision_provenance,content) VALUES(?,?,?,?,?,NULLIF(?,0),3,?);", db: db, ints: scope + [(last?.index ?? -1)+1,now,edited], text: content)
                     }
                     let source = event == 2 && retained ? "goldgram_native_retained_v1" : event == 1 ? "goldgram_native_live_v2" : "goldgram_native_v1"
                     // source is a fixed enum above, never a user-supplied SQL fragment.
-                    try archiveSQL("INSERT OR IGNORE INTO events(peer_kind,peer_id,message_id,event_kind,source,server_time,observed_at,event_key) VALUES(?,?,?,?, '\(source)',NULLIF(?,0),?,?);", db: db, ints: scope + [Int64(event),edited,now], text: key)
+                    if event != 0 {
+                        try archiveSQL("INSERT OR IGNORE INTO events(peer_kind,peer_id,message_id,event_kind,source,server_time,observed_at,event_key) VALUES(?,?,?,?, '\(source)',NULLIF(?,0),?,?);", db: db, ints: scope + [Int64(event),edited,now], text: key)
+                    }
                     try archiveSQL("COMMIT;", db: db, ints: [])
                 } catch {
                     try? archiveSQL("ROLLBACK;", db: db, ints: []); throw error

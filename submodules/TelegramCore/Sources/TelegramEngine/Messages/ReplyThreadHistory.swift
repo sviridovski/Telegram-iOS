@@ -84,6 +84,7 @@ private class ReplyThreadHistoryContextImpl {
         self.unreadCount.set(.single(self.unreadCountValue))
         
         self.initialStateDisposable = (account.postbox.transaction { transaction -> State in
+            goldgramRememberDiscussion(transaction: transaction, peerId: data.peerId, explicitlyOpened: true)
             var indices = transaction.getThreadIndexHoles(peerId: data.peerId, threadId: data.threadId, namespace: Namespaces.Message.Cloud)
             indices.subtract(data.initialFilledHoles)
             
@@ -709,10 +710,9 @@ func _internal_fetchChannelReplyThreadMessage(account: Account, messageId: Messa
                     }
                     
                     let parsedPeers = AccumulatedPeers(transaction: transaction, chats: chats, users: users)
-                    
-                    let _ = transaction.addMessages(parsedMessages, location: .Random)
-                    
                     updatePeers(transaction: transaction, accountPeerId: accountPeerId, peers: parsedPeers)
+                    goldgramRememberDiscussion(transaction: transaction, peerId: parsedIndex.id.peerId, explicitlyOpened: true)
+                    let _ = transaction.addMessages(parsedMessages, location: .Random)
                     
                     let resolvedMaxMessage: MessageId?
                     if let maxId = maxId {

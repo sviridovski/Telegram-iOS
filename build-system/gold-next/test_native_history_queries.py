@@ -43,6 +43,11 @@ rows=db.execute(q,(3,10,2,20,30,0)).fetchall()
 assert [(x[0],x[1],x[2]) for x in rows]==[(2,20,5),(3,10,5)]
 assert [x[16] for x in rows]==[600,500], 'deletions ordered by receipt, not message sent date'
 assert len(db.execute(q,(3,10,2,20,1,1)).fetchall())==1
+# A #88 ID-only receipt may already be the last stored revision. Recover the
+# earlier real text on read without erasing any stored revision/event.
+db.execute('INSERT INTO revisions(peer_kind,peer_id,message_id,version_index,content,observed_at) VALUES(2,20,5,1,?,700)',('[Содержимое не было получено]',))
+recovered=db.execute(block('messagesSQL'),(2,20,30,0)).fetchall()
+assert recovered[0][10]=='comment', 'old receipt placeholders must not hide actually saved content'
 # Cascade clear also removes delete events/revisions; no mixed-peer IDs.
 db.execute('DELETE FROM dialogs WHERE peer_kind=3')
 assert db.execute('SELECT COUNT(*) FROM events WHERE peer_kind=2').fetchone()[0]==1

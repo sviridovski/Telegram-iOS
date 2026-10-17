@@ -188,13 +188,15 @@ public final class GoldgramArchiveScreen: UITableViewController {
                 let state = removed ? (edited ? "Удалено · изменено" : "Удалено") : "Изменено"
                 let kind = (entry["peerKind"] as? NSNumber)?.int32Value ?? -1
                 let location = kind == 3 ? "Публикация" : (entry["channelId"] as? NSNumber) != nil ? "Обсуждение" : "Сообщение"
-                let body = removed ? latest ?? original ?? "Содержимое недоступно" : original ?? "Оригинал неизвестен"
+                let receiptOnly = removed && original == nil && (latest == nil || latest == "[Содержимое не было получено]")
+                let body = receiptOnly ? "Получено только уведомление об удалении" : (removed ? latest ?? original : original ?? latest) ?? "Содержимое недоступно"
                 cell.textLabel?.text = "\(sender) · \(date)\n\(body)"
                 var details = ["\(state) · \(location)", entry["peerName"] as? String ?? Self.fallbackName(entry)]
                 if let deletedAt = (entry["deletedAt"] as? NSNumber)?.int64Value, removed {
                     details.append("Удаление замечено: \(dateFormatter.string(from: Date(timeIntervalSince1970: Double(deletedAt) / 1000)))")
                 }
-                if !removed, let latest, latest != original { details.append("Редакция: \(latest)") }
+                if !removed, original == nil { details.append("Оригинал не получен · показана сохранённая редакция") }
+                if !removed, original != nil, let latest, latest != original { details.append("Редакция: \(latest)") }
                 cell.detailTextLabel?.text = details.joined(separator: "\n")
             }
             cell.selectionStyle = .default
@@ -268,10 +270,11 @@ public final class GoldgramArchiveScreen: UITableViewController {
         text.textContainerInset = UIEdgeInsets(top: 20, left: 16, bottom: 30, right: 16)
         let original = entry["originalText"] as? String
         let latest = entry["latestText"] as? String
+        let receiptOnly = original == nil && (latest == nil || latest == "[Содержимое не было получено]")
         let body = [original, latest == original ? nil : latest].compactMap { $0 }.joined(separator: "\n\n")
         text.text = accountChanged ? "Вернись в аккаунт, в котором сохранена эта запись." :
             body + "\n\n" + ((entry["deleted"] as? NSNumber)?.boolValue == true ?
-                "Если сообщение не было получено до удаления, Telegram уже не отдаст его текст или медиа. Сохранён только факт удаления." :
+                (receiptOnly ? "Получено только уведомление об удалении. Автор и содержимое этой записи не сохранены." : "Здесь показан сохранённый текст. Копия сообщения для открытия в чате недоступна.") :
                 "Сообщение сейчас недоступно в Telegram. Здесь показан сохранённый текст.")
         text.translatesAutoresizingMaskIntoConstraints = false
         controller.view.addSubview(text)

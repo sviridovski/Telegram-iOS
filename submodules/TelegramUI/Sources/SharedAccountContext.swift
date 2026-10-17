@@ -557,6 +557,7 @@ public final class SharedAccountContextImpl: SharedAccountContext {
         return self.immediateSGStatusValue.with { $0 }
     }
     private var sgStatusDisposable: Disposable?
+    private let goldgramDiscussionMonitorDisposable = MetaDisposable()
     public var SGIAP: SGIAPManager?
     
     public var presentGlobalController: (ViewController, Any?) -> Void = { _, _ in }
@@ -1350,6 +1351,15 @@ public final class SharedAccountContextImpl: SharedAccountContext {
         self.updateNotificationTokensRegistration()
         
         if applicationBindings.isMainApp {
+            self.goldgramDiscussionMonitorDisposable.set((combineLatest(
+                self.applicationBindings.applicationInForeground,
+                self.activeAccountContexts |> map { primary, _, _ -> Account? in primary?.account }
+                |> distinctUntilChanged(isEqual: { $0?.id == $1?.id })
+            )
+            |> mapToSignal { foreground, account -> Signal<Never, NoError> in
+                guard foreground, let account else { return .complete() }
+                return goldgramMonitorDiscussions(account: account)
+            }).start())
             self.widgetDataContext = WidgetDataContext(basePath: self.basePath, inForeground: self.applicationBindings.applicationInForeground, activeAccounts: self.activeAccountContexts
             |> map { _, accounts, _ in
                 return accounts.map { $0.1.account }
@@ -1392,6 +1402,7 @@ public final class SharedAccountContextImpl: SharedAccountContext {
         assertionFailure("SharedAccountContextImpl is not supposed to be deallocated")
         self.registeredNotificationTokensDisposable.dispose()
         self.presentationDataDisposable.dispose()
+        self.goldgramDiscussionMonitorDisposable.dispose()
         self.automaticMediaDownloadSettingsDisposable.dispose()
         self.currentAutodownloadSettingsDisposable.dispose()
         self.inAppNotificationSettingsDisposable?.dispose()
