@@ -18,7 +18,8 @@ with tempfile.TemporaryDirectory(prefix='goldgram-postbox-') as temp:
                     str(root / 'submodules/MurMurHash32/Sources/MurMurHash32.m'),
                     '-I', str(work), '-o', str(obj)], check=True)
     postbox = root / 'submodules/Postbox/Sources'
-    sources = [postbox / 'Coding.swift', *sorted((postbox / 'Utils/Encoder').glob('*.swift')),
+    sources = [postbox / 'Coding.swift', postbox / 'ValueBoxKey.swift',
+               postbox / 'PostboxLogging.swift', *sorted((postbox / 'Utils/Encoder').glob('*.swift')),
                *sorted((postbox / 'Utils/Decoder').glob('*.swift')),
                root / 'submodules/TelegramCore/Sources/State/GoldgramSnapshotRecord.swift',
                root / 'build-system/gold-next/test_snapshot_codec.swift']
