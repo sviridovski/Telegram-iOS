@@ -151,7 +151,7 @@ public final class GoldgramNativeArchiveMetadata: NSObject {
                     if let message = transaction.getMessage(id) {
                         if message.localTags.contains(goldgramDeletedMessageTag) { ids.append(id) }
                         else if message.attributes.contains(where: { $0 is GoldgramMessageHistoryAttribute }) {
-                            transaction.updateMessage(id, update: { current in
+                            transaction.updateMessage(id, preprocess: false, update: { current in
                                 return .update(StoreMessage(id: current.id, customStableId: nil,
                                     globallyUniqueId: current.globallyUniqueId, groupingKey: current.groupingKey,
                                     threadId: current.threadId, timestamp: current.timestamp, flags: StoreMessageFlags(current.flags),
@@ -219,7 +219,8 @@ public final class GoldgramNativeArchiveMetadata: NSObject {
                    let mid = Int32(exactly: rawMessageId), mid > 0 {
                     row["messageId"] = NSNumber(value: mid)
                     let message = transaction.getMessage(MessageId(peerId: id, namespace: Namespaces.Message.Cloud, id: mid))
-                    var author: Peer? = message?.author
+                    let savedAuthor = goldgramSnapshotAuthor(transaction: transaction, id: MessageId(peerId: id, namespace: Namespaces.Message.Cloud, id: mid))
+                    var author: Peer? = message?.author ?? savedAuthor?.id.flatMap { transaction.getPeer($0) }
                     if author == nil,
                        let savedSender = (entry["senderId"] as? NSNumber)?.int64Value,
                        let savedKind = (entry["senderKind"] as? NSNumber)?.int32Value,
@@ -228,13 +229,15 @@ public final class GoldgramNativeArchiveMetadata: NSObject {
                     }
                     if let author {
                         row["senderName"] = EnginePeer(author).compactDisplayTitle
+                    } else if let name = savedAuthor?.name {
+                        row["senderName"] = name
                     } else if kind == 3, let peer {
                         // Publication source, not an invented administrator identity.
                         row["senderName"] = EnginePeer(peer).compactDisplayTitle
                     }
                     if ((entry["sentAt"] as? NSNumber)?.int64Value ?? 0) <= 0,
-                       let message, message.timestamp > 0 {
-                        row["sentAt"] = NSNumber(value: Int64(message.timestamp) * 1000)
+                       let timestamp = message?.timestamp ?? savedAuthor?.sentAt, timestamp > 0 {
+                        row["sentAt"] = NSNumber(value: Int64(timestamp) * 1000)
                     }
                 }
                 result.append(row)

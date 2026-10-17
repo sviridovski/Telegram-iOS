@@ -188,13 +188,13 @@ public final class GoldgramArchiveScreen: UITableViewController {
                 let state = removed ? (edited ? "Удалено · изменено" : "Удалено") : "Изменено"
                 let kind = (entry["peerKind"] as? NSNumber)?.int32Value ?? -1
                 let location = kind == 3 ? "Публикация" : (entry["channelId"] as? NSNumber) != nil ? "Обсуждение" : "Сообщение"
-                let body = category == 3 ? latest ?? original ?? "Содержимое недоступно" : original ?? "Оригинал неизвестен"
+                let body = removed ? latest ?? original ?? "Содержимое недоступно" : original ?? "Оригинал неизвестен"
                 cell.textLabel?.text = "\(sender) · \(date)\n\(body)"
                 var details = ["\(state) · \(location)", entry["peerName"] as? String ?? Self.fallbackName(entry)]
                 if let deletedAt = (entry["deletedAt"] as? NSNumber)?.int64Value, removed {
                     details.append("Удаление замечено: \(dateFormatter.string(from: Date(timeIntervalSince1970: Double(deletedAt) / 1000)))")
                 }
-                if category != 3, let latest, latest != original { details.append("Редакция: \(latest)") }
+                if !removed, let latest, latest != original { details.append("Редакция: \(latest)") }
                 cell.detailTextLabel?.text = details.joined(separator: "\n")
             }
             cell.selectionStyle = .default

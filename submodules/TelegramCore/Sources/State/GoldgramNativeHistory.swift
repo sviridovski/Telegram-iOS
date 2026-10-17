@@ -92,7 +92,7 @@ private func goldgramCaptureMutation(accountPeerId: PeerId, transaction: Transac
     guard verified else { return history }
     // A replay of an identical version is not another revision; there is no
     // observation-only backfill from arbitrary historical messages anymore.
-    let sender = message.authorId
+    let sender = message.authorId ?? previous?.authorId
     var payload: [String: Any] = [
         "accountId": accountPeerId.id._internalGetInt64Value(), "peerKind": kind,
         "peerId": id.peerId.id._internalGetInt64Value(), "messageId": id.id, "eventKind": 1,
@@ -111,11 +111,11 @@ private func goldgramCaptureMutation(accountPeerId: PeerId, transaction: Transac
     guard goldgramWrite(payload) else { return history }
     // An unavailable original is never invented. Start inline history with the
     // earliest actually received version, labelled honestly by the renderer.
-    let baseline = history?.baseline ?? previous?.text ?? message.text
+    let baseline = history?.baseline ?? previous?.text ?? ""
     let original = history?.originalObserved ?? (previous.map { !$0.attributes.contains(where: { $0 is EditedMessageAttribute }) } ?? false)
     var revisions = history?.revisions ?? []
     var dates = history?.editDates ?? []
-    if previous != nil {
+    if previous != nil || history == nil {
         revisions.append(goldgramArchiveText(message.text, message.media))
         dates.append(edited?.date ?? 0)
     }
@@ -142,11 +142,18 @@ func goldgramPrepareIncoming(accountPeerId: PeerId, transaction: Transaction, me
     let stored = transaction.getMessage(id).map { goldgramStoredMessage($0, localTags: $0.localTags) }
     // Existing retained content must not be erased by a duplicate payload,
     // even after the user turns off capture of NEW events.
+    if message.localTags.contains(goldgramDeletedMessageTag) { return message }
     if let stored, stored.localTags.contains(goldgramDeletedMessageTag) { return stored }
-    guard goldgramNativeHistoryEnabled(), goldgramKind(id.peerId, transaction.getPeer(id.peerId)) != nil else { return message }
+    guard goldgramNativeHistoryEnabled() else { return message }
     let snapshot = goldgramSnapshot(transaction: transaction, id: id)
     if let snapshot, snapshot.localTags.contains(goldgramDeletedMessageTag) { return snapshot }
-    var previous = stored ?? snapshot
+    // The independent snapshot is the last captured version. A native path
+    // may already have replaced the live row; comparing only that row would
+    // lose the original again. This also orders repeated IDs in one batch.
+    var previous = snapshot ?? stored
+    let snapshotDate = (snapshot?.attributes.first(where: { $0 is EditedMessageAttribute }) as? EditedMessageAttribute)?.date ?? 0
+    let incomingDate = (message.attributes.first(where: { $0 is EditedMessageAttribute }) as? EditedMessageAttribute)?.date ?? 0
+    if let snapshot, snapshotDate > incomingDate { return snapshot }
     // Other native fetch paths may have replaced the row without our local
     // attribute. Carry the independently saved history through that refresh.
     if let current = previous, !current.attributes.contains(where: { $0 is GoldgramMessageHistoryAttribute }),
@@ -156,7 +163,14 @@ func goldgramPrepareIncoming(accountPeerId: PeerId, transaction: Transaction, me
     let history = goldgramCaptureMutation(accountPeerId: accountPeerId, transaction: transaction, message: message, previous: previous)
     var attributes = message.attributes.filter { !($0 is GoldgramMessageHistoryAttribute) }
     if let history { attributes.append(history) }
-    let prepared = message.withUpdatedAttributes(attributes)
+    var prepared = message.withUpdatedAttributes(attributes)
+    if prepared.authorId == nil, let sender = previous?.authorId {
+        prepared = StoreMessage(id: prepared.id, customStableId: prepared.customStableId,
+            globallyUniqueId: prepared.globallyUniqueId, groupingKey: prepared.groupingKey, threadId: prepared.threadId,
+            timestamp: prepared.timestamp, flags: prepared.flags, tags: prepared.tags, globalTags: prepared.globalTags,
+            localTags: prepared.localTags, forwardInfo: prepared.forwardInfo, authorId: sender, text: prepared.text,
+            attributes: prepared.attributes, media: prepared.media)
+    }
     goldgramSaveSnapshot(transaction: transaction, message: prepared)
     return prepared
 }
@@ -165,8 +179,17 @@ func goldgramPrepareIncoming(accountPeerId: PeerId, transaction: Transaction, me
 // never manufactures content from an ID or fetches a deleted server message.
 public func goldgramRestoreSnapshot(transaction: Transaction, id: MessageId, deleted: Bool = false) -> Message? {
     if let message = transaction.getMessage(id) {
+        if !message.attributes.contains(where: { $0 is GoldgramMessageHistoryAttribute }),
+           let snapshot = goldgramSnapshot(transaction: transaction, id: id), snapshot.text == message.text,
+           let history = snapshot.attributes.first(where: { $0 is GoldgramMessageHistoryAttribute }) {
+            transaction.updateMessage(id, preprocess: false, update: { current in
+                let hydrated = goldgramStoredMessage(current, localTags: current.localTags)
+                    .withUpdatedAttributes(current.attributes + [history])
+                return .update(hydrated)
+            })
+        }
         if deleted && !message.localTags.contains(goldgramDeletedMessageTag) {
-            transaction.updateMessage(id, update: { current in
+            transaction.updateMessage(id, preprocess: false, update: { current in
                 var tags = current.localTags; tags.insert(goldgramDeletedMessageTag)
                 return .update(goldgramStoredMessage(current, localTags: tags))
             })
@@ -183,7 +206,7 @@ public func goldgramRestoreSnapshot(transaction: Transaction, id: MessageId, del
             !($0 is AutoremoveTimeoutMessageAttribute) && !($0 is AutoclearTimeoutMessageAttribute)
         })
     }
-    let _ = transaction.addMessages([restored], location: .Random)
+    let _ = transaction.addMessages([restored], location: .Random, preprocess: false)
     return transaction.getMessage(id)
 }
 
@@ -193,7 +216,7 @@ func goldgramRetainDeletion(accountPeerId: PeerId, transaction: Transaction, med
     guard goldgramNativeHistoryEnabled(), id.namespace == Namespaces.Message.Cloud, id.id > 0,
           let kind = goldgramKind(id.peerId, transaction.getPeer(id.peerId)) else { return false }
     let message = goldgramRestoreSnapshot(transaction: transaction, id: id)
-    let sender = message?.author?.id
+    let sender = message?.author?.id ?? goldgramSnapshotAuthor(transaction: transaction, id: id)?.id
     let payload: [String: Any] = [
         "accountId": accountPeerId.id._internalGetInt64Value(), "peerKind": kind,
         "peerId": id.peerId.id._internalGetInt64Value(), "messageId": id.id, "eventKind": 2,
@@ -206,7 +229,7 @@ func goldgramRetainDeletion(accountPeerId: PeerId, transaction: Transaction, med
     ]
     guard goldgramWrite(payload), let message else { return false }
     if !message.localTags.contains(goldgramDeletedMessageTag) {
-        transaction.updateMessage(id, update: { current in
+        transaction.updateMessage(id, preprocess: false, update: { current in
             var tags = current.localTags; tags.insert(goldgramDeletedMessageTag)
             return .update(goldgramStoredMessage(current, localTags: tags))
         })

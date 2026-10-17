@@ -43,10 +43,11 @@ public final class Transaction {
         self.postbox?.keychainTable.set(key, value: value)
     }
     
-    public func addMessages(_ messages: [StoreMessage], location: AddMessagesLocation) -> [Int64: MessageId] {
+    public func addMessages(_ messages: [StoreMessage], location: AddMessagesLocation, preprocess: Bool = true) -> [Int64: MessageId] {
         assert(!self.disposed)
         if let postbox = self.postbox {
-            return postbox.addMessages(transaction: self, messages: messages, location: location)
+            let prepared = preprocess ? messages.map { self.prepareStoreMessage($0) } : messages
+            return postbox.addMessages(transaction: self, messages: prepared, location: location)
         } else {
             return [:]
         }
@@ -538,9 +539,22 @@ public final class Transaction {
         }
     }
     
-    public func updateMessage(_ id: MessageId, update: (Message) -> PostboxUpdateMessage) {
+    public func updateMessage(_ id: MessageId, preprocess: Bool = true, update: (Message) -> PostboxUpdateMessage) {
         assert(!self.disposed)
-        self.postbox?.updateMessage(transaction: self, id: id, update: update)
+        self.postbox?.updateMessage(transaction: self, id: id, update: { current in
+            switch update(current) {
+            case let .update(message): return .update(preprocess ? self.prepareStoreMessage(message) : message)
+            case .skip: return .skip
+            }
+        })
+    }
+
+    private var preparingStoreMessage = false
+    private func prepareStoreMessage(_ message: StoreMessage) -> StoreMessage {
+        guard !self.preparingStoreMessage, let prepare = self.postbox?.storeMessagePreprocessor else { return message }
+        self.preparingStoreMessage = true
+        defer { self.preparingStoreMessage = false }
+        return prepare(self, message)
     }
     
     public func offsetPendingMessagesTimestamps(lowerBound: MessageId, excludeIds: Set<MessageId>, timestamp: Int32) {
@@ -1861,6 +1875,8 @@ final class PostboxImpl {
     //temporary
     let peerRatingTable: RatingTable<PeerId>
     
+    var storeMessagePreprocessor: ((Transaction, StoreMessage) -> StoreMessage)?
+
     var installedMessageActionsByPeerId: [PeerId: Bag<([StoreMessage], Transaction) -> Void>] = [:]
     var installedStoreOrUpdateMessageActionsByPeerId: [PeerId: Bag<StoreOrUpdateMessageAction>] = [:]
     
@@ -5189,6 +5205,11 @@ public class Postbox {
 
             return disposable
         }
+    }
+
+    // One closure per Postbox/account, called on its transaction queue.
+    public func setStoreMessagePreprocessor(_ prepare: @escaping (Transaction, StoreMessage) -> StoreMessage) {
+        self.impl.with { impl in impl.storeMessagePreprocessor = prepare }
     }
 
     public func installStoreMessageAction(peerId: PeerId, _ f: @escaping ([StoreMessage], Transaction) -> Void) -> Disposable {

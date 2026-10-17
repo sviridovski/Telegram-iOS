@@ -27,6 +27,12 @@ struct NativeEventPolicyFixture {
             previous = text
         }
         precondition(captured == ["B", "C", "A"], "all distinct delivered edits, including a revert; no reload duplicates")
-        print("Goldgram #85: actual native event policy rejects metadata and accepts text/media/revert edits")
+        let unknown = GoldgramEventPolicy.normalizeInlineHistory(baseline: "Ден: первая полученная правка", originalObserved: false, revisions: [])
+        precondition(unknown.baseline.isEmpty && unknown.revisions == ["Ден: первая полученная правка"], "unknown-original edit still has one gray visible revision")
+        let chain = GoldgramEventPolicy.normalizeInlineHistory(baseline: "Original", originalObserved: true, revisions: ["B", "C"])
+        precondition(chain.baseline == "Original" && chain.revisions == ["B", "C"], "observed original and multiple edits preserved")
+        let firstKnown = GoldgramEventPolicy.normalizeInlineHistory(baseline: "Already edited", originalObserved: false, revisions: ["next edit"])
+        precondition(firstKnown.baseline == "Already edited" && firstKnown.revisions == ["next edit"])
+        print("Goldgram #88: actual native event policy rejects metadata and accepts text/media/revert edits")
     }
 }

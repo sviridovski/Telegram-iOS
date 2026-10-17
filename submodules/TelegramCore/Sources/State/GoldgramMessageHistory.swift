@@ -15,10 +15,17 @@ public final class GoldgramMessageHistoryAttribute: MessageAttribute {
         self.entities = entities; self.revisions = revisions; self.editDates = editDates
     }
     public init(decoder: PostboxDecoder) {
-        self.baseline = decoder.decodeStringForKey("b", orElse: "")
-        self.originalObserved = decoder.decodeBoolForKey("o", orElse: false)
-        self.entities = (decoder.decodeObjectForKey("e") as? TextEntitiesMessageAttribute)?.entities ?? []
-        self.revisions = decoder.decodeStringArrayForKey("r")
+        let baseline = decoder.decodeStringForKey("b", orElse: "")
+        let original = decoder.decodeBoolForKey("o", orElse: false)
+        let revisions = decoder.decodeStringArrayForKey("r")
+        // #87 stored a first-observed edit as a baseline with zero revisions.
+        // Keep the unknown original explicit and show that known edit in gray.
+        let normalized = GoldgramEventPolicy.normalizeInlineHistory(baseline: baseline, originalObserved: original, revisions: revisions)
+        let firstKnownEdit = !original && revisions.isEmpty
+        self.baseline = normalized.baseline
+        self.originalObserved = original
+        self.entities = firstKnownEdit ? [] : (decoder.decodeObjectForKey("e") as? TextEntitiesMessageAttribute)?.entities ?? []
+        self.revisions = normalized.revisions
         self.editDates = decoder.decodeInt32ArrayForKey("d")
     }
     public func encode(_ encoder: PostboxEncoder) {
@@ -37,7 +44,7 @@ public final class GoldgramMessageHistoryAttribute: MessageAttribute {
 private let goldgramSnapshotCollection: Int8 = -100
 private let goldgramArchivedSnapshotCollection: Int8 = -101
 private extension GoldgramSnapshot {
-    init?(_ message: StoreMessage) {
+    init?(_ message: StoreMessage, authorId: PeerId?, authorName: String?) {
         guard case let .Id(id) = message.id else { return nil }
         let encoder = PostboxEncoder()
         encoder.encodeGenericObjectArray(message.attributes.map { $0 as PostboxCoding }, forKey: "a")
@@ -46,8 +53,8 @@ private extension GoldgramSnapshot {
             unique: message.globallyUniqueId, grouping: message.groupingKey, thread: message.threadId,
             timestamp: message.timestamp, flags: Int32(bitPattern: message.flags.rawValue),
             tags: Int32(bitPattern: message.tags.rawValue), globalTags: Int32(bitPattern: message.globalTags.rawValue),
-            localTags: Int32(bitPattern: message.localTags.rawValue), author: message.authorId?.toInt64(),
-            text: message.text, objects: encoder.makeData(), forwardAuthor: message.forwardInfo?.authorId?.toInt64(),
+            localTags: Int32(bitPattern: message.localTags.rawValue), author: authorId?.toInt64(),
+            authorName: authorName, text: message.text, objects: encoder.makeData(), forwardAuthor: message.forwardInfo?.authorId?.toInt64(),
             forwardSource: message.forwardInfo?.sourceId?.toInt64(),
             forwardMessagePeer: message.forwardInfo?.sourceMessageId?.peerId.toInt64(),
             forwardMessageNamespace: message.forwardInfo?.sourceMessageId?.namespace,
@@ -96,12 +103,30 @@ func goldgramSnapshot(transaction: Transaction, id: MessageId) -> StoreMessage? 
     return (transaction.retrieveItemCacheEntry(id: goldgramSnapshotKey(id, archived: true)) ??
         transaction.retrieveItemCacheEntry(id: goldgramSnapshotKey(id)))?.get(GoldgramSnapshot.self)?.message
 }
+func goldgramPeerDisplayName(_ peer: Peer) -> String? {
+    if let user = peer as? TelegramUser {
+        let name = [user.firstName, user.lastName].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " ")
+        return name.isEmpty ? nil : name
+    }
+    if let channel = peer as? TelegramChannel { return channel.title }
+    if let group = peer as? TelegramGroup { return group.title }
+    return nil
+}
+public func goldgramSnapshotAuthor(transaction: Transaction, id: MessageId) -> (id: PeerId?, name: String?, sentAt: Int32)? {
+    guard let record = (transaction.retrieveItemCacheEntry(id: goldgramSnapshotKey(id, archived: true)) ??
+        transaction.retrieveItemCacheEntry(id: goldgramSnapshotKey(id)))?.get(GoldgramSnapshot.self) else { return nil }
+    return (record.author.map(PeerId.init), record.authorName, record.timestamp)
+}
+
 func goldgramSnapshotGlobalId(transaction: Transaction, id: Int32) -> MessageId? {
     return transaction.retrieveItemCacheEntry(id: goldgramGlobalKey(id))?.get(GoldgramSnapshotSlot.self)?.id
 }
 func goldgramSaveSnapshot(transaction: Transaction, message: StoreMessage) {
-    guard case let .Id(id) = message.id, id.namespace == Namespaces.Message.Cloud,
-          let snapshot = GoldgramSnapshot(message), let entry = CodableEntry(snapshot) else { return }
+    guard case let .Id(id) = message.id, id.namespace == Namespaces.Message.Cloud else { return }
+    let previousAuthor = goldgramSnapshotAuthor(transaction: transaction, id: id)
+    let authorId = message.authorId ?? previousAuthor?.id
+    let authorName = authorId.flatMap { transaction.getPeer($0) }.flatMap(goldgramPeerDisplayName) ?? previousAuthor?.name
+    guard let snapshot = GoldgramSnapshot(message, authorId: authorId, authorName: authorName), let entry = CodableEntry(snapshot) else { return }
     let archived = message.localTags.contains(goldgramDeletedMessageTag) || message.attributes.contains(where: { $0 is GoldgramMessageHistoryAttribute })
     let key = goldgramSnapshotKey(id, archived: archived)
     if archived {

@@ -450,7 +450,7 @@ public class ChatMessageTextBubbleContentNode: ChatMessageBubbleContentNode {
                 if let subject = item.associatedData.subject, case .messageOptions = subject { goldgramAllowsHistory = false }
                 let showGoldgramHistory = goldgramAllowsHistory && goldgramHistory?.revisions.isEmpty == false && item.attributes.updatingMedia == nil && !isTranslating
                 if showGoldgramHistory, let history = goldgramHistory {
-                    rawText = history.baseline.isEmpty ? "[Медиа / без текста]" : history.baseline
+                    rawText = history.baseline.isEmpty ? (history.originalObserved ? "[Медиа / без текста]" : "Оригинал не был получен") : history.baseline
                     messageEntities = history.baseline.isEmpty ? [] : history.entities
                 }
 
@@ -647,7 +647,7 @@ public class ChatMessageTextBubbleContentNode: ChatMessageBubbleContentNode {
                     paragraph.firstLineHeadIndent = 12
                     paragraph.headIndent = 12
                     let gray = messageTheme.primaryTextColor.withAlphaComponent(0.55)
-                    if !history.originalObserved {
+                    if !history.originalObserved && !history.baseline.isEmpty {
                         combined.insert(NSAttributedString(string: "Первая сохранённая версия\n", font: textFont, textColor: gray), at: 0)
                     }
                     for (index, revision) in history.revisions.enumerated() {

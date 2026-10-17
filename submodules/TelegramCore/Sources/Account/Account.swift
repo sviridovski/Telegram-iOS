@@ -1252,6 +1252,10 @@ public class Account {
         self.supplementary = supplementary
         self.isSupportUser = isSupportUser
         
+        postbox.setStoreMessagePreprocessor { transaction, message in
+            return goldgramPrepareIncoming(accountPeerId: peerId, transaction: transaction, message: message)
+        }
+
         self.networkStatsContext = NetworkStatsContext(postbox: postbox)
         
         self.peerInputActivityManager = PeerInputActivityManager()

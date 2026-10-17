@@ -1034,10 +1034,8 @@ func fetchMessageHistoryHole(accountPeerId: PeerId, source: FetchMessageHistoryH
                     
                     return withResolvedAssociatedMessages(postbox: postbox, source: source, accountPeerId: accountPeerId, parsedPeers: parsedPeers, storeMessages: storeMessages, resolveThreads: true, { transaction, additionalParsedPeers, additionalMessages -> FetchMessageHistoryHoleResult? in
                         updatePeers(transaction: transaction, accountPeerId: accountPeerId, peers: parsedPeers.union(with: additionalParsedPeers))
-                        let nativeMessages = storeMessages.map { goldgramPrepareIncoming(accountPeerId: accountPeerId, transaction: transaction, message: $0) }
-                        let nativeAssociated = additionalMessages.map { goldgramPrepareIncoming(accountPeerId: accountPeerId, transaction: transaction, message: $0) }
-                        let _ = transaction.addMessages(nativeMessages, location: .Random)
-                        let _ = transaction.addMessages(nativeAssociated, location: .Random)
+                        let _ = transaction.addMessages(storeMessages, location: .Random)
+                        let _ = transaction.addMessages(additionalMessages, location: .Random)
                         var filledRange: ClosedRange<MessageId.Id>
                         var strictFilledIndices: IndexSet
                         let ids = storeMessages.compactMap { message -> MessageId.Id? in

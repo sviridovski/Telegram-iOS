@@ -17,6 +17,7 @@ struct GoldgramSnapshot: Codable {
     let globalTags: Int32
     let localTags: Int32
     let author: Int64?
+    let authorName: String?
     let text: String
     let objects: Data
     let forwardAuthor: Int64?

@@ -19,7 +19,7 @@ struct SnapshotCodecFixture {
                     thread: forwarded ? 9 : nil, timestamp: 1792180000,
                     flags: Int32(bitPattern: mask), tags: Int32(bitPattern: mask),
                     globalTags: Int32(bitPattern: mask), localTags: Int32(bitPattern: mask),
-                    author: forwarded ? 9876543210 : nil, text: "Оригинал 🗑\nИзменение 1",
+                    author: forwarded ? 9876543210 : nil, authorName: forwarded ? "Ден" : nil, text: "Оригинал 🗑\nИзменение 1",
                     objects: Data([0, 1, 127, 128, 255]),
                     forwardAuthor: forwarded ? 1234 : nil, forwardSource: forwarded ? 5678 : nil,
                     forwardMessagePeer: forwarded ? 5678 : nil, forwardMessageNamespace: forwarded ? 0 : nil,

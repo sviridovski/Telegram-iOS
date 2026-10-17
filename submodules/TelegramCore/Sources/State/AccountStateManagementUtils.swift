@@ -4423,7 +4423,7 @@ func replayFinalState(
     for operation in optimizedOperations(finalState.state.operations) {
         switch operation {
             case let .AddMessages(rawMessages, location):
-                var messages = rawMessages.map { goldgramPrepareIncoming(accountPeerId: accountPeerId, transaction: transaction, message: $0) }
+                var messages = rawMessages
                 if case .UpperHistoryBlock = location {
                     for message in messages {
                         if case let .Id(id) = message.id {
@@ -4769,7 +4769,7 @@ func replayFinalState(
                     invalidateGroupStats.insert(Namespaces.PeerGroup.archive)
                 }
             case let .EditMessage(id, rawMessage):
-                let message = goldgramPrepareIncoming(accountPeerId: accountPeerId, transaction: transaction, message: rawMessage)
+                let message = rawMessage
                 var generatedEvent: (reactionAuthor: Peer, reaction: MessageReaction.Reaction, message: Message, timestamp: Int32)?
                 transaction.updateMessage(id, update: { previousMessage in
                     var updatedFlags = message.flags

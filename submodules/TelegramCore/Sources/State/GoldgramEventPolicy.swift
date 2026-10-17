@@ -7,4 +7,8 @@ enum GoldgramEventPolicy {
         guard let previousText else { return true } // honestly unknown original
         return previousText != currentText || previousMedia != currentMedia || entitiesChanged
     }
+    static func normalizeInlineHistory(baseline: String, originalObserved: Bool, revisions: [String]) -> (baseline: String, revisions: [String]) {
+        guard !originalObserved && revisions.isEmpty else { return (baseline, revisions) }
+        return ("", [baseline.isEmpty ? "[Медиа / без текста]" : baseline])
+    }
 }

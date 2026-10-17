@@ -109,8 +109,7 @@ func _internal_getMessagesLoadIfNecessary(_ messageIds: [MessageId], postbox: Po
                                     storeMessages.append(message)
                                 }
                             }
-                            let prepared = storeMessages.map { goldgramPrepareIncoming(accountPeerId: accountPeerId, transaction: transaction, message: $0) }
-                            _ = transaction.addMessages(prepared, location: .Random)
+                            _ = transaction.addMessages(storeMessages, location: .Random)
                         }
 
                     }
