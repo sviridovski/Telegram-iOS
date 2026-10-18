@@ -1,6 +1,18 @@
 ## CURRENT HANDOFF — 2026-10-18, #90 GREEN/device findings -> #91 notification-service capture, durable originals, totals
 
 
+### #93 confirmed SQLite scope defect / #94 correction
+
+- #93 run39111813653 / job117629361156 FAILED step9, now with the actual SQLite error: production totals query preparation fails `no such column: m.is_deleted`. Both notification handoff fixture and truthful original C bridge passed. The defect is the correlated OUTER `m.is_deleted` reference in the ORDER BY of the latest-revision subquery, originally added in #89; local Python SQLite accepts this but Apple's CI SQLite rejects it. It also affects the shared archive messages query, not just the new totals.
+- Removed the outer-reference condition: order by the LOCAL revision content being a missing-content sentinel, then local version_index. Actual received content remains preferred over placeholders for deleted AND edited records. No originals/events are manufactured. All12 Python suites pass after fix.
+- Current follow-up **28fbd317c06a7870c99e38007a534d6d9dfd2870**, local8ad2871a, reviewed/API tree **b7b44d1f200783e5f6f5c06ff9f5f2fdfc1aa2a4** equal. **#94 run39112134878**, https://github.com/sviridovski/Telegram-iOS/actions/runs/39112134878 . Still the #91 functional atom, with CI corrections documented. Pending macOS runtime gate, full app/extension compile and IPA; do not call GREEN yet.
+
+### #92 runtime finding / #93 diagnostics
+
+- #92 run39111215466 / job117627566674 FAILED step9. Production notification consent/outbox unit fixture PASSED (including Codable handoff and bounds); actual original bridge tests PASSED (truthful original, unknown-original rejection, peer-kind isolation, embedded NUL/Unicode). Actual selected-account totals query callback then failed its `status == ok` precondition at fixture line79; original assertion did not print returned status. Full Mx/Core/UI/extension compile not reached. Do NOT call totals working yet.
+- Initial suspicion about escaped SQL interpolation was incorrect: inspected actual byte sequence and SQL is correctly interpolated; separate Python execution is valid. No SQL change was made from that suspicion. Need actual callback status to determine the failing path.
+- Diagnostic follow-up **f718b1377070110ac64427f8dcc59d3149bff177**, local79cda858, tree **a2ab0ceacaa56ce00832ce6e993da7800df11164** equal. #93 run39111813653 / job117629361156. Makes countsSQL internal so runtime fixture can run the exact production query directly, adds SQLite/status assertion diagnostics, and reduces excessive fake-cache JSON serialization while separately proving512-entry and4MiB limits. This is same #91 functional atom; do not claim a count fix until diagnosed and tested.
+
 ### #91 CI correction — same functional atom, #92
 
 - #91 run39110988355 / job117626897175 FAILED step9 before Mx/host: extracted notification handoff unit fixture had a top-level `let pending` whose inferred type is private GoldgramPendingEvents; Swift required matching visibility. All12 Python suites and existing production timer-retention fixture passed before this error; new writer/totals fixture and full host were NOT reached. This was a test harness error introduced here, not a device result.
