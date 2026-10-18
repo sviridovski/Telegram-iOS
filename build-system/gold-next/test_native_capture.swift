@@ -39,7 +39,7 @@ struct NativeCaptureFixture {
         defer { sqlite3_close(db) }
         func row(_ sql: String) -> [String] {
             var stmt: OpaquePointer?
-            precondition(sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK)
+            precondition(sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, "fixture query: \(String(cString: sqlite3_errmsg(db)))")
             defer { sqlite3_finalize(stmt) }
             precondition(sqlite3_step(stmt) == SQLITE_ROW)
             return (0 ..< sqlite3_column_count(stmt)).map { index in
@@ -71,12 +71,13 @@ struct NativeCaptureFixture {
         defer { free(escaped) }
         let escapedJSON = try JSONSerialization.jsonObject(with: String(cString: escaped).data(using: .utf8)!) as! [String: String]
         precondition(escapedJSON["text"] == "Оригинал\0с переносом\nстроки", "C bridge preserves embedded NUL and Unicode")
+        precondition(row(GoldgramArchiveReader.countsSQL) == ["2", "2"], "production totals SQL")
         GoldgramArchiveReader.updateSelectedAccount(account)
         var totals: NSDictionary?
         GoldgramArchiveReader.query(["accountId": NSNumber(value: account), "category": 3, "mode": "totals"]) { totals = $0 }
         let deadline = Date().addingTimeInterval(10)
         while totals == nil && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
-        precondition(totals?["status"] as? String == "ok")
+        precondition(totals?["status"] as? String == "ok", "totals reader status: \(String(describing: totals))")
         precondition((totals?["edited"] as? NSNumber)?.intValue == 2, "count distinct edited messages")
         precondition((totals?["deleted"] as? NSNumber)?.intValue == 2, "exclude empty receipts and ordinary originals")
         print("Goldgram #91: durable original bridge and selected-account archive totals passed against actual Swift writer/reader")

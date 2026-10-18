@@ -47,7 +47,11 @@ host=false; consent=false // extension standard defaults do not inherit host def
 precondition(goldgramCaptureEnabled(accountPeerId: a, transaction: db))
 precondition(!goldgramCaptureEnabled(accountPeerId: b, transaction: db), "account identity is checked")
 for index in 0..<700 {
- precondition(goldgramWrite(["accountId":1,"eventKind":0,"text":String(repeating:"я",count:4000),"messageId":index],transaction:db))
+ precondition(goldgramWrite(["accountId":1,"eventKind":0,"text":String(repeating:"я",count:32),"messageId":index],transaction:db))
+}
+precondition(db.retrieveItemCacheEntry(id: goldgramPendingKey)!.get(GoldgramPendingEvents.self)!.items.count == 512, "entry-count cap")
+for index in 0..<60 {
+ precondition(goldgramWrite(["accountId":1,"eventKind":0,"text":String(repeating:"я",count:45000),"messageId":index+1000],transaction:db))
 }
 precondition(goldgramWrite(["accountId":1,"eventKind":2,"text":"Сохранённое удаление","messageId":42],transaction:db))
 private let pending=db.retrieveItemCacheEntry(id: goldgramPendingKey)!.get(GoldgramPendingEvents.self)!

@@ -826,7 +826,7 @@ public final class GoldgramArchiveReader: NSObject {
     LIMIT ? OFFSET ?;
     """
 
-    private static var countsSQL: String {
+    static var countsSQL: String {
         let rows = messagesSQL.components(separatedBy: "ORDER BY COALESCE(m.sent_at, m.last_seen_at) DESC")[0]
             .replacingOccurrences(of: "WHERE m.peer_kind = ? AND m.peer_id = ?", with: "WHERE m.peer_kind IN (0,1,2,3)")
         return "SELECT COALESCE(SUM(edited),0), COALESCE(SUM(CASE WHEN is_deleted=1 OR delete_event=1 THEN 1 ELSE 0 END),0) FROM (\(rows));"
