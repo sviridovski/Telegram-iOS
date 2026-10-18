@@ -1,5 +1,12 @@
 ## CURRENT HANDOFF — 2026-10-18, #90 GREEN/device findings -> #91 notification-service capture, durable originals, totals
 
+
+### #91 CI correction — same functional atom, #92
+
+- #91 run39110988355 / job117626897175 FAILED step9 before Mx/host: extracted notification handoff unit fixture had a top-level `let pending` whose inferred type is private GoldgramPendingEvents; Swift required matching visibility. All12 Python suites and existing production timer-retention fixture passed before this error; new writer/totals fixture and full host were NOT reached. This was a test harness error introduced here, not a device result.
+- Corrected only the fixture constant to `private let pending`. Follow-up **6111b28e44c86e1247b2182770f8a3af4ffec9d5**, local ae0e7b45, reviewed/API tree **e808a42591f104fbfede9c278a953304f2582abe** equal. #92 CI launched; functional app code remains the #91 atom above. Do not call #91 GREEN or issue device instructions for a nonexistent #91 IPA.
+
+
 - User installed #90; screenshots IMG_0850/51 show known authors but missing original, plus first received edit in gray. Requests stronger background capture, research Swiftgram/forums/iOS settings, separate overall deleted and edited message counts in Privacy & Functions; one atom. New preference: after EACH natural-language assistant message suggest an improvement. Keep responses concise, Russian, bro. Attachments are available inline/scratch; do not read via Library. #90 full CI 39092253501 / 117571285484 CONFIRMED SUCCESS including Core/UI host/IPA; device findings still matter.
 - #91 code **22a7a1d2a7f1b53b212ccb294300cc9374af5b31**, local bc4697f371567e73087df099c9891d2a4e7810fc; reviewed/API tree **1d7afcc9755e623f81e0c74f7b130b2e289c0c05** exactly equal. 12 files, 334 insertions / 48 deletions. CI launched; do not call GREEN until full completion.
 - Root gap found in current source: standaloneStateManager used by NotificationService had NO Postbox StoreMessage preprocessor. Mx is intentionally host-only and its SQLite writer/defaults are not loaded by the extension. Main Account preprocessor alone cannot capture extension writes while host is suspended. Added the same preprocessor before standalone account managers/network are created. NotificationService direct deleteMessage notification now calls public goldgramRetainDeletion before deleting unretained IDs; replay missing-row edits/global-ID resolution use transaction-local capture permission too.
