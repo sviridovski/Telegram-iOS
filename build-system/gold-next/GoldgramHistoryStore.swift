@@ -1121,6 +1121,10 @@ private extension GoldgramHistoryStore {
         let before = payload["beforeText"] as? String
         guard before == nil || before!.utf8.count <= 65536 else { return false }
         let known = payload["originalObserved"] as? Bool == true
+        let original = payload["originalText"] as? String
+        let baselineOnly = payload["baselineOnly"] as? Bool == true
+        guard original == nil || (known && original!.utf8.count <= 65536),
+              !baselineOnly || (event == 0 && known && original != nil) else { return false }
         let retained = payload["retained"] as? Bool == true
         let sender = (payload["senderId"] as? NSNumber)?.int64Value ?? 0
         let senderKind = (payload["senderKind"] as? NSNumber)?.int64Value ?? 0
@@ -1141,7 +1145,7 @@ private extension GoldgramHistoryStore {
                 do {
                     let scope = [Int64(kind), peer, Int64(id)]
                     try archiveSQL("INSERT OR IGNORE INTO dialogs(peer_kind,peer_id) VALUES(?,?);", db: db, ints: [Int64(kind),peer])
-                    let baseline = before ?? (event != 1 ? content : nil)
+                    let baseline = original ?? before ?? (event != 1 ? content : nil)
                     try archiveSQL("INSERT OR IGNORE INTO messages(peer_kind,peer_id,message_id,first_seen_at,last_seen_at,original_observed,original_text) VALUES(?,?,?,?,?,?,?);", db: db, ints: scope + [now,now,known ? 1 : 0], text: known ? baseline : nil)
                     if known, let baseline {
                         try archiveSQL("UPDATE messages SET original_observed=1, original_text=?4 WHERE peer_kind=?1 AND peer_id=?2 AND message_id=?3 AND original_observed=0;", db: db, ints: scope, text: baseline)
@@ -1153,7 +1157,7 @@ private extension GoldgramHistoryStore {
                     let last = try lastSavedRevision(db: db, peerId: peer, messageId: id, peerKind: kind)
                     // A delete receipt with no native body must never replace
                     // text already saved by an earlier observation in SQLite.
-                    let hasContent = event != 2 || retained
+                    let hasContent = !baselineOnly && (event != 2 || retained)
                     if hasContent && last?.text != content {
                         guard last?.index != Int64.max else { throw StorageError.sqlite(SQLITE_TOOBIG) }
                         try archiveSQL("INSERT INTO revisions(peer_kind,peer_id,message_id,version_index,observed_at,server_edit_at,revision_provenance,content) VALUES(?,?,?,?,?,NULLIF(?,0),3,?);", db: db, ints: scope + [(last?.index ?? -1)+1,now,edited], text: content)
@@ -1184,7 +1188,11 @@ public func goldgramCaptureEventV1(_ raw: UnsafePointer<CChar>?) -> Int32 {
 // Notification events are committed before their Postbox handoff is removed.
 @_cdecl("goldgram_flush_capture_v1")
 public func goldgramFlushCaptureV1() -> Int32 {
-    return GoldgramHistoryStore.storageQueue.sync { GoldgramHistoryStore.nativeWriteFailed ? 0 : 1 }
+    return GoldgramHistoryStore.storageQueue.sync {
+        let failed = GoldgramHistoryStore.nativeWriteFailed
+        GoldgramHistoryStore.nativeWriteFailed = false
+        return failed ? 0 : 1
+    }
 }
 
 // Only a positively observed original may repair inline history after eviction.

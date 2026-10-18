@@ -59,3 +59,9 @@ assert 'goldgram_read_original_v1' in n and 'recovered != nil' in n
 extension = (r/'Telegram/NotificationService/Sources/NotificationService.swift').read_text()
 assert 'let removed = ids.filter { !goldgramRetainDeletion(' in extension
 print('Goldgram #91: notification service capture, bounded handoff and durable original recovery wired')
+
+late = n.split('private func goldgramAcceptLateOriginal(',1)[1].split('// Keep tombstones intact',1)[0]
+assert '"baselineOnly": true' in late and 'goldgramArchiveText(current.text, current.media)' in late
+assert 'goldgramArchiveText(incoming.text, incoming.media)' in late
+assert n.count('return goldgramAcceptLateOriginal(') == 3, 'live, retained and snapshot paths preserve delayed originals'
+print('Goldgram #95: delayed original preservation does not roll the live version back')

@@ -18,12 +18,14 @@ struct NativeCaptureFixture {
             if let prior { defaults.set(prior, forKey: "GoldgramSQLiteCaptureEnabled") }
             else { defaults.removeObject(forKey: "GoldgramSQLiteCaptureEnabled") }
         }
-        func send(_ id: Int, event: Int, text: String, known: Bool = false, retained: Bool = false, sender: Int = 42, before: String? = nil) throws {
+        func send(_ id: Int, event: Int, text: String, known: Bool = false, retained: Bool = false, sender: Int = 42, before: String? = nil, original: String? = nil, baselineOnly: Bool = false) throws {
             var payload: [String: Any] = ["accountId": account, "peerKind": 2, "peerId": 99, "messageId": id,
                 "eventKind": event, "text": text, "originalObserved": known, "retained": retained,
                 "senderId": sender, "senderKind": sender == 0 ? -1 : 0, "sentAt": sender == 0 ? 0 : 1000,
                 "visibleEdit": true, "changed": true, "editedAt": event == 1 ? 2000 : 0]
             if let before { payload["beforeText"] = before }
+            if let original { payload["originalText"] = original }
+            payload["baselineOnly"] = baselineOnly
             let data = try JSONSerialization.data(withJSONObject: payload)
             let result = String(data: data, encoding: .utf8)!.withCString { goldgramCaptureEventV1($0) }
             precondition(result == 1)
@@ -71,14 +73,29 @@ struct NativeCaptureFixture {
         defer { free(escaped) }
         let escapedJSON = try JSONSerialization.jsonObject(with: String(cString: escaped).data(using: .utf8)!) as! [String: String]
         precondition(escapedJSON["text"] == "Оригинал\0с переносом\nстроки", "C bridge preserves embedded NUL and Unicode")
-        precondition(row(GoldgramArchiveReader.countsSQL) == ["2", "2"], "production totals SQL")
+        // Actual edit arrived first; a delayed original must not become latest.
+        try send(6, event: 1, text: "Текущая правка")
+        try send(6, event: 0, text: "Текущая правка", known: true, original: "Поздно доставленный оригинал", baselineOnly: true)
+        GoldgramHistoryStore.storageQueue.sync {}
+        precondition(row("SELECT original_text,original_observed FROM messages WHERE message_id=6") == ["Поздно доставленный оригинал", "1"])
+        precondition(row("SELECT content FROM revisions WHERE message_id=6 ORDER BY version_index DESC LIMIT 1") == ["Текущая правка"])
+        precondition(row("SELECT COUNT(*) FROM events WHERE message_id=6") == ["1"], "baseline repair is not another edit")
+        // A transient failure keeps a handoff for retry, then can recover.
+        precondition(sqlite3_exec(db, "CREATE TRIGGER fixture_fail BEFORE INSERT ON revisions WHEN NEW.message_id=999 BEGIN SELECT RAISE(ABORT, 'fixture'); END;", nil, nil, nil) == SQLITE_OK)
+        try send(999, event: 0, text: "Повтор после ошибки", known: true)
+        precondition(goldgramFlushCaptureV1() == 0)
+        precondition(sqlite3_exec(db, "DROP TRIGGER fixture_fail;", nil, nil, nil) == SQLITE_OK)
+        try send(999, event: 0, text: "Повтор после ошибки", known: true)
+        precondition(goldgramFlushCaptureV1() == 1)
+        precondition(row("SELECT original_text FROM messages WHERE message_id=999") == ["Повтор после ошибки"])
+        precondition(row(GoldgramArchiveReader.countsSQL) == ["3", "2"], "production totals SQL")
         GoldgramArchiveReader.updateSelectedAccount(account)
         var totals: NSDictionary?
         GoldgramArchiveReader.query(["accountId": NSNumber(value: account), "category": 3, "mode": "totals"]) { totals = $0 }
         let deadline = Date().addingTimeInterval(10)
         while totals == nil && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
         precondition(totals?["status"] as? String == "ok", "totals reader status: \(String(describing: totals))")
-        precondition((totals?["edited"] as? NSNumber)?.intValue == 2, "count distinct edited messages")
+        precondition((totals?["edited"] as? NSNumber)?.intValue == 3, "count distinct edited messages")
         precondition((totals?["deleted"] as? NSNumber)?.intValue == 2, "exclude empty receipts and ordinary originals")
         print("Goldgram #91: durable original bridge and selected-account archive totals passed against actual Swift writer/reader")
         print("Goldgram #89: production async writer preserves received content/authors on ID-only deletion; observations never become edit events")
