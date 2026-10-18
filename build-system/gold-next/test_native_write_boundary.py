@@ -27,9 +27,27 @@ edit = state.split('case let .EditMessage(id, rawMessage):', 1)[1].split('case l
 assert edit.index('transaction.addMessages([message], location: .Random)') < edit.index('transaction.updateMessage(id'), 'Missing native row still saves full delivered edit'
 assert 'transaction.getMessage(id) == nil' in edit
 assert '"eventKind": 0' in n, 'Received bodies also persist outside the bounded Postbox baseline ring'
-assert 'goldgramMonitorDiscussions(account: account)' in u and 'applicationBindings.applicationInForeground' in u
+assert 'goldgramMonitorDiscussions(account: account)' in u
+monitor = u.split('self.goldgramDiscussionMonitorDisposable.set(',1)[1].split('self.widgetDataContext =',1)[0]
+assert 'shouldBeServiceTaskMaster.get()' in monitor and 'isMasterClient()' in monitor
+assert 'applicationInForeground' not in monitor, 'background execution must not immediately stop capture'
+wake = (r/'submodules/TelegramUI/Sources/SharedWakeupManager.swift').read_text()
+assert 'wasInForeground && !value && goldgramNativeHistoryEnabled()' in wake
+assert 'allowBackgroundTimeExtension(timeout: 20.0, extendNow: true)' in wake
 assert 'case .group = peer.info' in n and 'prefix(4)' in n, 'Monitor is limited to accessible groups and bounded'
 assert 'viewTracker.polledChannel(peerId: id)' in n and 'limit: 100' in n
 assert 'readHistory(' not in n and 'joinChannel(' not in n, 'Monitoring must not mark read or join chats'
 assert 'self.goldgramDiscussionMonitorDisposable.dispose()' in u
 print('Goldgram #88: account-local capture boundary covers discussion/chat-list writes and preserves maintenance bypasses')
+
+# #90: only implicit server/timer removal preserves tombstones. Explicit clear
+# remains an intentional direct Postbox deletion, even with capture disabled.
+validation = (r/'submodules/TelegramCore/Sources/State/HistoryViewStateValidation.swift').read_text()
+assert validation.count('if goldgramRetainDeletion(accountPeerId: accountPeerId, transaction: transaction, mediaBox: postbox.mediaBox, id: id) { continue }') == 2
+assert 'return .single(Set(maybeRemovedMessageIds))' not in validation, 'failed exact-ID checks are not proof of deletion'
+retain = n.split('func goldgramRetainDeletion(',1)[1].split('func goldgramUnresolvedDeletions',1)[0]
+assert retain.index('goldgramPreserveRetained') < retain.index('guard goldgramNativeHistoryEnabled()'), 'capture OFF must not purge retained messages'
+timer = (r/'submodules/TelegramCore/Sources/State/ManagedAutoremoveMessageOperations.swift').read_text()
+assert timer.index('goldgramPreserveRetained') < timer.index('if isRemove,')
+assert 'transaction.deleteMessages(' in u, 'Clear Logs still purges local tombstones'
+print('Goldgram #90: validation/timer retention and service-master background lifecycle wiring OK')

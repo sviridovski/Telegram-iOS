@@ -48,8 +48,27 @@ assert len(db.execute(q,(3,10,2,20,1,1)).fetchall())==1
 db.execute('INSERT INTO revisions(peer_kind,peer_id,message_id,version_index,content,observed_at) VALUES(2,20,5,1,?,700)',('[Содержимое не было получено]',))
 recovered=db.execute(block('messagesSQL'),(2,20,30,0)).fetchall()
 assert recovered[0][10]=='comment', 'old receipt placeholders must not hide actually saved content'
+# #90: filter receipt-only rows BEFORE paging and dialog aggregation. Known
+# text survives missing authors; media-only rows and older saved versions stay.
+for mid, body in [(90, '[Содержимое не было получено]'), (91, ''), (92, '   ')]:
+ add(2,20,mid,'goldgram_native_v1',event=2,latest=body,deleted=1,time=9999)
+add(2,21,90,'goldgram_native_v1',event=2,latest='[Содержимое не было получено]',deleted=1,time=9999)
+add(2,22,90,'goldgram_native_live_v2',latest='[Содержимое не было получено]',time=9999)
+add(2,20,93,'goldgram_native_live_v2',latest='Полученный текст без автора',time=900)
+add(2,20,94,'goldgram_native_retained_v1',event=2,latest='[Видео]',deleted=1,time=901)
+add(2,20,95,'goldgram_native_v1',event=2,original='Сохранённый оригинал',latest='[Содержимое не было получено]',deleted=1,time=902)
+visible=db.execute(block('messagesSQL'),(2,20,30,0)).fetchall()
+assert {x[2] for x in visible}=={5,93,94,95}
+assert db.execute(block('messagesSQL'),(2,21,30,0)).fetchall()==[]
+assert db.execute(block('messagesSQL'),(2,22,30,0)).fetchall()==[]
+folders=db.execute(block('dialogsSQL'),(2,3,30,0)).fetchall()
+assert {x[1] for x in folders if x[0]==2}=={20}, 'no empty receipt-only folders'
+assert next(x[2] for x in folders if x[0:2]==(2,20))==4, 'counts exclude hidden receipts'
+assert [db.execute(block('messagesSQL'),(2,20,1,i)).fetchone()[2] for i in range(4)]==[x[2] for x in visible]
+assert db.execute(block('messagesSQL'),(2,20,1,4)).fetchall()==[], 'no blank pages'
+assert db.execute('SELECT COUNT(*) FROM messages WHERE peer_kind=2 AND peer_id=21').fetchone()[0]==1, 'hide, do not destroy diagnostic receipts'
 # Cascade clear also removes delete events/revisions; no mixed-peer IDs.
 db.execute('DELETE FROM dialogs WHERE peer_kind=3')
-assert db.execute('SELECT COUNT(*) FROM events WHERE peer_kind=2').fetchone()[0]==1
+assert db.execute('SELECT COUNT(*) FROM events WHERE peer_kind=2 AND peer_id=20 AND message_id=5').fetchone()[0]==1
 assert db.execute('PRAGMA foreign_key_check').fetchall()==[]
 print('Goldgram #83: false-edit regression, deleted/media anchors, event clock, all peer kinds and scoped paging OK')

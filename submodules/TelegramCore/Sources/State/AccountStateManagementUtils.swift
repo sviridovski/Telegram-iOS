@@ -4729,7 +4729,7 @@ func replayFinalState(
                     updatePeerChatInclusionWithMinTimestamp(transaction: transaction, id: id.peerId, minTimestamp: message.timestamp, forceRootGroupIfNotExists: false)
                 }
                 var resourceIds: [MediaResourceId] = []
-                if goldgramNativeHistoryEnabled(), id.namespace == Namespaces.Message.Cloud {
+                if id.namespace == Namespaces.Message.Cloud {
                     var scoped: [MessageId] = []
                     transaction.withAllMessages(peerId: id.peerId, namespace: id.namespace) { message in
                         if message.id.id > 0 && message.id.id <= id.id { scoped.append(message.id) }

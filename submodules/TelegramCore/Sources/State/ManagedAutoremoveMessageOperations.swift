@@ -82,6 +82,7 @@ func managedAutoremoveMessageOperations(accountPeerId: PeerId, network: Network,
                     Logger.shared.log("Autoremove", "Performing autoremove for \(entry.messageId), isRemove: \(isRemove)")
 
                     if let message = transaction.getMessage(entry.messageId) {
+                        if goldgramPreserveRetained(transaction: transaction, id: entry.messageId) { return }
                         if isRemove, message.id.peerId.namespace != Namespaces.Peer.SecretChat,
                            goldgramRetainDeletion(accountPeerId: accountPeerId, transaction: transaction, mediaBox: postbox.mediaBox, id: entry.messageId) {
                             return

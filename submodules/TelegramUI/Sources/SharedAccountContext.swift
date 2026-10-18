@@ -1351,14 +1351,19 @@ public final class SharedAccountContextImpl: SharedAccountContext {
         self.updateNotificationTokensRegistration()
         
         if applicationBindings.isMainApp {
-            self.goldgramDiscussionMonitorDisposable.set((combineLatest(
-                self.applicationBindings.applicationInForeground,
-                self.activeAccountContexts |> map { primary, _, _ -> Account? in primary?.account }
-                |> distinctUntilChanged(isEqual: { $0?.id == $1?.id })
-            )
-            |> mapToSignal { foreground, account -> Signal<Never, NoError> in
-                guard foreground, let account else { return .complete() }
-                return goldgramMonitorDiscussions(account: account)
+            self.goldgramDiscussionMonitorDisposable.set((self.activeAccountContexts
+            |> map { primary, _, _ -> Account? in primary?.account }
+            |> distinctUntilChanged(isEqual: { $0?.id == $1?.id })
+            |> mapToSignal { account -> Signal<Never, NoError> in
+                guard let account else { return .complete() }
+                return combineLatest(account.shouldBeServiceTaskMaster.get(), account.postbox.isMasterClient())
+                |> map { mode, isMaster -> Bool in
+                    return isMaster && (mode == .now || mode == .always)
+                }
+                |> distinctUntilChanged
+                |> mapToSignal { active -> Signal<Never, NoError> in
+                    return active ? goldgramMonitorDiscussions(account: account) : .complete()
+                }
             }).start())
             self.widgetDataContext = WidgetDataContext(basePath: self.basePath, inForeground: self.applicationBindings.applicationInForeground, activeAccounts: self.activeAccountContexts
             |> map { _, accounts, _ in

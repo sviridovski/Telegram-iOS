@@ -757,6 +757,12 @@ public final class GoldgramArchiveReader: NSObject {
     JOIN messages m
       ON m.peer_kind = d.peer_kind AND m.peer_id = d.peer_id
     WHERE d.peer_kind IN (?, ?)
+      AND (NULLIF(TRIM(COALESCE(m.original_text, '')), '') IS NOT NULL
+             AND m.original_text != '[Содержимое не было получено]'
+           OR EXISTS (SELECT 1 FROM revisions body WHERE body.peer_kind=m.peer_kind
+             AND body.peer_id=m.peer_id AND body.message_id=m.message_id
+             AND NULLIF(TRIM(body.content), '') IS NOT NULL
+             AND body.content != '[Содержимое не было получено]'))
       AND (m.is_deleted = 1 OR EXISTS (
            SELECT 1 FROM events e
            WHERE e.peer_kind = m.peer_kind AND e.peer_id = m.peer_id
@@ -799,6 +805,12 @@ public final class GoldgramArchiveReader: NSObject {
              AND e.message_id=m.message_id AND e.event_kind=2 AND e.source='goldgram_native_retained_v1') AS retained
     FROM messages m
     WHERE m.peer_kind = ? AND m.peer_id = ?
+      AND (NULLIF(TRIM(COALESCE(m.original_text, '')), '') IS NOT NULL
+             AND m.original_text != '[Содержимое не было получено]'
+           OR EXISTS (SELECT 1 FROM revisions body WHERE body.peer_kind=m.peer_kind
+             AND body.peer_id=m.peer_id AND body.message_id=m.message_id
+             AND NULLIF(TRIM(body.content), '') IS NOT NULL
+             AND body.content != '[Содержимое не было получено]'))
       AND (m.is_deleted = 1 OR EXISTS (
            SELECT 1 FROM events e
            WHERE e.peer_kind = m.peer_kind AND e.peer_id = m.peer_id

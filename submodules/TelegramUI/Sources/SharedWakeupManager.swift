@@ -148,7 +148,13 @@ public final class SharedWakeupManager {
             guard let strongSelf = self else {
                 return
             }
+            let wasInForeground = strongSelf.inForeground
             strongSelf.inForeground = value
+            if wasInForeground && !value && goldgramNativeHistoryEnabled() {
+                // Use the existing expiring iOS task, never a keep-alive audio hack.
+                // The service-master signal keeps capture/polling alive for this window.
+                strongSelf.allowBackgroundTimeExtension(timeout: 20.0, extendNow: true)
+            }
             if value {
                 strongSelf.activeExplicitExtensionTimer?.invalidate()
                 strongSelf.activeExplicitExtensionTimer = nil

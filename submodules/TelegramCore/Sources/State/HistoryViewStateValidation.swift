@@ -43,6 +43,8 @@ private enum HistoryState {
     }
     
     func isMessageValid(_ message: Message) -> Bool {
+        // Local retained history has no server counterpart or current channel pts.
+        if message.id.namespace == Namespaces.Message.Cloud && message.localTags.contains(goldgramDeletedMessageTag) { return true }
         switch self {
         case let .channel(_, state):
             if let invalidatedPts = state.invalidatedPts {
@@ -848,10 +850,10 @@ private func validateBatch(postbox: Postbox, network: Network, transaction: Tran
                                         return Set(maybeRemovedMessageIds).subtracting(ids)
                                     }
                                     |> `catch` { _ -> Signal<Set<MessageId>, NoError> in
-                                        return .single(Set(maybeRemovedMessageIds))
+                                        return .single(Set())
                                     }
                                 }
-                                return .single(Set(maybeRemovedMessageIds))
+                                return .single(Set())
                             } |> switchToLatest
                         default:
                             actuallyRemovedMessagesSignal = .single(Set(maybeRemovedMessageIds))
@@ -956,6 +958,7 @@ private func validateBatch(postbox: Postbox, network: Network, transaction: Tran
                     
                         for id in removedMessageIds {
                             if !validMessageIds.contains(id) {
+                                if goldgramPreserveRetained(transaction: transaction, id: id) { continue }
                                 if let tag = tag {
                                     transaction.updateMessage(id, update: { currentMessage in
                                         var updatedTags = currentMessage.tags
@@ -984,6 +987,8 @@ private func validateBatch(postbox: Postbox, network: Network, transaction: Tran
                                         return .update(StoreMessage(id: currentMessage.id, customStableId: nil, globallyUniqueId: currentMessage.globallyUniqueId, groupingKey: currentMessage.groupingKey, threadId: currentMessage.threadId, timestamp: currentMessage.timestamp, flags: StoreMessageFlags(currentMessage.flags), tags: updatedTags, globalTags: currentMessage.globalTags, localTags: currentMessage.localTags, forwardInfo: storeForwardInfo, authorId: currentMessage.author?.id, text: currentMessage.text, attributes: attributes, media: currentMessage.media))
                                     })
                                 } else {
+                                    // Exact-ID validation must not erase our local retained history.
+                                    if goldgramRetainDeletion(accountPeerId: accountPeerId, transaction: transaction, mediaBox: postbox.mediaBox, id: id) { continue }
                                     _internal_deleteMessages(transaction: transaction, mediaBox: postbox.mediaBox, ids: [id])
                                     Logger.shared.log("HistoryValidation", "deleting message \(id) in \(id.peerId)")
                                 }
@@ -1094,10 +1099,10 @@ private func validateReplyThreadBatch(postbox: Postbox, network: Network, transa
                             return Set(maybeRemovedMessageIds).subtracting(ids)
                         }
                         |> `catch` { _ -> Signal<Set<MessageId>, NoError> in
-                            return .single(Set(maybeRemovedMessageIds))
+                            return .single(Set())
                         }
                     }
-                    return .single(Set(maybeRemovedMessageIds))
+                    return .single(Set())
                 }
                 |> switchToLatest
             }
@@ -1167,6 +1172,7 @@ private func validateReplyThreadBatch(postbox: Postbox, network: Network, transa
                 
                     for id in removedMessageIds {
                         if !validMessageIds.contains(id) {
+                            if goldgramRetainDeletion(accountPeerId: accountPeerId, transaction: transaction, mediaBox: postbox.mediaBox, id: id) { continue }
                             _internal_deleteMessages(transaction: transaction, mediaBox: postbox.mediaBox, ids: [id])
                             Logger.shared.log("HistoryValidation", "deleting thread message \(id) in \(id.peerId)")
                         }

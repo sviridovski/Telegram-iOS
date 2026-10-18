@@ -19,7 +19,7 @@ private func goldgramNativeWriter() -> GoldgramEventWriter? {
     return unsafeBitCast(symbol, to: GoldgramEventWriter.self)
 }
 
-func goldgramNativeHistoryEnabled() -> Bool {
+public func goldgramNativeHistoryEnabled() -> Bool {
     return goldgramNativeHistoryHostV1() == 1 && goldgramNativeWriter() != nil && UserDefaults.standard.bool(forKey: "GoldgramSQLiteCaptureEnabled")
 }
 
@@ -143,7 +143,11 @@ func goldgramPrepareIncoming(accountPeerId: PeerId, transaction: Transaction, me
     let stored = transaction.getMessage(id).map { goldgramStoredMessage($0, localTags: $0.localTags) }
     // Existing retained content must not be erased by a duplicate payload,
     // even after the user turns off capture of NEW events.
-    if message.localTags.contains(goldgramDeletedMessageTag) { return message }
+    if message.localTags.contains(goldgramDeletedMessageTag) {
+        return message.withUpdatedAttributes(message.attributes.filter {
+            !($0 is AutoremoveTimeoutMessageAttribute) && !($0 is AutoclearTimeoutMessageAttribute)
+        })
+    }
     if let stored, stored.localTags.contains(goldgramDeletedMessageTag) { return stored }
     guard goldgramNativeHistoryEnabled() else { return message }
     let snapshot = goldgramSnapshot(transaction: transaction, id: id)
@@ -205,7 +209,7 @@ public func goldgramRestoreSnapshot(transaction: Transaction, id: MessageId, del
                 return .update(hydrated)
             })
         }
-        if deleted && !message.localTags.contains(goldgramDeletedMessageTag) {
+        if deleted || message.localTags.contains(goldgramDeletedMessageTag) {
             transaction.updateMessage(id, preprocess: false, update: { current in
                 var tags = current.localTags; tags.insert(goldgramDeletedMessageTag)
                 return .update(goldgramStoredMessage(current, localTags: tags))
@@ -217,19 +221,40 @@ public func goldgramRestoreSnapshot(transaction: Transaction, id: MessageId, del
     }
     guard let snapshot = goldgramSnapshot(transaction: transaction, id: id) else { return nil }
     var restored = snapshot
-    if deleted {
+    if deleted || snapshot.localTags.contains(goldgramDeletedMessageTag) {
         var tags = snapshot.localTags; tags.insert(goldgramDeletedMessageTag)
         restored = snapshot.withUpdatedLocalTags(tags).withUpdatedAttributes(snapshot.attributes.filter {
             !($0 is AutoremoveTimeoutMessageAttribute) && !($0 is AutoclearTimeoutMessageAttribute)
         })
     }
     let _ = transaction.addMessages([restored], location: .Random, preprocess: false)
+    if restored.localTags.contains(goldgramDeletedMessageTag) {
+        transaction.clearTimestampBasedAttribute(id: id, tag: 0)
+        transaction.clearTimestampBasedAttribute(id: id, tag: 1)
+    }
     return transaction.getMessage(id)
+}
+
+// A retained row is local history, not a server-owned row to expire again.
+// This must work with capture OFF too; Clear Logs explicitly deletes these rows.
+func goldgramPreserveRetained(transaction: Transaction, id: MessageId) -> Bool {
+    guard id.namespace == Namespaces.Message.Cloud,
+          let message = transaction.getMessage(id),
+          message.localTags.contains(goldgramDeletedMessageTag) else { return false }
+    if message.attributes.contains(where: { $0 is AutoremoveTimeoutMessageAttribute || $0 is AutoclearTimeoutMessageAttribute }) {
+        transaction.updateMessage(id, preprocess: false, update: { current in
+            return .update(goldgramStoredMessage(current, localTags: current.localTags))
+        })
+    }
+    transaction.clearTimestampBasedAttribute(id: id, tag: 0)
+    transaction.clearTimestampBasedAttribute(id: id, tag: 1)
+    return true
 }
 
 // Preserve a full native message (including media references) at its real ID.
 // Returns false for unknown/secret/local messages, which follow stock deletion.
 func goldgramRetainDeletion(accountPeerId: PeerId, transaction: Transaction, mediaBox: MediaBox, id: MessageId) -> Bool {
+    if goldgramPreserveRetained(transaction: transaction, id: id) { return true }
     guard goldgramNativeHistoryEnabled(), id.namespace == Namespaces.Message.Cloud, id.id > 0,
           let kind = goldgramKind(id.peerId, transaction.getPeer(id.peerId)) else { return false }
     goldgramRememberDiscussion(transaction: transaction, peerId: id.peerId, explicitlyOpened: true)
@@ -447,8 +472,9 @@ private final class GoldgramDiscussionMonitor {
     }
 }
 
-// The UI owns this subscription strictly while the selected account's app is
-// in foreground. No timers/connections remain when it switches or backgrounds.
+// The UI owns this subscription while the selected account is the active
+// service master, including native background execution / push wake windows.
+// Stop polling when iOS execution time ends or the account switches.
 public func goldgramMonitorDiscussions(account: Account) -> Signal<Never, NoError> {
     return Signal { _ in
         let queue = Queue(name: "GoldgramDiscussionMonitor")
