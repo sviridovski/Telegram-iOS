@@ -140,6 +140,29 @@ private func goldgramCaptureSince(_ account: PeerId, transaction: Transaction? =
     return now
 }
 
+// A real new-message update may be replaced by a newer edit before Postbox
+// gets to archive its first snapshot. Record positively received unedited
+// server content immediately, independently of that transaction/replay path.
+// A delayed original repairs the baseline only, never the latest revision.
+func goldgramCaptureServerOriginal(accountPeerId: PeerId, message: StoreMessage, peerKind: Int32) {
+    guard goldgramNativeHistoryEnabled(), (0...3).contains(peerKind),
+          case let .Id(id) = message.id, id.namespace == Namespaces.Message.Cloud, id.id > 0,
+          !message.attributes.contains(where: { $0 is EditedMessageAttribute }),
+          !message.text.isEmpty || !message.media.isEmpty else { return }
+    let sender = message.authorId
+    let original = goldgramArchiveText(message.text, message.media)
+    let _ = goldgramWrite([
+        "accountId": accountPeerId.id._internalGetInt64Value(), "peerKind": peerKind,
+        "peerId": id.peerId.id._internalGetInt64Value(), "messageId": id.id, "eventKind": 0,
+        "text": original, "originalText": original, "originalObserved": true,
+        "baselineOnly": true,
+        "senderId": sender?.id._internalGetInt64Value() ?? 0,
+        "senderKind": sender.flatMap { goldgramKind($0, nil) } ?? -1,
+        "sentAt": Int64(message.timestamp) * 1000, "threadId": message.threadId ?? 0,
+        "mediaKeys": goldgramMediaKeys(message.media)
+    ])
+}
+
 // Returns local history metadata to persist together with the server version.
 private func goldgramCaptureMutation(accountPeerId: PeerId, transaction: Transaction,
     message: StoreMessage, previous: StoreMessage?) -> GoldgramMessageHistoryAttribute? {

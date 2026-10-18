@@ -38,6 +38,14 @@ private let goldgramOriginalCallbackV2: GoldgramOriginalCallbackV2? = {
 private func goldgramArchivePersonalOriginal(
     accountPeerId: PeerId, message: StoreMessage, live: Bool
 ) {
+    // Directly capture full live updateNewMessage payloads, including messages
+    // sent from another logged-in client. The old bridge only handled incoming
+    // messages and is intentionally not the owner while native capture is ON.
+    if live && goldgramNativeHistoryEnabled(),
+       case let .Id(id) = message.id, id.peerId.namespace == Namespaces.Peer.CloudUser {
+        goldgramCaptureServerOriginal(accountPeerId: accountPeerId, message: message, peerKind: 0)
+        return
+    }
     guard !goldgramNativeHistoryEnabled(), UserDefaults.standard.bool(forKey: "GoldgramSQLiteCaptureEnabled"),
           goldgramOriginalCallbackV2 != nil || goldgramOriginalCallback != nil,
           case let .Id(messageId) = message.id,
@@ -145,6 +153,12 @@ private func goldgramVerifiedPublicKind(peerId: PeerId, peer: Peer?) -> Int32? {
 private func goldgramArchivePublicOriginal(
     accountPeerId: PeerId, message: StoreMessage, peerKind: Int32
 ) {
+    // Called only for accepted live public new-message updates, after peer kind
+    // verification. Save the true original before deferred Postbox application.
+    if goldgramNativeHistoryEnabled() {
+        goldgramCaptureServerOriginal(accountPeerId: accountPeerId, message: message, peerKind: peerKind)
+        return
+    }
     guard !goldgramNativeHistoryEnabled(), UserDefaults.standard.bool(forKey: "GoldgramSQLiteCaptureEnabled"),
           let writer = goldgramPublicOriginalCallback,
           peerKind >= 1, peerKind <= 3,

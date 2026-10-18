@@ -75,11 +75,20 @@ struct NativeCaptureFixture {
         precondition(escapedJSON["text"] == "Оригинал\0с переносом\nстроки", "C bridge preserves embedded NUL and Unicode")
         // Actual edit arrived first; a delayed original must not become latest.
         try send(6, event: 1, text: "Текущая правка")
-        try send(6, event: 0, text: "Текущая правка", known: true, original: "Поздно доставленный оригинал", baselineOnly: true)
+        try send(6, event: 0, text: "Поздно доставленный оригинал", known: true, original: "Поздно доставленный оригинал", baselineOnly: true)
         GoldgramHistoryStore.storageQueue.sync {}
         precondition(row("SELECT original_text,original_observed FROM messages WHERE message_id=6") == ["Поздно доставленный оригинал", "1"])
         precondition(row("SELECT content FROM revisions WHERE message_id=6 ORDER BY version_index DESC LIMIT 1") == ["Текущая правка"])
         precondition(row("SELECT COUNT(*) FROM events WHERE message_id=6") == ["1"], "baseline repair is not another edit")
+        precondition(row("SELECT COUNT(*) FROM revisions WHERE message_id=6") == ["1"], "late original must not append a fake revision")
+        // Direct server-new path: baseline-only original is stored even when
+        // the Postbox snapshot is never made, with no false edit event.
+        try send(7, event: 0, text: "Оригинал из updateNewMessage", known: true,
+                 original: "Оригинал из updateNewMessage", baselineOnly: true)
+        GoldgramHistoryStore.storageQueue.sync {}
+        precondition(row("SELECT original_text, original_observed FROM messages WHERE message_id=7") == ["Оригинал из updateNewMessage", "1"])
+        precondition(row("SELECT COUNT(*) FROM revisions WHERE message_id=7") == ["1"])
+        precondition(row("SELECT COUNT(*) FROM events WHERE message_id=7") == ["0"])
         // A transient failure keeps a handoff for retry, then can recover.
         precondition(sqlite3_exec(db, "CREATE TRIGGER fixture_fail BEFORE INSERT ON revisions WHEN NEW.message_id=999 BEGIN SELECT RAISE(ABORT, 'fixture'); END;", nil, nil, nil) == SQLITE_OK)
         try send(999, event: 0, text: "Повтор после ошибки", known: true)
