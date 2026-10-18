@@ -1,10 +1,18 @@
 # Goldgram — current handoff, 2026-10-18
 ## Authoritative current state
-Repository sviridovski/Telegram-iOS. App branch gold-next.
-Current app commit 81c66718988a1d3a09669a2b24e4b83a973bcdcc; exact tree 0e1a60499c0ab6bb7a8799aadee5216421518e1a.
-CI #96 run39125379485 launched for current commit, status pending as of 2026-10-18: https://github.com/sviridovski/Telegram-iOS/actions/runs/39125379485
-Prior CI #95 run39114532456/job117637501652 completed SUCCESS (real Swift SQLite gates, Mx and clean Swiftgram/extension build, IPA). Prior #94 also green.
-User installed #95 and reproduced missing original: two edited messages show "Оригинал не был получен" in inline history, despite edits being saved. #95 is NEGATIVE for original capture on device; other behavior remains untested. Never conflate green CI with device validation.
+Repository sviridovski/Telegram-iOS. Branch gold-next.
+App HEAD 0e3d98c0fe0a98d5d39727bfa31a83f37a1faebb (diagnostic fixture correction, CI #98); parent diagnostic feature commit d30dccf50585d3400ba072a40f63c2ac7f51be3e (#97).
+CI #98: https://github.com/sviridovski/Telegram-iOS/actions/runs/39150390846 (pending when written). #97 was also triggered; use #98 as final target.
+CI #96 run39125379485 success, but user installed the newer fix and still reports "Оригинал не был получен" on device; #95 likewise. Therefore do NOT claim device issue fixed.
+
+## Current diagnostic atom (#97–98)
+User asks for a concrete phone diagnostic test instead of more unverified fixes. Added an opt-in privacy-safe in-app test in GoldgramArchiveScreen, accessible through "Тест" on root pages of history folders (Personal / Groups / Channels / Deleted). "Начать новый тест" resets diagnostic counters ONLY, not chat archive; "Показать результат" shows stage counts and aggregate SQLite facts for selected account since test start.
+Stage counts from TelegramCore: full confirmed live server-original accepted into writer, Postbox unedited/edited preprocessing and enabled state, SQL-original retrieval hits, inline-known/unknown decisions. No message texts, names, message IDs or hashes are stored in diagnostic counters or returned in report. Counts are event counters, not distinct-message numbers.
+Reader supports query mode "diagnostics" and reports fresh SQLite rows, confirmed originals, edited rows lacking originals, and total edited rows. Fixture checks aggregate counters on real Swift SQLite. Fixture correction adjusts expected baseline count to five, including late and retried original.
+Changes: GoldgramNativeHistory.swift, GoldgramArchiveScreen.swift, GoldgramHistoryStore.swift, test_native_capture.swift.
+Current commits: https://github.com/sviridovski/Telegram-iOS/commit/d30dccf50585d3400ba072a40f63c2ac7f51be3e and https://github.com/sviridovski/Telegram-iOS/commit/0e3d98c0fe0a98d5d39727bfa31a83f37a1faebb
+Test: install final green #98 over old app (no deletion); open Goldgram > Updated/Deleted > one of the history folders, tap "Тест", "Начать новый тест". Fresh message from second client (while iPhone app foreground), wait, edit twice, return to same folder "Тест" > "Показать результат"; send screenshot of counters and SQLite. No need to clear archive or log private content. Interpret counters to isolate server delivery, native processing, SQLite persistence, or inline display.
+Next: check #98 CI, fix compile/test failures if any, have user test, then investigate based on evidence. No unrelated changes.
 
 ## Latest fix (#96, awaiting CI and device re-test)
 The native Postbox snapshot preprocessor can miss a live new-message original when an edit overtakes deferred Postbox replay. The existing direct full-server incoming API update capture path was completely disabled while native SQLite mode was ON.
