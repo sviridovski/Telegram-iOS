@@ -887,9 +887,9 @@ public final class GoldgramArchiveReader: NSObject {
         let diagnosticSince = max(Int64(0), (request["since"] as? NSNumber)?.int64Value ?? 0)
         GoldgramHistoryStore.storageQueue.async {
             let response = self.read(
-                accountId: accountId, mode: mode, diagnosticSince: diagnosticSince,
+                accountId: accountId, mode: mode,
                 kinds: kinds, peerId: peerId, peerKind: scopedPeerKind, sources: sources, deletedOnly: category == 3,
-                offset: Int32(offset), limit: Int32(limit)
+                offset: Int32(offset), limit: Int32(limit), diagnosticSince: diagnosticSince
             )
             DispatchQueue.main.async {
                 completion(self.isSelected(accountId) ? response as NSDictionary : ["status": "account_changed", "items": []])
