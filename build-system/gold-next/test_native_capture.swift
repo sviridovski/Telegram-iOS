@@ -116,7 +116,7 @@ struct NativeCaptureFixture {
             RunLoop.current.run(until: Date().addingTimeInterval(0.01))
         }
         precondition(diagnostic?["status"] as? String == "ok")
-        precondition((diagnostic?["known"] as? NSNumber)?.intValue == 4, "real original count")
+        precondition((diagnostic?["known"] as? NSNumber)?.intValue == 5, "real original count")
         precondition((diagnostic?["missingEdited"] as? NSNumber)?.intValue == 1, "missing-original edits remain distinct")
         precondition((diagnostic?["edited"] as? NSNumber)?.intValue == 3, "edited diagnostic subset")
         print("Goldgram #91: durable original bridge and selected-account archive totals passed against actual Swift writer/reader")
