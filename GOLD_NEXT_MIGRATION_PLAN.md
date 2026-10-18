@@ -1,6 +1,8 @@
 ## CURRENT HANDOFF — 2026-10-18, #90 GREEN/device findings -> #91 notification-service capture, durable originals, totals
 
 
+- #94 CI UPDATE: step9 COMPLETED SUCCESS, job117630331640: all12 Python checks, production timer guard, extracted notification consent/512-entry/4MiB handoff unit, actual async Swift SQLite writer + original JSON C bridge + exact production totals SQL + actual selected-account totals callback (2 edited/2 deleted), real Postbox codec, event policy/grouping and iOS SQLite store typecheck all PASSED. This confirms the correlated-ordering correction. Step10 Mx compilation IN PROGRESS. Full Swiftgram/Core/NotificationService build, IPA and device still pending; do not call full #94 GREEN yet.
+
 ### #93 confirmed SQLite scope defect / #94 correction
 
 - #93 run39111813653 / job117629361156 FAILED step9, now with the actual SQLite error: production totals query preparation fails `no such column: m.is_deleted`. Both notification handoff fixture and truthful original C bridge passed. The defect is the correlated OUTER `m.is_deleted` reference in the ORDER BY of the latest-revision subquery, originally added in #89; local Python SQLite accepts this but Apple's CI SQLite rejects it. It also affects the shared archive messages query, not just the new totals.
