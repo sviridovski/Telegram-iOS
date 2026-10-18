@@ -786,7 +786,7 @@ public final class GoldgramArchiveReader: NSObject {
            (SELECT r.content FROM revisions r
             WHERE r.peer_kind = m.peer_kind AND r.peer_id = m.peer_id
               AND r.message_id = m.message_id
-            ORDER BY CASE WHEN m.is_deleted=1 AND r.content='[Содержимое не было получено]' THEN 1 ELSE 0 END ASC,
+            ORDER BY CASE WHEN r.content='[Содержимое не было получено]' THEN 1 ELSE 0 END ASC,
                      r.version_index DESC LIMIT 1) AS latest_text,
            (SELECT COUNT(*) FROM revisions r
             WHERE r.peer_kind = m.peer_kind AND r.peer_id = m.peer_id
