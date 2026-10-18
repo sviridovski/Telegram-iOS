@@ -38,8 +38,82 @@ public final class GoldgramArchiveScreen: UITableViewController {
 
     required init?(coder: NSCoder) { return nil }
 
+    private static let diagnosticCountPrefix = "GoldgramDiagnosticCountsV1."
+    private static let diagnosticSincePrefix = "GoldgramDiagnosticSinceV1."
+
+    @objc private func captureDiagnosticMenu() {
+        guard let account = GoldgramArchiveReader.activeAccountId()?.int64Value, account > 0 else { return }
+        let defaults = UserDefaults.standard
+        let sinceKey = Self.diagnosticSincePrefix + String(account)
+        let running = defaults.object(forKey: sinceKey) != nil
+        let menu = UIAlertController(title: "Тест захвата Goldgram",
+                                     message: "Только счётчики этапов и состояние SQLite. Без текстов, имён и ID сообщений.",
+                                     preferredStyle: .actionSheet)
+        menu.addAction(UIAlertAction(title: "Начать новый тест", style: .default) { _ in
+            defaults.set([String: Int](), forKey: Self.diagnosticCountPrefix + String(account))
+            defaults.set(Int64(Date().timeIntervalSince1970 * 1000), forKey: sinceKey)
+            defaults.set(true, forKey: "GoldgramDiagnosticEnabledV1")
+            let alert = UIAlertController(title: "Диагностика включена",
+                message: "Отправь совершенно новое сообщение с другого клиента, дождись его на iPhone и измени два раза. Затем вернись сюда и нажми «Показать результат». Архив не очищается.",
+                preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "Понятно", style: .default))
+            self.present(alert, animated: true)
+        })
+        if running {
+            menu.addAction(UIAlertAction(title: "Показать результат", style: .default) { _ in
+                self.showCaptureDiagnosticReport(account: account,
+                    since: defaults.object(forKey: sinceKey) as? NSNumber)
+            })
+        }
+        menu.addAction(UIAlertAction(title: "Закрыть", style: .cancel))
+        menu.popoverPresentationController?.barButtonItem = navigationItem.rightBarButtonItem
+        present(menu, animated: true)
+    }
+
+    private func showCaptureDiagnosticReport(account: Int64, since: NSNumber?) {
+        let request: NSDictionary = [
+            "accountId": NSNumber(value: account), "category": 3,
+            "mode": "diagnostics", "since": since ?? NSNumber(value: 0)
+        ]
+        GoldgramArchiveReader.query(request) { [weak self] answer in
+            guard let self else { return }
+            let status = answer["status"] as? String ?? "unavailable"
+            let counts = UserDefaults.standard.dictionary(
+                forKey: Self.diagnosticCountPrefix + String(account)) as? [String: Int] ?? [:]
+            let stages: [(String, String)] = [
+                ("serverEligible", "Новый оригинал из API"),
+                ("writerAccepted", "Передан в SQLite writer"),
+                ("postboxUnedited", "Postbox: без метки изменения"),
+                ("postboxEdited", "Postbox: с меткой изменения"),
+                ("postboxCaptureEnabled", "Postbox: захват включён"),
+                ("sqliteLookupHit", "Оригинал найден через SQL bridge"),
+                ("inlineKnown", "Inline: оригинал известен"),
+                ("inlineUnknown", "Inline: оригинал неизвестен")
+            ]
+            var report = stages.map { "\($0.1): \(counts[$0.0] ?? 0)" }.joined(separator: "\n")
+            if status == "ok" {
+                report += "\n\nSQLite за период теста:"
+                report += "\nСообщений: \(answer["observed"] ?? 0)"
+                report += "\nС подтверждённым оригиналом: \(answer["known"] ?? 0)"
+                report += "\nИзменённых без оригинала: \(answer["missingEdited"] ?? 0)"
+                report += "\nВсего изменённых: \(answer["edited"] ?? 0)"
+            } else {
+                report += "\n\nSQLite: \(status)"
+            }
+            report += "\n\nСчётчики относятся только к выбранному аккаунту. Повторная доставка может увеличить значения."
+            let alert = UIAlertController(title: "Результат диагностического теста",
+                                          message: report, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "Закрыть", style: .default))
+            self.present(alert, animated: true)
+        }
+    }
+
     public override func viewDidLoad() {
         super.viewDidLoad()
+        if sources == nil {
+            navigationItem.rightBarButtonItem = UIBarButtonItem(
+                title: "Тест", style: .plain, target: self, action: #selector(captureDiagnosticMenu))
+        }
         title = displayName ?? (category == 0 ? "Личные сообщения" :
              category == 1 ? "Группы и чаты" : category == 3 ? "Удалённые сообщения" : "Каналы")
         tableView.rowHeight = UITableView.automaticDimension

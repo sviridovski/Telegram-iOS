@@ -106,6 +106,19 @@ struct NativeCaptureFixture {
         precondition(totals?["status"] as? String == "ok", "totals reader status: \(String(describing: totals))")
         precondition((totals?["edited"] as? NSNumber)?.intValue == 3, "count distinct edited messages")
         precondition((totals?["deleted"] as? NSNumber)?.intValue == 2, "exclude empty receipts and ordinary originals")
+        // Diagnostic report is limited to local aggregate evidence from
+        // the test window; no message content or identity leaves the reader.
+        var diagnostic: NSDictionary?
+        GoldgramArchiveReader.query(["accountId": NSNumber(value: account), "category": 3,
+                                     "mode": "diagnostics", "since": NSNumber(value: 0)]) { diagnostic = $0 }
+        let diagDeadline = Date().addingTimeInterval(10)
+        while diagnostic == nil && Date() < diagDeadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+        precondition(diagnostic?["status"] as? String == "ok")
+        precondition((diagnostic?["known"] as? NSNumber)?.intValue == 4, "real original count")
+        precondition((diagnostic?["missingEdited"] as? NSNumber)?.intValue == 1, "missing-original edits remain distinct")
+        precondition((diagnostic?["edited"] as? NSNumber)?.intValue == 3, "edited diagnostic subset")
         print("Goldgram #91: durable original bridge and selected-account archive totals passed against actual Swift writer/reader")
         print("Goldgram #89: production async writer preserves received content/authors on ID-only deletion; observations never become edit events")
     }

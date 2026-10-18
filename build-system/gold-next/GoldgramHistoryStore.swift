@@ -876,7 +876,7 @@ public final class GoldgramArchiveReader: NSObject {
             }
         }
         guard isSelected(accountId), !kinds.isEmpty,
-              mode == "dialogs" || mode == "messages" || mode == "combined" || mode == "totals",
+              mode == "dialogs" || mode == "messages" || mode == "combined" || mode == "totals" || mode == "diagnostics",
               offset >= 0, offset <= 5000,
               limit >= 1, limit <= 50,
               mode != "messages" ||
@@ -884,9 +884,10 @@ public final class GoldgramArchiveReader: NSObject {
             completion(["status": "invalid_request", "items": []])
             return
         }
+        let diagnosticSince = max(Int64(0), (request["since"] as? NSNumber)?.int64Value ?? 0)
         GoldgramHistoryStore.storageQueue.async {
             let response = self.read(
-                accountId: accountId, mode: mode,
+                accountId: accountId, mode: mode, diagnosticSince: diagnosticSince,
                 kinds: kinds, peerId: peerId, peerKind: scopedPeerKind, sources: sources, deletedOnly: category == 3,
                 offset: Int32(offset), limit: Int32(limit)
             )
@@ -915,7 +916,7 @@ public final class GoldgramArchiveReader: NSObject {
     private static func read(
         accountId: Int64, mode: String, kinds: [Int32],
         peerId: Int64, peerKind: Int32, sources: [(kind: Int32, id: Int64)], deletedOnly: Bool,
-        offset: Int32, limit: Int32
+        offset: Int32, limit: Int32, diagnosticSince: Int64
     ) -> [String: Any] {
         // Opening a missing DB in READONLY mode must never create one.
         let support = FileManager.default.urls(
@@ -952,6 +953,39 @@ public final class GoldgramArchiveReader: NSObject {
         sqlite3_finalize(version)
         guard versionRead == SQLITE_ROW && schemaVersion == 2 else {
             return ["status": "incompatible_schema", "items": []]
+        }
+
+        if mode == "diagnostics" {
+            // Only aggregate local metadata. Never return dialog IDs or text.
+            let diagnosticSQL = """
+            SELECT COUNT(*),
+                   COALESCE(SUM(CASE WHEN m.original_observed=1 AND m.original_text IS NOT NULL THEN 1 ELSE 0 END), 0),
+                   COALESCE(SUM(CASE WHEN m.original_observed=0 AND EXISTS
+                     (SELECT 1 FROM events e WHERE e.peer_kind=m.peer_kind AND e.peer_id=m.peer_id
+                        AND e.message_id=m.message_id AND e.event_kind=1) THEN 1 ELSE 0 END), 0),
+                   COALESCE(SUM(CASE WHEN EXISTS
+                     (SELECT 1 FROM events e WHERE e.peer_kind=m.peer_kind AND e.peer_id=m.peer_id
+                        AND e.message_id=m.message_id AND e.event_kind=1) THEN 1 ELSE 0 END), 0)
+            FROM messages m WHERE m.first_seen_at >= ?;
+            """
+            var pointer: OpaquePointer?
+            guard sqlite3_prepare_v2(db, diagnosticSQL, -1, &pointer, nil) == SQLITE_OK,
+                  let stmt = pointer else {
+                if let pointer { sqlite3_finalize(pointer) }
+                return ["status": "unavailable", "items": []]
+            }
+            defer { sqlite3_finalize(stmt) }
+            guard sqlite3_bind_int64(stmt, 1, diagnosticSince) == SQLITE_OK,
+                  sqlite3_step(stmt) == SQLITE_ROW else {
+                return ["status": "unavailable", "items": []]
+            }
+            return [
+                "status": "ok",
+                "observed": NSNumber(value: sqlite3_column_int64(stmt, 0)),
+                "known": NSNumber(value: sqlite3_column_int64(stmt, 1)),
+                "missingEdited": NSNumber(value: sqlite3_column_int64(stmt, 2)),
+                "edited": NSNumber(value: sqlite3_column_int64(stmt, 3))
+            ]
         }
 
         var sql = mode == "totals" ? countsSQL : mode == "dialogs" ? dialogsSQL : messagesSQL

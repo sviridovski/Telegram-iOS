@@ -4,6 +4,25 @@ import Postbox
 import SwiftSignalKit
 import TelegramApi
 
+// #97: opt-in, account-scoped stage counts. No message contents, IDs,
+// peer names or message hashes are recorded. Disabled outside explicit test.
+private enum GoldgramCaptureDiagnostics {
+    static let lock = NSLock()
+    static func count(account: PeerId, stage: String) {
+        let defaults = UserDefaults.standard
+        guard defaults.bool(forKey: "GoldgramDiagnosticEnabledV1") else { return }
+        let key = "GoldgramDiagnosticCountsV1.\(account.id._internalGetInt64Value())"
+        lock.lock()
+        defer { lock.unlock() }
+        var values = defaults.dictionary(forKey: key) as? [String: Int] ?? [:]
+        values[stage] = min(1_000_000, (values[stage] ?? 0) + 1)
+        defaults.set(values, forKey: key)
+    }
+}
+func goldgramDiagnosticRecord(accountPeerId: PeerId, stage: String) {
+    GoldgramCaptureDiagnostics.count(account: accountPeerId, stage: stage)
+}
+
 @inline(never)
 @_cdecl("goldgram_native_history_host_v1")
 public func goldgramNativeHistoryHostV1() -> Int32 { return 1 }
@@ -72,7 +91,9 @@ private func goldgramSavedOriginal(accountPeerId: PeerId, kind: Int32, id: Messa
     defer { free(text) }
     guard let data = String(cString: text).data(using: .utf8),
           let value = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
-    return value["text"] as? String
+    let result = value["text"] as? String
+    if result != nil { goldgramDiagnosticRecord(accountPeerId: accountPeerId, stage: "sqliteLookupHit") }
+    return result
 }
 
 private func goldgramKind(_ id: PeerId, _ peer: Peer?) -> Int32? {
@@ -149,9 +170,10 @@ func goldgramCaptureServerOriginal(accountPeerId: PeerId, message: StoreMessage,
           case let .Id(id) = message.id, id.namespace == Namespaces.Message.Cloud, id.id > 0,
           !message.attributes.contains(where: { $0 is EditedMessageAttribute }),
           !message.text.isEmpty || !message.media.isEmpty else { return }
+    goldgramDiagnosticRecord(accountPeerId: accountPeerId, stage: "serverEligible")
     let sender = message.authorId
     let original = goldgramArchiveText(message.text, message.media)
-    let _ = goldgramWrite([
+    if goldgramWrite([
         "accountId": accountPeerId.id._internalGetInt64Value(), "peerKind": peerKind,
         "peerId": id.peerId.id._internalGetInt64Value(), "messageId": id.id, "eventKind": 0,
         "text": original, "originalText": original, "originalObserved": true,
@@ -160,7 +182,9 @@ func goldgramCaptureServerOriginal(accountPeerId: PeerId, message: StoreMessage,
         "senderKind": sender.flatMap { goldgramKind($0, nil) } ?? -1,
         "sentAt": Int64(message.timestamp) * 1000, "threadId": message.threadId ?? 0,
         "mediaKeys": goldgramMediaKeys(message.media)
-    ])
+    ]) {
+        goldgramDiagnosticRecord(accountPeerId: accountPeerId, stage: "writerAccepted")
+    }
 }
 
 // Returns local history metadata to persist together with the server version.
@@ -217,6 +241,7 @@ private func goldgramCaptureMutation(accountPeerId: PeerId, transaction: Transac
         revisions.append(goldgramArchiveText(message.text, message.media))
         dates.append(edited?.date ?? 0)
     }
+    goldgramDiagnosticRecord(accountPeerId: accountPeerId, stage: original ? "inlineKnown" : "inlineUnknown")
     return GoldgramMessageHistoryAttribute(baseline: baseline, originalObserved: original,
         entities: recovered == nil ? (history?.entities ?? (previous == nil ? entities : oldEntities)) : [], revisions: revisions, editDates: dates)
 }
@@ -269,6 +294,8 @@ private func goldgramAcceptLateOriginal(accountPeerId: PeerId, transaction: Tran
 // Keep tombstones intact when a later history/reaction fetch repeats an item.
 func goldgramPrepareIncoming(accountPeerId: PeerId, transaction: Transaction, message: StoreMessage) -> StoreMessage {
     guard case let .Id(id) = message.id, id.namespace == Namespaces.Message.Cloud, id.id > 0 else { return message }
+    goldgramDiagnosticRecord(accountPeerId: accountPeerId,
+        stage: message.attributes.contains(where: { $0 is EditedMessageAttribute }) ? "postboxEdited" : "postboxUnedited")
     let stored = transaction.getMessage(id).map { goldgramStoredMessage($0, localTags: $0.localTags) }
     // Existing retained content must not be erased by a duplicate payload,
     // even after the user turns off capture of NEW events.
@@ -281,6 +308,7 @@ func goldgramPrepareIncoming(accountPeerId: PeerId, transaction: Transaction, me
         return goldgramAcceptLateOriginal(accountPeerId: accountPeerId, transaction: transaction, id: id, incoming: message, current: stored)
     }
     guard goldgramCaptureEnabled(accountPeerId: accountPeerId, transaction: transaction) else { return message }
+    goldgramDiagnosticRecord(accountPeerId: accountPeerId, stage: "postboxCaptureEnabled")
     let snapshot = goldgramSnapshot(transaction: transaction, id: id)
     if let snapshot, snapshot.localTags.contains(goldgramDeletedMessageTag) {
         return goldgramAcceptLateOriginal(accountPeerId: accountPeerId, transaction: transaction, id: id, incoming: message, current: snapshot)
