@@ -164,5 +164,6 @@ func goldgramSaveSnapshot(transaction: Transaction, message: StoreMessage) -> Bo
 public func goldgramClearSnapshots(transaction: Transaction, accountPeerId: PeerId) {
     transaction.clearItemCacheCollection(collectionId: goldgramSnapshotCollection)
     transaction.clearItemCacheCollection(collectionId: goldgramArchivedSnapshotCollection)
+    transaction.clearItemCacheCollection(collectionId: -104)
     UserDefaults.standard.set(Int(Date().timeIntervalSince1970), forKey: "GoldgramNativeHistorySinceV2.\(accountPeerId.id._internalGetInt64Value())")
 }

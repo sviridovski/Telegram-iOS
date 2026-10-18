@@ -34,7 +34,7 @@ assert 'applicationInForeground' not in monitor, 'background execution must not 
 wake = (r/'submodules/TelegramUI/Sources/SharedWakeupManager.swift').read_text()
 assert 'wasInForeground && !value && goldgramNativeHistoryEnabled()' in wake
 assert 'allowBackgroundTimeExtension(timeout: 20.0, extendNow: true)' in wake
-assert 'case .group = peer.info' in n and 'prefix(4)' in n, 'Monitor is limited to accessible groups and bounded'
+assert 'goldgramKind(id, transaction.getPeer(id))' in n and 'prefix(8)' in n, 'Monitor is limited to accessible cloud peers and bounded'
 assert 'viewTracker.polledChannel(peerId: id)' in n and 'limit: 100' in n
 assert 'readHistory(' not in n and 'joinChannel(' not in n, 'Monitoring must not mark read or join chats'
 assert 'self.goldgramDiscussionMonitorDisposable.dispose()' in u
@@ -46,8 +46,16 @@ validation = (r/'submodules/TelegramCore/Sources/State/HistoryViewStateValidatio
 assert validation.count('if goldgramRetainDeletion(accountPeerId: accountPeerId, transaction: transaction, mediaBox: postbox.mediaBox, id: id) { continue }') == 2
 assert 'return .single(Set(maybeRemovedMessageIds))' not in validation, 'failed exact-ID checks are not proof of deletion'
 retain = n.split('func goldgramRetainDeletion(',1)[1].split('func goldgramUnresolvedDeletions',1)[0]
-assert retain.index('goldgramPreserveRetained') < retain.index('guard goldgramNativeHistoryEnabled()'), 'capture OFF must not purge retained messages'
+assert retain.index('goldgramPreserveRetained') < retain.index('guard goldgramCaptureEnabled('), 'capture OFF must not purge retained messages'
 timer = (r/'submodules/TelegramCore/Sources/State/ManagedAutoremoveMessageOperations.swift').read_text()
 assert timer.index('goldgramPreserveRetained') < timer.index('if isRemove,')
 assert 'transaction.deleteMessages(' in u, 'Clear Logs still purges local tombstones'
 print('Goldgram #90: validation/timer retention and service-master background lifecycle wiring OK')
+
+assert a.count('postbox.setStoreMessagePreprocessor') == 2, 'main account AND standalone notification manager install capture'
+assert 'GoldgramPendingEvents' in n and '4 * 1024 * 1024' in n and 'items.count > 512' in n
+assert n.index('goldgram_flush_capture_v1') < n.index('transaction.removeItemCacheEntry(id: goldgramPendingKey)'), 'durable handoff removed only after writer flush'
+assert 'goldgram_read_original_v1' in n and 'recovered != nil' in n
+extension = (r/'Telegram/NotificationService/Sources/NotificationService.swift').read_text()
+assert 'let removed = ids.filter { !goldgramRetainDeletion(' in extension
+print('Goldgram #91: notification service capture, bounded handoff and durable original recovery wired')

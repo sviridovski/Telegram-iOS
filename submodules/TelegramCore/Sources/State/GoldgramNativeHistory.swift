@@ -23,6 +23,58 @@ public func goldgramNativeHistoryEnabled() -> Bool {
     return goldgramNativeHistoryHostV1() == 1 && goldgramNativeWriter() != nil && UserDefaults.standard.bool(forKey: "GoldgramSQLiteCaptureEnabled")
 }
 
+// The notification service has its own defaults and does not load Mx. Share
+// explicit account-local consent through Postbox, never infer it from a push.
+private struct GoldgramCaptureSettings: Codable, Equatable {
+    let account: Int64
+    let enabled: Bool
+    let since: Int32
+}
+private struct GoldgramPendingEvent: Codable { let data: Data; let kind: Int32 }
+private struct GoldgramPendingEvents: Codable { let items: [GoldgramPendingEvent] }
+private let goldgramSettingsKey = ItemCacheEntryId(collectionId: -103, key: ValueBoxKey(length: 0))
+private let goldgramPendingKey = ItemCacheEntryId(collectionId: -104, key: ValueBoxKey(length: 0))
+
+func goldgramCaptureEnabled(accountPeerId: PeerId, transaction: Transaction) -> Bool {
+    let old = transaction.retrieveItemCacheEntry(id: goldgramSettingsKey)?.get(GoldgramCaptureSettings.self)
+    if goldgramNativeWriter() != nil {
+        let value = GoldgramCaptureSettings(account: accountPeerId.toInt64(), enabled: goldgramNativeHistoryEnabled(), since: goldgramCaptureSince(accountPeerId))
+        if value != old, let entry = CodableEntry(value) { transaction.putItemCacheEntry(id: goldgramSettingsKey, entry: entry) }
+        return value.enabled
+    }
+    return old?.account == accountPeerId.toInt64() && old?.enabled == true
+}
+
+private func goldgramDrainPending(accountPeerId: PeerId, transaction: Transaction) {
+    guard goldgramCaptureEnabled(accountPeerId: accountPeerId, transaction: transaction), goldgramNativeWriter() != nil,
+          let pending = transaction.retrieveItemCacheEntry(id: goldgramPendingKey)?.get(GoldgramPendingEvents.self) else { return }
+    var remaining: [GoldgramPendingEvent] = []
+    for item in pending.items {
+        guard let payload = (try? JSONSerialization.jsonObject(with: item.data)) as? [String: Any],
+              (payload["accountId"] as? NSNumber)?.int64Value == accountPeerId.id._internalGetInt64Value() else { continue }
+        if !goldgramWrite(payload) { remaining.append(item) }
+    }
+    // Flush accepted events before discarding the durable extension handoff.
+    typealias Flush = @convention(c) () -> Int32
+    guard let handle = dlopen(nil, RTLD_NOW) else { return }
+    defer { dlclose(handle) }
+    guard let symbol = dlsym(handle, "goldgram_flush_capture_v1"), unsafeBitCast(symbol, to: Flush.self)() == 1 else { return }
+    if remaining.isEmpty { transaction.removeItemCacheEntry(id: goldgramPendingKey) }
+    else if let entry = CodableEntry(GoldgramPendingEvents(items: remaining)) { transaction.putItemCacheEntry(id: goldgramPendingKey, entry: entry) }
+}
+
+private func goldgramSavedOriginal(accountPeerId: PeerId, kind: Int32, id: MessageId) -> String? {
+    typealias Read = @convention(c) (Int64, Int32, Int64, Int32) -> UnsafeMutablePointer<CChar>?
+    guard let handle = dlopen(nil, RTLD_NOW) else { return nil }
+    defer { dlclose(handle) }
+    guard let symbol = dlsym(handle, "goldgram_read_original_v1"),
+          let text = unsafeBitCast(symbol, to: Read.self)(accountPeerId.id._internalGetInt64Value(), kind, id.peerId.id._internalGetInt64Value(), id.id) else { return nil }
+    defer { free(text) }
+    guard let data = String(cString: text).data(using: .utf8),
+          let value = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
+    return value["text"] as? String
+}
+
 private func goldgramKind(_ id: PeerId, _ peer: Peer?) -> Int32? {
     switch id.namespace {
     case Namespaces.Peer.CloudUser: return 0
@@ -58,16 +110,28 @@ private func goldgramArchiveText(_ text: String, _ media: [Media]) -> String {
 }
 
 @discardableResult
-private func goldgramWrite(_ payload: [String: Any]) -> Bool {
-    guard let writer = goldgramNativeWriter(),
-          let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]),
+private func goldgramWrite(_ payload: [String: Any], transaction: Transaction? = nil) -> Bool {
+    guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]), data.count <= 300000,
           let json = String(data: data, encoding: .utf8) else { return false }
-    return json.withCString { writer($0) == 1 }
+    if let writer = goldgramNativeWriter() { return json.withCString { writer($0) == 1 } }
+    guard let transaction, payload["text"] as? String != "[Содержимое не было получено]" else { return false }
+    var items = transaction.retrieveItemCacheEntry(id: goldgramPendingKey)?.get(GoldgramPendingEvents.self)?.items ?? []
+    items.append(GoldgramPendingEvent(data: data, kind: (payload["eventKind"] as? NSNumber)?.int32Value ?? 0))
+    var bytes = items.reduce(0) { $0 + $1.data.count }
+    while items.count > 512 || bytes > 4 * 1024 * 1024 {
+        let index = items.firstIndex(where: { $0.kind == 0 }) ?? 0
+        bytes -= items[index].data.count; items.remove(at: index)
+    }
+    guard let entry = CodableEntry(GoldgramPendingEvents(items: items)) else { return false }
+    transaction.putItemCacheEntry(id: goldgramPendingKey, entry: entry)
+    return true
 }
 
 // First activation of the corrected logger, per authenticated account. Old
 // edit dates loaded by scrolling cannot become new archive events.
-private func goldgramCaptureSince(_ account: PeerId) -> Int32 {
+private func goldgramCaptureSince(_ account: PeerId, transaction: Transaction? = nil) -> Int32 {
+    if goldgramNativeWriter() == nil, let transaction,
+       let settings = transaction.retrieveItemCacheEntry(id: goldgramSettingsKey)?.get(GoldgramCaptureSettings.self), settings.account == account.toInt64() { return settings.since }
     let key = "GoldgramNativeHistorySinceV2.\(account.id._internalGetInt64Value())"
     let value = UserDefaults.standard.integer(forKey: key)
     if value > 0 { return Int32(clamping: value) }
@@ -79,16 +143,20 @@ private func goldgramCaptureSince(_ account: PeerId) -> Int32 {
 // Returns local history metadata to persist together with the server version.
 private func goldgramCaptureMutation(accountPeerId: PeerId, transaction: Transaction,
     message: StoreMessage, previous: StoreMessage?) -> GoldgramMessageHistoryAttribute? {
-    let history = previous?.attributes.first(where: { $0 is GoldgramMessageHistoryAttribute }) as? GoldgramMessageHistoryAttribute
+    var history = previous?.attributes.first(where: { $0 is GoldgramMessageHistoryAttribute }) as? GoldgramMessageHistoryAttribute
     guard case let .Id(id) = message.id,
           let kind = goldgramKind(id.peerId, transaction.getPeer(id.peerId)) else { return history }
+    if let saved = history, !saved.originalObserved,
+       let original = goldgramSavedOriginal(accountPeerId: accountPeerId, kind: kind, id: id) {
+        history = GoldgramMessageHistoryAttribute(baseline: original, originalObserved: true, entities: [], revisions: saved.revisions, editDates: saved.editDates)
+    }
     let edited = message.attributes.compactMap { $0 as? EditedMessageAttribute }.first
     let entities = (message.attributes.first(where: { $0 is TextEntitiesMessageAttribute }) as? TextEntitiesMessageAttribute)?.entities ?? []
     let oldEntities = (previous?.attributes.first(where: { $0 is TextEntitiesMessageAttribute }) as? TextEntitiesMessageAttribute)?.entities ?? []
     let verified = GoldgramEventPolicy.shouldArchiveEdit(previousText: previous?.text, currentText: message.text,
         previousMedia: previous.map { goldgramMediaKeys($0.media) } ?? [], currentMedia: goldgramMediaKeys(message.media),
         entitiesChanged: oldEntities != entities, editDate: edited?.date ?? 0, hidden: edited?.isHidden ?? true,
-        captureSince: goldgramCaptureSince(accountPeerId),
+        captureSince: goldgramCaptureSince(accountPeerId, transaction: transaction),
         previousEditDate: (previous?.attributes.first(where: { $0 is EditedMessageAttribute }) as? EditedMessageAttribute)?.date ?? 0)
     guard verified else { return history }
     // A replay of an identical version is not another revision; there is no
@@ -109,11 +177,13 @@ private func goldgramCaptureMutation(accountPeerId: PeerId, transaction: Transac
         payload["beforeMediaKeys"] = goldgramMediaKeys(previous.media)
         payload["originalObserved"] = !previous.attributes.contains(where: { $0 is EditedMessageAttribute })
     }
-    guard goldgramWrite(payload) else { return history }
+    guard goldgramWrite(payload, transaction: transaction) else { return history }
     // An unavailable original is never invented. Start inline history with the
     // earliest actually received version, labelled honestly by the renderer.
-    let baseline = history?.baseline ?? previous?.text ?? ""
-    let original = history?.originalObserved ?? (previous.map { !$0.attributes.contains(where: { $0 is EditedMessageAttribute }) } ?? false)
+    let previousIsOriginal = previous.map { !$0.attributes.contains(where: { $0 is EditedMessageAttribute }) } ?? false
+    let recovered = (history?.originalObserved == true || previousIsOriginal) ? nil : goldgramSavedOriginal(accountPeerId: accountPeerId, kind: kind, id: id)
+    let baseline = history?.originalObserved == true ? history!.baseline : recovered ?? history?.baseline ?? previous?.text ?? ""
+    let original = history?.originalObserved == true || previousIsOriginal || recovered != nil
     var revisions = history?.revisions ?? []
     var dates = history?.editDates ?? []
     if previous != nil || history == nil {
@@ -121,7 +191,7 @@ private func goldgramCaptureMutation(accountPeerId: PeerId, transaction: Transac
         dates.append(edited?.date ?? 0)
     }
     return GoldgramMessageHistoryAttribute(baseline: baseline, originalObserved: original,
-        entities: history?.entities ?? (previous == nil ? entities : oldEntities), revisions: revisions, editDates: dates)
+        entities: recovered == nil ? (history?.entities ?? (previous == nil ? entities : oldEntities)) : [], revisions: revisions, editDates: dates)
 }
 
 private func goldgramStoredMessage(_ message: Message, localTags: LocalMessageTags) -> StoreMessage {
@@ -149,7 +219,7 @@ func goldgramPrepareIncoming(accountPeerId: PeerId, transaction: Transaction, me
         })
     }
     if let stored, stored.localTags.contains(goldgramDeletedMessageTag) { return stored }
-    guard goldgramNativeHistoryEnabled() else { return message }
+    guard goldgramCaptureEnabled(accountPeerId: accountPeerId, transaction: transaction) else { return message }
     let snapshot = goldgramSnapshot(transaction: transaction, id: id)
     if let snapshot, snapshot.localTags.contains(goldgramDeletedMessageTag) { return snapshot }
     // The independent snapshot is the last captured version. A native path
@@ -191,14 +261,27 @@ func goldgramPrepareIncoming(accountPeerId: PeerId, transaction: Transaction, me
             "senderKind": sender.flatMap { goldgramKind($0, transaction.getPeer($0)) } ?? -1,
             "sentAt": Int64(prepared.timestamp) * 1000, "threadId": prepared.threadId ?? 0,
             "editedAt": Int64(incomingDate) * 1000
-        ])
+        ], transaction: transaction)
     }
     return prepared
 }
 
 // Archive navigation can reinsert a full previously received snapshot. It
 // never manufactures content from an ID or fetches a deleted server message.
-public func goldgramRestoreSnapshot(transaction: Transaction, id: MessageId, deleted: Bool = false) -> Message? {
+private func goldgramHydrateOriginal(transaction: Transaction, id: MessageId, accountPeerId: PeerId?) {
+    guard let accountPeerId, let message = transaction.getMessage(id),
+          let history = message.attributes.first(where: { $0 is GoldgramMessageHistoryAttribute }) as? GoldgramMessageHistoryAttribute,
+          !history.originalObserved, let kind = goldgramKind(id.peerId, transaction.getPeer(id.peerId)),
+          let original = goldgramSavedOriginal(accountPeerId: accountPeerId, kind: kind, id: id) else { return }
+    transaction.updateMessage(id, preprocess: false, update: { current in
+        let fixed = GoldgramMessageHistoryAttribute(baseline: original, originalObserved: true, entities: [], revisions: history.revisions, editDates: history.editDates)
+        return .update(goldgramStoredMessage(current, localTags: current.localTags).withUpdatedAttributes(current.attributes.filter { !($0 is GoldgramMessageHistoryAttribute) } + [fixed]))
+    })
+    if let updated = transaction.getMessage(id) { goldgramSaveSnapshot(transaction: transaction, message: goldgramStoredMessage(updated, localTags: updated.localTags)) }
+}
+
+public func goldgramRestoreSnapshot(transaction: Transaction, id: MessageId, deleted: Bool = false, accountPeerId: PeerId? = nil) -> Message? {
+    goldgramHydrateOriginal(transaction: transaction, id: id, accountPeerId: accountPeerId)
     if let message = transaction.getMessage(id) {
         if !message.attributes.contains(where: { $0 is GoldgramMessageHistoryAttribute }),
            let snapshot = goldgramSnapshot(transaction: transaction, id: id), snapshot.text == message.text,
@@ -228,6 +311,7 @@ public func goldgramRestoreSnapshot(transaction: Transaction, id: MessageId, del
         })
     }
     let _ = transaction.addMessages([restored], location: .Random, preprocess: false)
+    goldgramHydrateOriginal(transaction: transaction, id: id, accountPeerId: accountPeerId)
     if restored.localTags.contains(goldgramDeletedMessageTag) {
         transaction.clearTimestampBasedAttribute(id: id, tag: 0)
         transaction.clearTimestampBasedAttribute(id: id, tag: 1)
@@ -253,12 +337,12 @@ func goldgramPreserveRetained(transaction: Transaction, id: MessageId) -> Bool {
 
 // Preserve a full native message (including media references) at its real ID.
 // Returns false for unknown/secret/local messages, which follow stock deletion.
-func goldgramRetainDeletion(accountPeerId: PeerId, transaction: Transaction, mediaBox: MediaBox, id: MessageId) -> Bool {
+public func goldgramRetainDeletion(accountPeerId: PeerId, transaction: Transaction, mediaBox: MediaBox, id: MessageId) -> Bool {
     if goldgramPreserveRetained(transaction: transaction, id: id) { return true }
-    guard goldgramNativeHistoryEnabled(), id.namespace == Namespaces.Message.Cloud, id.id > 0,
+    guard goldgramCaptureEnabled(accountPeerId: accountPeerId, transaction: transaction), id.namespace == Namespaces.Message.Cloud, id.id > 0,
           let kind = goldgramKind(id.peerId, transaction.getPeer(id.peerId)) else { return false }
     goldgramRememberDiscussion(transaction: transaction, peerId: id.peerId, explicitlyOpened: true)
-    let message = goldgramRestoreSnapshot(transaction: transaction, id: id)
+    let message = goldgramRestoreSnapshot(transaction: transaction, id: id, accountPeerId: accountPeerId)
     let sender = message?.author?.id ?? goldgramSnapshotAuthor(transaction: transaction, id: id)?.id
     let payload: [String: Any] = [
         "accountId": accountPeerId.id._internalGetInt64Value(), "peerKind": kind,
@@ -270,7 +354,7 @@ func goldgramRetainDeletion(accountPeerId: PeerId, transaction: Transaction, med
         "retained": message != nil,
         "originalObserved": message.map { !$0.attributes.contains(where: { $0 is EditedMessageAttribute }) } ?? false
     ]
-    guard goldgramWrite(payload), let message else { return false }
+    guard goldgramWrite(payload, transaction: transaction), let message else { return false }
     if !message.localTags.contains(goldgramDeletedMessageTag) {
         transaction.updateMessage(id, preprocess: false, update: { current in
             var tags = current.localTags; tags.insert(goldgramDeletedMessageTag)
@@ -357,8 +441,8 @@ public func goldgramClearRetainedMedia(accountId: Int64, completion: @escaping (
     }
 }
 
-// Account-local, bounded list of accessible discussions. Merely receiving a
-// broadcast post does not subscribe the client to all its group's comments.
+// Account-local, bounded list of recently received/opened cloud dialogs.
+// Seed recent bodies on wake; channel polling shares the stock reference count.
 private struct GoldgramDiscussionTarget: Codable {
     let peer: Int64
     let seen: Int64
@@ -369,24 +453,20 @@ private struct GoldgramDiscussionTargets: Codable {
 private let goldgramDiscussionTargetsKey = ItemCacheEntryId(collectionId: -102, key: ValueBoxKey(length: 0))
 
 func goldgramRememberDiscussion(transaction: Transaction, peerId: PeerId, explicitlyOpened: Bool = false) {
-    guard goldgramNativeHistoryEnabled(), let channel = transaction.getPeer(peerId) as? TelegramChannel else { return }
-    let linked: PeerId?
-    if let cached = transaction.getPeerCachedData(peerId: peerId) as? CachedChannelData,
-       case let .known(id) = cached.linkedDiscussionPeerId { linked = id } else { linked = nil }
-    if case .broadcast = channel.info {
-        if let linked, let group = transaction.getPeer(linked) as? TelegramChannel, case .group = group.info {
-            goldgramRememberDiscussion(transaction: transaction, peerId: linked, explicitlyOpened: true)
-        }
-        return
+    guard goldgramNativeHistoryEnabled(), goldgramKind(peerId, transaction.getPeer(peerId)) != nil else { return }
+    if let channel = transaction.getPeer(peerId) as? TelegramChannel, case .broadcast = channel.info,
+       let cached = transaction.getPeerCachedData(peerId: peerId) as? CachedChannelData,
+       case let .known(linked) = cached.linkedDiscussionPeerId, let linked,
+       let group = transaction.getPeer(linked) as? TelegramChannel, case .group = group.info {
+        goldgramRememberDiscussion(transaction: transaction, peerId: linked, explicitlyOpened: true)
     }
-    guard explicitlyOpened || linked != nil else { return }
     let now = Int64(Date().timeIntervalSince1970)
     let old = transaction.retrieveItemCacheEntry(id: goldgramDiscussionTargetsKey)?.get(GoldgramDiscussionTargets.self)?.items ?? []
     // Avoid rewriting the watch list on every received comment/reaction.
     if let current = old.first(where: { $0.peer == peerId.toInt64() }), now - current.seen < 60 { return }
     var items = old.filter { $0.peer != peerId.toInt64() && now - $0.seen < 86400 }
     items.insert(GoldgramDiscussionTarget(peer: peerId.toInt64(), seen: now), at: 0)
-    if let entry = CodableEntry(GoldgramDiscussionTargets(items: Array(items.prefix(4)))) {
+    if let entry = CodableEntry(GoldgramDiscussionTargets(items: Array(items.prefix(8)))) {
         transaction.putItemCacheEntry(id: goldgramDiscussionTargetsKey, entry: entry)
     }
 }
@@ -394,9 +474,9 @@ func goldgramRememberDiscussion(transaction: Transaction, peerId: PeerId, explic
 // Seed only the latest 100 accessible messages, once per active subscription.
 // This neither marks history read nor joins a group, and downloads no media.
 private func goldgramSeedDiscussion(account: Account, peerId: PeerId) -> Signal<Never, NoError> {
-    return account.postbox.transaction { transaction -> (TelegramChannel, Api.InputPeer)? in
-        guard goldgramNativeHistoryEnabled(), let peer = transaction.getPeer(peerId) as? TelegramChannel,
-              case .group = peer.info, let input = apiInputPeer(peer) else { return nil }
+    return account.postbox.transaction { transaction -> (Peer, Api.InputPeer)? in
+        guard goldgramNativeHistoryEnabled(), let peer = transaction.getPeer(peerId),
+              goldgramKind(peerId, peer) != nil, let input = apiInputPeer(peer) else { return nil }
         return (peer, input)
     }
     |> mapToSignal { value -> Signal<Never, NoError> in
@@ -419,7 +499,7 @@ private func goldgramSeedDiscussion(account: Account, peerId: PeerId) -> Signal<
                 }
                 updatePeers(transaction: transaction, accountPeerId: account.peerId,
                     peers: AccumulatedPeers(transaction: transaction, chats: chats, users: users))
-                let stored = messages.compactMap { StoreMessage(apiMessage: $0, accountPeerId: account.peerId, peerIsForum: peer.isForumOrMonoForum) }
+                let stored = messages.compactMap { StoreMessage(apiMessage: $0, accountPeerId: account.peerId, peerIsForum: (peer as? TelegramChannel)?.isForumOrMonoForum ?? false) }
                 let _ = transaction.addMessages(stored, location: .Random)
             }
             |> ignoreValues
@@ -439,12 +519,13 @@ private final class GoldgramDiscussionMonitor {
         self.refresh.set((clock
         |> mapToSignal { _ -> Signal<[PeerId], NoError> in
             return account.postbox.transaction { transaction -> [PeerId] in
+                goldgramDrainPending(accountPeerId: account.peerId, transaction: transaction)
                 guard goldgramNativeHistoryEnabled() else { return [] }
                 let now = Int64(Date().timeIntervalSince1970)
                 let items = transaction.retrieveItemCacheEntry(id: goldgramDiscussionTargetsKey)?.get(GoldgramDiscussionTargets.self)?.items ?? []
-                return items.filter { now - $0.seen < 86400 }.prefix(4).compactMap { item in
+                return items.filter { now - $0.seen < 86400 }.prefix(8).compactMap { item in
                     let id = PeerId(item.peer)
-                    guard let peer = transaction.getPeer(id) as? TelegramChannel, case .group = peer.info else { return nil }
+                    guard goldgramKind(id, transaction.getPeer(id)) != nil else { return nil }
                     return id
                 }
             }
@@ -459,7 +540,9 @@ private final class GoldgramDiscussionMonitor {
                 let disposable = DisposableSet()
                 // Reuse the stock reference-counted poller: server timeout,
                 // pts-gap handling and dedup are shared with an open chat.
-                disposable.add(account.viewTracker.polledChannel(peerId: id).start())
+                if id.namespace == Namespaces.Peer.CloudChannel {
+                    disposable.add(account.viewTracker.polledChannel(peerId: id).start())
+                }
                 disposable.add(goldgramSeedDiscussion(account: account, peerId: id).start())
                 self.subscriptions[id] = disposable
             }

@@ -4,6 +4,11 @@
 // Never infer an account ID from a message ID or a chat peer ID.
 import Foundation
 import SQLite3
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 enum GoldgramHistoryStore {
     enum StorageError: Error {
@@ -821,6 +826,12 @@ public final class GoldgramArchiveReader: NSObject {
     LIMIT ? OFFSET ?;
     """
 
+    private static var countsSQL: String {
+        let rows = messagesSQL.components(separatedBy: "ORDER BY COALESCE(m.sent_at, m.last_seen_at) DESC")[0]
+            .replacingOccurrences(of: "WHERE m.peer_kind = ? AND m.peer_id = ?", with: "WHERE m.peer_kind IN (0,1,2,3)")
+        return "SELECT COALESCE(SUM(edited),0), COALESCE(SUM(CASE WHEN is_deleted=1 OR delete_event=1 THEN 1 ELSE 0 END),0) FROM (\(rows));"
+    }
+
     // Only explicit, positive Telegram account IDs are accepted. The UI must
     // obtain the selected authenticated account from native Telegram context,
     // NEVER from global MxLastKnownUserId or whichever DB happens to exist.
@@ -865,7 +876,7 @@ public final class GoldgramArchiveReader: NSObject {
             }
         }
         guard isSelected(accountId), !kinds.isEmpty,
-              mode == "dialogs" || mode == "messages" || mode == "combined",
+              mode == "dialogs" || mode == "messages" || mode == "combined" || mode == "totals",
               offset >= 0, offset <= 5000,
               limit >= 1, limit <= 50,
               mode != "messages" ||
@@ -943,7 +954,7 @@ public final class GoldgramArchiveReader: NSObject {
             return ["status": "incompatible_schema", "items": []]
         }
 
-        var sql = mode == "dialogs" ? dialogsSQL : messagesSQL
+        var sql = mode == "totals" ? countsSQL : mode == "dialogs" ? dialogsSQL : messagesSQL
         if mode == "dialogs" {
             let placeholders = kinds.map { _ in "?" }.joined(separator: ", ")
             sql = sql.replacingOccurrences(of: "WHERE d.peer_kind IN (?, ?)", with: "WHERE d.peer_kind IN (\(placeholders))")
@@ -978,13 +989,17 @@ public final class GoldgramArchiveReader: NSObject {
         let scope: [Int64] = mode == "combined"
             ? sources.flatMap { [Int64($0.kind), $0.id] }
             : mode == "dialogs" ? kinds.map { Int64($0) } : [first, second]
-        let parameters = scope + [Int64(limit), Int64(offset)]
+        let parameters: [Int64] = mode == "totals" ? [] : scope + [Int64(limit), Int64(offset)]
         for (index, value) in parameters.enumerated() {
             guard sqlite3_bind_int64(stmt, Int32(index + 1), value) == SQLITE_OK else {
                 return ["status": "unavailable", "items": []]
             }
         }
 
+        if mode == "totals" {
+            guard sqlite3_step(stmt) == SQLITE_ROW else { return ["status": "unavailable", "items": []] }
+            return ["status": "ok", "edited": NSNumber(value: sqlite3_column_int64(stmt, 0)), "deleted": NSNumber(value: sqlite3_column_int64(stmt, 1))]
+        }
         var rows: [[String: Any]] = []
         while true {
             let step = sqlite3_step(stmt)
@@ -1080,6 +1095,8 @@ public func goldgramRegisterNativeNavigationV1(_ rawCallback: UnsafeMutableRawPo
 
 // #83: authenticated native replay is the sole producer of new history events.
 private extension GoldgramHistoryStore {
+    static var nativeWriteFailed = false
+
     static func nativeEvent(_ payload: [String: Any]) -> Bool {
         guard let account = (payload["accountId"] as? NSNumber)?.int64Value, account > 0,
               let kind = (payload["peerKind"] as? NSNumber)?.int32Value,
@@ -1147,10 +1164,11 @@ private extension GoldgramHistoryStore {
                         try archiveSQL("INSERT OR IGNORE INTO events(peer_kind,peer_id,message_id,event_kind,source,server_time,observed_at,event_key) VALUES(?,?,?,?, '\(source)',NULLIF(?,0),?,?);", db: db, ints: scope + [Int64(event),edited,now], text: key)
                     }
                     try archiveSQL("COMMIT;", db: db, ints: [])
+                    if event != 0 { DispatchQueue.main.async { NotificationCenter.default.post(name: Notification.Name("GoldgramArchiveChanged"), object: NSNumber(value: account)) } }
                 } catch {
                     try? archiveSQL("ROLLBACK;", db: db, ints: []); throw error
                 }
-            } catch { /* No message content or identifiers in logs. */ }
+            } catch { nativeWriteFailed = true /* Keep the durable extension handoff for retry. */ }
         }
         return true // enqueued, not a synchronous claim of SQLite commit
     }
@@ -1161,4 +1179,30 @@ public func goldgramCaptureEventV1(_ raw: UnsafePointer<CChar>?) -> Int32 {
     guard let raw, let data = String(cString: raw).data(using: .utf8), data.count <= 300000,
           let payload = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return 0 }
     return GoldgramHistoryStore.nativeEvent(payload) ? 1 : 0
+}
+
+// Notification events are committed before their Postbox handoff is removed.
+@_cdecl("goldgram_flush_capture_v1")
+public func goldgramFlushCaptureV1() -> Int32 {
+    return GoldgramHistoryStore.storageQueue.sync { GoldgramHistoryStore.nativeWriteFailed ? 0 : 1 }
+}
+
+// Only a positively observed original may repair inline history after eviction.
+// The caller owns the returned JSON buffer and releases it with free().
+@_cdecl("goldgram_read_original_v1")
+public func goldgramReadOriginalV1(_ account: Int64, _ kind: Int32, _ peer: Int64, _ id: Int32) -> UnsafeMutablePointer<CChar>? {
+    guard account > 0, (0...3).contains(kind), peer > 0, id > 0 else { return nil }
+    return GoldgramHistoryStore.storageQueue.sync {
+        guard let db = try? GoldgramHistoryStore.archiveConnection(for: account) else { return nil }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT original_text FROM messages WHERE peer_kind=? AND peer_id=? AND message_id=? AND original_observed=1 AND original_text IS NOT NULL;", -1, &statement, nil) == SQLITE_OK, let stmt = statement else {
+            if let statement { sqlite3_finalize(statement) }; return nil
+        }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_int(stmt, 1, kind); sqlite3_bind_int64(stmt, 2, peer); sqlite3_bind_int(stmt, 3, id)
+        guard sqlite3_step(stmt) == SQLITE_ROW, let bytes = sqlite3_column_text(stmt, 0) else { return nil }
+        let text = String(decoding: UnsafeBufferPointer(start: bytes, count: Int(sqlite3_column_bytes(stmt, 0))), as: UTF8.self)
+        guard let data = try? JSONSerialization.data(withJSONObject: ["text": text]), let json = String(data: data, encoding: .utf8) else { return nil }
+        return strdup(json)
+    }
 }

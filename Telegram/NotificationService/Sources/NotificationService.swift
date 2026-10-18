@@ -2389,7 +2389,8 @@ private final class NotificationServiceHandler {
                             Logger.shared.log("NotificationService \(episode)", "Will delete messages \(ids)")
                             let mediaBox = stateManager.postbox.mediaBox
                             let _ = (stateManager.postbox.transaction { transaction -> Void in
-                                _internal_deleteMessages(transaction: transaction, mediaBox: mediaBox, ids: ids, deleteMedia: true)
+                                let removed = ids.filter { !goldgramRetainDeletion(accountPeerId: accountPeerId, transaction: transaction, mediaBox: mediaBox, id: $0) }
+                                _internal_deleteMessages(transaction: transaction, mediaBox: mediaBox, ids: removed, deleteMedia: true)
                             }
                             |> deliverOn(strongSelf.queue)).start(completed: {
                                 UNUserNotificationCenter.current().getDeliveredNotifications(completionHandler: { notifications in

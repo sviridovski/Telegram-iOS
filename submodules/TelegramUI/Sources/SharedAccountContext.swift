@@ -126,7 +126,7 @@ public final class GoldgramNativeArchiveMetadata: NSObject {
                 } else { ready() }
             }
             let _ = (primary.account.postbox.transaction { transaction -> Message? in
-                return goldgramRestoreSnapshot(transaction: transaction, id: id, deleted: deleted)
+                return goldgramRestoreSnapshot(transaction: transaction, id: id, deleted: deleted, accountPeerId: primary.account.peerId)
             } |> deliverOnMainQueue).start(next: { message in
                 if message != nil || deleted { finish(message); return }
                 // Live edits can be outside the current history window. Ask

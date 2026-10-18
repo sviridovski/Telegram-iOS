@@ -1767,6 +1767,9 @@ public func standaloneStateManager(
                             return .single(nil)
                         case let authorizedState as AuthorizedAccountState:
                             Logger.shared.log("StandaloneStateManager", "state is valid")
+                            postbox.setStoreMessagePreprocessor { transaction, message in
+                                return goldgramPrepareIncoming(accountPeerId: authorizedState.peerId, transaction: transaction, message: message)
+                            }
                             
                             return postbox.transaction { transaction -> String? in
                                 return (transaction.getPeer(authorizedState.peerId) as? TelegramUser)?.phone

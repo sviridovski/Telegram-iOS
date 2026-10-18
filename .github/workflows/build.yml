@@ -91,6 +91,7 @@ jobs:
           python3 build-system/gold-next/test_native_writer_sql.py
           python3 build-system/gold-next/test_native_write_boundary.py
           python3 build-system/gold-next/run_retention_guard.py
+          python3 build-system/gold-next/run_notification_handoff.py
           swiftc build-system/gold-next/GoldgramHistoryStore.swift build-system/gold-next/test_native_capture.swift -o "$RUNNER_TEMP/goldgram-native-capture-test"
           "$RUNNER_TEMP/goldgram-native-capture-test"
           python3 build-system/gold-next/run_postbox_snapshot_codec.py

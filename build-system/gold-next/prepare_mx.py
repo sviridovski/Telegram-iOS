@@ -429,3 +429,56 @@ for before, after in patches:
     mx_ui_source = mx_ui_source.replace(before, after)
 mx_ui_path.write_text(mx_ui_source)
 print("Goldgram #83: native delete events and dedicated deleted folder wired")
+
+# #91: selected-account totals in Privacy & Functions; refresh when reopened.
+summary_interface = '+ (void)presentClearHistoryFromController:(UIViewController *)controller;'
+if mx_ui_source.count(summary_interface) != 1:
+    raise SystemExit('Goldgram #91 summary interface mismatch')
+mx_ui_source = mx_ui_source.replace(summary_interface, summary_interface + '\n+ (NSNumber *)activeAccountId;\n+ (void)query:(NSDictionary *)request completion:(void (^)(NSDictionary *))completion;')
+summary_methods = r'''
+- (void)viewDidAppear:(BOOL)animated {
+  [super viewDidAppear:animated];
+  [[NSNotificationCenter defaultCenter] removeObserver:self name:@"GoldgramArchiveChanged" object:nil];
+  [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(goldgramArchiveChanged:) name:@"GoldgramArchiveChanged" object:nil];
+  [self goldgramRefreshArchiveTotals];
+}
+
+- (void)goldgramArchiveChanged:(NSNotification *)notification {
+  [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(goldgramRefreshArchiveTotals) object:nil];
+  [self performSelector:@selector(goldgramRefreshArchiveTotals) withObject:nil afterDelay:0.5];
+}
+
+- (void)goldgramRefreshArchiveTotals {
+  if (!self.goldgramSection || self.goldgramSection.integerValue != MISC || self.goldgramMiscCategory || !self.view.window) return;
+  Class reader = NSClassFromString(@"GoldgramArchiveReader");
+  if (![reader respondsToSelector:@selector(activeAccountId)] || ![reader respondsToSelector:@selector(query:completion:)]) return;
+  NSNumber *account = [reader activeAccountId];
+  if (!account) return;
+  __weak Mx *weakSelf = self;
+  [reader query:@{@"accountId": account, @"category": @3, @"mode": @"totals"} completion:^(NSDictionary *answer) {
+    Mx *strongSelf = weakSelf;
+    if (!strongSelf || ![account isEqual:[reader activeAccountId]]) return;
+    NSString *status = answer[@"status"];
+    if (![status isEqual:@"ok"] && ![status isEqual:@"no_archive"]) return;
+    UILabel *label = [UILabel new];
+    label.numberOfLines = 0;
+    label.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+    label.textColor = UIColor.secondaryLabelColor;
+    label.textAlignment = NSTextAlignmentCenter;
+    label.text = [NSString stringWithFormat:@"Всего изменённых: %@\nВсего удалённых: %@", answer[@"edited"] ?: @0, answer[@"deleted"] ?: @0];
+    CGFloat width = MAX(200.0, strongSelf.tableView.bounds.size.width - 32.0);
+    CGSize size = [label sizeThatFits:CGSizeMake(width, CGFLOAT_MAX)];
+    UIView *footer = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width + 32.0, size.height + 40.0)];
+    label.frame = CGRectMake(16, 20, width, size.height);
+    [footer addSubview:label];
+    strongSelf.tableView.tableFooterView = footer;
+  }];
+}
+
+'''
+anchor = '- (void)viewDidLoad {'
+if mx_ui_source.count(anchor) != 1:
+    raise SystemExit('Goldgram #91 lifecycle anchor mismatch')
+mx_ui_source = mx_ui_source.replace(anchor, summary_methods + anchor)
+mx_ui_path.write_text(mx_ui_source)
+print('Goldgram #91: selected-account total edited/deleted messages in Privacy & Functions')

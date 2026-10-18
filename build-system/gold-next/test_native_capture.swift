@@ -1,5 +1,8 @@
 import Foundation
 import SQLite3
+#if canImport(Darwin)
+import Darwin
+#endif
 
 // Run the actual production C writer, its asynchronous queue and real SQLite.
 @main
@@ -56,6 +59,27 @@ struct NativeCaptureFixture {
         precondition(row("SELECT original_observed,original_text FROM messages WHERE message_id=2") == ["0","NULL"])
         precondition(row("SELECT sender_id,sent_at FROM messages WHERE message_id=4") == ["NULL","NULL"], "receipt doesn't invent an author")
         precondition(row("SELECT COUNT(*) FROM events WHERE event_kind=0") == ["0"])
+        precondition(goldgramFlushCaptureV1() == 1)
+        let original = goldgramReadOriginalV1(account, 2, 99, 1)!
+        defer { free(original) }
+        let originalJSON = try JSONSerialization.jsonObject(with: String(cString: original).data(using: .utf8)!) as! [String: String]
+        precondition(originalJSON["text"] == "Оригинал", "recover only an actually observed original")
+        precondition(goldgramReadOriginalV1(account, 2, 99, 2) == nil, "unknown original must stay unknown")
+        precondition(goldgramReadOriginalV1(account, 3, 99, 1) == nil, "peer-kind isolation")
+        try send(5, event: 0, text: "Оригинал\0с переносом\nстроки", known: true)
+        let escaped = goldgramReadOriginalV1(account, 2, 99, 5)!
+        defer { free(escaped) }
+        let escapedJSON = try JSONSerialization.jsonObject(with: String(cString: escaped).data(using: .utf8)!) as! [String: String]
+        precondition(escapedJSON["text"] == "Оригинал\0с переносом\nстроки", "C bridge preserves embedded NUL and Unicode")
+        GoldgramArchiveReader.updateSelectedAccount(account)
+        var totals: NSDictionary?
+        GoldgramArchiveReader.query(["accountId": NSNumber(value: account), "category": 3, "mode": "totals"]) { totals = $0 }
+        let deadline = Date().addingTimeInterval(10)
+        while totals == nil && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
+        precondition(totals?["status"] as? String == "ok")
+        precondition((totals?["edited"] as? NSNumber)?.intValue == 2, "count distinct edited messages")
+        precondition((totals?["deleted"] as? NSNumber)?.intValue == 2, "exclude empty receipts and ordinary originals")
+        print("Goldgram #91: durable original bridge and selected-account archive totals passed against actual Swift writer/reader")
         print("Goldgram #89: production async writer preserves received content/authors on ID-only deletion; observations never become edit events")
     }
 }

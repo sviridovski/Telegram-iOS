@@ -4702,7 +4702,7 @@ func replayFinalState(
                 }
             case let .DeleteMessagesWithGlobalIds(rawIds):
                 var resolved = transaction.messageIdsForGlobalIds(rawIds)
-                if goldgramNativeHistoryEnabled() {
+                if goldgramCaptureEnabled(accountPeerId: accountPeerId, transaction: transaction) {
                     let known = Set(resolved.map { $0.id })
                     resolved.append(contentsOf: rawIds.filter { !known.contains($0) }.compactMap { goldgramSnapshotGlobalId(transaction: transaction, id: $0) })
                 }
@@ -4772,7 +4772,7 @@ func replayFinalState(
                 let message = rawMessage
                 // updateMessage does not invoke its closure for a missing row.
                 // Save the actually received full edit even outside loaded history.
-                if goldgramNativeHistoryEnabled(), id.namespace == Namespaces.Message.Cloud,
+                if goldgramCaptureEnabled(accountPeerId: accountPeerId, transaction: transaction), id.namespace == Namespaces.Message.Cloud,
                    transaction.getMessage(id) == nil {
                     let _ = transaction.addMessages([message], location: .Random)
                     continue
