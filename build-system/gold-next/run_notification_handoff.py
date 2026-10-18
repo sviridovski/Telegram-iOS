@@ -50,7 +50,7 @@ for index in 0..<700 {
  precondition(goldgramWrite(["accountId":1,"eventKind":0,"text":String(repeating:"я",count:4000),"messageId":index],transaction:db))
 }
 precondition(goldgramWrite(["accountId":1,"eventKind":2,"text":"Сохранённое удаление","messageId":42],transaction:db))
-let pending=db.retrieveItemCacheEntry(id: goldgramPendingKey)!.get(GoldgramPendingEvents.self)!
+private let pending=db.retrieveItemCacheEntry(id: goldgramPendingKey)!.get(GoldgramPendingEvents.self)!
 precondition(pending.items.count <= 512)
 precondition(pending.items.reduce(0) { $0 + $1.data.count } <= 4 * 1024 * 1024)
 precondition(pending.items.last?.kind == 2, "discard old observations before event bodies")
