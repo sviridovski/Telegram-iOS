@@ -1212,11 +1212,14 @@ private func finalStateWithUpdatesAndServerTime(accountPeerId: PeerId, postbox: 
                     peerIsForum = updatedState.isPeerForum(peerId: peerId)
                 }
                 if let message = StoreMessage(apiMessage: apiMessage, accountPeerId: accountPeerId, peerIsForum: peerIsForum), case let .Id(messageId) = message.id {
+                    goldgramTraceMessage(accountPeerId: accountPeerId, id: messageId, stage: "editApiReceived")
                     let peerId = messageId.peerId
                     if let previousState = updatedState.channelStates[peerId] {
                         if previousState.pts >= pts {
+                            goldgramTraceMessage(accountPeerId: accountPeerId, id: messageId, stage: "editPtsStale")
                             Logger.shared.log("State", "channel \(peerId) (\((updatedState.peers[peerId] as? TelegramChannel)?.title ?? "nil")) skip old edit update")
                         } else if previousState.pts + ptsCount == pts {
+                            goldgramTraceMessage(accountPeerId: accountPeerId, id: messageId, stage: "editPtsAccepted")
                             if let preCachedResources = apiMessage.preCachedResources {
                                 for (resource, data) in preCachedResources {
                                     updatedState.addPreCachedResource(resource, data: data)
@@ -1249,6 +1252,7 @@ private func finalStateWithUpdatesAndServerTime(accountPeerId: PeerId, postbox: 
                             }
                             updatedState.updateChannelState(peerId, pts: pts)
                         } else {
+                            goldgramTraceMessage(accountPeerId: accountPeerId, id: messageId, stage: "editPtsGap")
                             if !missingUpdatesFromChannels.contains(peerId) {
                                 Logger.shared.log("State", "channel \(peerId) (\((updatedState.peers[peerId] as? TelegramChannel)?.title ?? "nil")) edit message pts hole \(previousState.pts) + \(ptsCount) != \(pts)")
                                 missingUpdatesFromChannels.insert(peerId)
@@ -1360,6 +1364,7 @@ private func finalStateWithUpdatesAndServerTime(accountPeerId: PeerId, postbox: 
                     peerIsForum = updatedState.isPeerForum(peerId: peerId)
                 }
                 if let message = StoreMessage(apiMessage: apiMessage, accountPeerId: accountPeerId, peerIsForum: peerIsForum) {
+                    if case let .Id(id) = message.id { goldgramTraceMessage(accountPeerId: accountPeerId, id: id, stage: "newApiReceived") }
                     // An unedited body actually delivered by Telegram is an
                     // original even if the channel PTS/state gate subsequently
                     // requests resynchronization. Save that evidence before
@@ -1375,6 +1380,7 @@ private func finalStateWithUpdatesAndServerTime(accountPeerId: PeerId, postbox: 
                     }
                     if let previousState = updatedState.channelStates[message.id.peerId] {
                         if previousState.pts >= pts {
+                            if case let .Id(id) = message.id { goldgramTraceMessage(accountPeerId: accountPeerId, id: id, stage: "newPtsStale") }
                             let messageText: String
                             if Logger.shared.redactSensitiveData {
                                 messageText = "[[redacted]]"
@@ -1393,6 +1399,7 @@ private func finalStateWithUpdatesAndServerTime(accountPeerId: PeerId, postbox: 
                                     updatedState.addPreCachedStory(id: id, story: story)
                                 }
                             }
+                            if case let .Id(id) = message.id { goldgramTraceMessage(accountPeerId: accountPeerId, id: id, stage: "newPtsAccepted") }
                             var attributes = message.attributes
                             attributes.append(ChannelMessageStateVersionAttribute(pts: pts))
                             updatedState.addMessages([message.withUpdatedAttributes(attributes)], location: .UpperHistoryBlock)
@@ -1412,6 +1419,7 @@ private func finalStateWithUpdatesAndServerTime(accountPeerId: PeerId, postbox: 
                                 updatedState.updateChannelSynchronizedUntilMessage(id.peerId, id: id.id)
                             }
                         } else {
+                            if case let .Id(id) = message.id { goldgramTraceMessage(accountPeerId: accountPeerId, id: id, stage: "newPtsGap") }
                             if !missingUpdatesFromChannels.contains(message.id.peerId) {
                                 Logger.shared.log("State", "channel \(message.id.peerId) (\((updatedState.peers[message.id.peerId] as? TelegramChannel)?.title ?? "nil")) message pts hole \(previousState.pts) + \(ptsCount) != \(pts)")
                                 ;
@@ -1419,6 +1427,7 @@ private func finalStateWithUpdatesAndServerTime(accountPeerId: PeerId, postbox: 
                             }
                         }
                     } else {
+                        if case let .Id(id) = message.id { goldgramTraceMessage(accountPeerId: accountPeerId, id: id, stage: "newChannelStateUnknown") }
                         if case .none = channelsToPoll[message.id.peerId] {
                             Logger.shared.log("State", "channel \(message.id.peerId) (\((updatedState.peers[message.id.peerId] as? TelegramChannel)?.title ?? "nil")) state unknown")
                             channelsToPoll[message.id.peerId] = nil

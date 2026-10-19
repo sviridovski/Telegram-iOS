@@ -40,6 +40,16 @@ public final class GoldgramArchiveScreen: UITableViewController {
 
     private static let diagnosticCountPrefix = "GoldgramDiagnosticCountsV1."
     private static let diagnosticSincePrefix = "GoldgramDiagnosticSinceV1."
+    private static let tracePrefix = "GoldgramDiagnosticTraceRowsV2."
+    private static let traceScopePrefix = "GoldgramDiagnosticTraceScopeV2."
+    private static let traceActivePrefix = "GoldgramDiagnosticTraceActiveV2."
+
+    private static func tracePeer(_ item: [String: Any]) -> String? {
+        guard let kind = (item["peerKind"] as? NSNumber)?.intValue,
+              let peer = (item["peerId"] as? NSNumber)?.int64Value, peer > 0 else { return nil }
+        let ns = kind == 0 ? "u" : kind == 1 ? "g" : "c"
+        return "\(ns):\(peer)"
+    }
 
     @objc private func captureDiagnosticMenu() {
         guard let account = GoldgramArchiveReader.activeAccountId()?.int64Value, account > 0 else { return }
@@ -51,10 +61,16 @@ public final class GoldgramArchiveScreen: UITableViewController {
                                      preferredStyle: .actionSheet)
         menu.addAction(UIAlertAction(title: "Начать новый тест", style: .default) { _ in
             defaults.set([String: Int](), forKey: Self.diagnosticCountPrefix + String(account))
+            defaults.set([[String: Any]](), forKey: Self.tracePrefix + String(account))
+            let scoped = (self.sources ?? []).compactMap(Self.tracePeer)
+            defaults.set(scoped, forKey: Self.traceScopePrefix + String(account))
+            defaults.set(!scoped.isEmpty, forKey: Self.traceActivePrefix + String(account))
             defaults.set(Int64(Date().timeIntervalSince1970 * 1000), forKey: sinceKey)
             defaults.set(true, forKey: "GoldgramDiagnosticEnabledV1")
             let alert = UIAlertController(title: "Диагностика включена",
-                message: "Отправь совершенно новое сообщение с другого клиента, дождись его на iPhone и измени два раза. Затем вернись сюда и нажми «Показать результат». Архив не очищается.",
+                message: self.sources == nil
+                    ? "Для адресной диагностики выбери обсуждение в архиве и запусти «Тест» внутри. Второй аккаунт не нужен."
+                    : "Теперь наблюдаем только этот канал и его группу обсуждения. Оставайся в другом чате, дождись нового комментария и его изменения; потом удерживай запись в архиве.",
                 preferredStyle: .alert)
             alert.addAction(UIAlertAction(title: "Понятно", style: .default))
             self.present(alert, animated: true)
@@ -63,6 +79,16 @@ public final class GoldgramArchiveScreen: UITableViewController {
             menu.addAction(UIAlertAction(title: "Показать результат", style: .default) { _ in
                 self.showCaptureDiagnosticReport(account: account,
                     since: defaults.object(forKey: sinceKey) as? NSNumber)
+            })
+        }
+        if running {
+            menu.addAction(UIAlertAction(title: "Остановить и удалить диагностику", style: .destructive) { _ in
+                defaults.removeObject(forKey: sinceKey)
+                defaults.removeObject(forKey: Self.diagnosticCountPrefix + String(account))
+                defaults.removeObject(forKey: Self.tracePrefix + String(account))
+                defaults.removeObject(forKey: Self.traceScopePrefix + String(account))
+                defaults.removeObject(forKey: Self.traceActivePrefix + String(account))
+                defaults.set(false, forKey: "GoldgramDiagnosticEnabledV1")
             })
         }
         menu.addAction(UIAlertAction(title: "Закрыть", style: .cancel))
@@ -110,10 +136,8 @@ public final class GoldgramArchiveScreen: UITableViewController {
 
     public override func viewDidLoad() {
         super.viewDidLoad()
-        if sources == nil {
-            navigationItem.rightBarButtonItem = UIBarButtonItem(
-                title: "Тест", style: .plain, target: self, action: #selector(captureDiagnosticMenu))
-        }
+        navigationItem.rightBarButtonItem = UIBarButtonItem(
+            title: "Тест", style: .plain, target: self, action: #selector(captureDiagnosticMenu))
         title = displayName ?? (category == 0 ? "Личные сообщения" :
              category == 1 ? "Группы и чаты" : category == 3 ? "Удалённые сообщения" : "Каналы")
         tableView.rowHeight = UITableView.automaticDimension
@@ -284,6 +308,56 @@ public final class GoldgramArchiveScreen: UITableViewController {
             cell.selectionStyle = .none
         }
         return cell
+    }
+
+    // Inspect a single archived message without including its text or IDs in the report.
+    public override func tableView(_ tableView: UITableView,
+        contextMenuConfigurationForRowAt indexPath: IndexPath, point: CGPoint) -> UIContextMenuConfiguration? {
+        guard sources != nil, displayItems.indices.contains(indexPath.row) else { return nil }
+        let entry = displayItems[indexPath.row]
+        return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { _ in
+            UIMenu(children: [UIAction(title: "Маршрут оригинала") { [weak self] _ in
+                self?.showTrace(entry)
+            }])
+        }
+    }
+
+    private func showTrace(_ entry: [String: Any]) {
+        guard let peer = Self.tracePeer(entry),
+              let id = (entry["messageId"] as? NSNumber)?.int32Value,
+              let account = GoldgramArchiveReader.activeAccountId()?.int64Value else { return }
+        let rows = UserDefaults.standard.array(forKey: Self.tracePrefix + String(account)) as? [[String: Any]] ?? []
+        let key = "\(peer):\(id)"
+        let stages = rows.first(where: { ($0["key"] as? String) == key })?["stages"] as? [String] ?? []
+        let descriptions: [String: String] = [
+            "newApiReceived": "Оригинальное событие получено из Telegram API",
+            "newPtsAccepted": "Новое сообщение прошло PTS",
+            "newPtsStale": "Новое сообщение пришло со старым PTS",
+            "newPtsGap": "При новом сообщении разрыв PTS",
+            "newChannelStateUnknown": "Нет состояния группы обсуждения",
+            "originalEligible": "Получен подтверждённый оригинал",
+            "originalQueued": "Оригинал передан в очередь SQLite",
+            "editApiReceived": "Редакция получена из Telegram API",
+            "editPtsAccepted": "Редакция прошла PTS",
+            "editPtsStale": "Редакция пришла со старым PTS",
+            "editPtsGap": "При редакции разрыв PTS",
+            "postboxUnedited": "Postbox видел неотредактированную версию",
+            "postboxEdited": "Postbox видел изменённую версию",
+            "postboxCaptureEnabled": "Сохранение в Postbox включено",
+            "sqlOriginalLookupAttempt": "Прочитать оригинал из SQLite пытались",
+            "sqlOriginalLookupHit": "SQLite вернула оригинал",
+            "inlineKnown": "Встроенная история распознала оригинал",
+            "inlineMissing": "Встроенная история не знает оригинала"
+        ]
+        let hasOriginal = (entry["originalObserved"] as? NSNumber)?.boolValue == true
+            && (entry["originalText"] as? String) != nil
+        let count = (entry["revisionCount"] as? NSNumber)?.intValue ?? 0
+        let body = stages.isEmpty ? "Нет следов после начала адресного теста. Сообщение могло появиться раньше или вне выбранной группы."
+            : stages.map { "• " + (descriptions[$0] ?? $0) }.joined(separator: "\n")
+        let report = "SQLite: оригинал \(hasOriginal ? "ЕСТЬ" : "ОТСУТСТВУЕТ"), сохранённых версий: \(count).\n\n" + body
+        let alert = UIAlertController(title: "Маршрут оригинала", message: report, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Закрыть", style: .default))
+        present(alert, animated: true)
     }
 
     private static func purgeRetained(_ items: [[String: Any]], account: NSNumber, offset: Int = 0, completion: @escaping (Bool) -> Void) {
