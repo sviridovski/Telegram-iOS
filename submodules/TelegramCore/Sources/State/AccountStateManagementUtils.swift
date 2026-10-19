@@ -1360,6 +1360,19 @@ private func finalStateWithUpdatesAndServerTime(accountPeerId: PeerId, postbox: 
                     peerIsForum = updatedState.isPeerForum(peerId: peerId)
                 }
                 if let message = StoreMessage(apiMessage: apiMessage, accountPeerId: accountPeerId, peerIsForum: peerIsForum) {
+                    // An unedited body actually delivered by Telegram is an
+                    // original even if the channel PTS/state gate subsequently
+                    // requests resynchronization. Save that evidence before
+                    // a later edit can overtake the deferred Postbox replay.
+                    // The native recorder independently rejects edited bodies.
+                    if goldgramNativeHistoryEnabled(),
+                       let kind = goldgramVerifiedPublicKind(
+                           peerId: message.id.peerId, peer: updatedState.peers[message.id.peerId]
+                       ) {
+                        goldgramCaptureServerOriginal(
+                            accountPeerId: accountPeerId, message: message, peerKind: kind
+                        )
+                    }
                     if let previousState = updatedState.channelStates[message.id.peerId] {
                         if previousState.pts >= pts {
                             let messageText: String
@@ -1383,8 +1396,10 @@ private func finalStateWithUpdatesAndServerTime(accountPeerId: PeerId, postbox: 
                             var attributes = message.attributes
                             attributes.append(ChannelMessageStateVersionAttribute(pts: pts))
                             updatedState.addMessages([message.withUpdatedAttributes(attributes)], location: .UpperHistoryBlock)
-                            // Only accepted live channel/supergroup updates.
-                            if let kind = goldgramVerifiedPublicKind(
+                            // Keep legacy-only updates behind the accepted
+                            // PTS gate. The native source was captured above.
+                            if !goldgramNativeHistoryEnabled(),
+                               let kind = goldgramVerifiedPublicKind(
                                 peerId: message.id.peerId,
                                 peer: updatedState.peers[message.id.peerId]
                             ) {
