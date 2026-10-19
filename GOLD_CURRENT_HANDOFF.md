@@ -1,9 +1,22 @@
 # Goldgram — current handoff, 2026-10-18
 ## Authoritative current state
 Repository sviridovski/Telegram-iOS. Branch gold-next.
-App HEAD 271d5d48553c2eb3748792cd6b471ae8bb051a37 (narrow genuine-original capture before PTS state gating, CI #100 pending). Prior confirmed #99 cf40fced4e53d3fbdb03f065f05f1f51e3b19197 SUCCESS but device still misses two originals.
-CI #100 https://github.com/sviridovski/Telegram-iOS/actions/runs/39184572500 pending at time of writing. Prior CI #99 https://github.com/sviridovski/Telegram-iOS/actions/runs/39150498261 completed SUCCESS.
+App HEAD a3457ec093459abbbca8600fb14e36be17a2280c (per-message capture-route diagnostics, CI #101 pending). Prior #100 271d5d48553c2eb3748792cd6b471ae8bb051a37 CI SUCCESS but device original still missing; prior #99 also green but negative device observation.
+CI #101 https://github.com/sviridovski/Telegram-iOS/actions/runs/39326550145 queued at time of writing. #100 https://github.com/sviridovski/Telegram-iOS/actions/runs/39184572500 SUCCESS but on-device failure; #99 also SUCCESS.
 CI #96 run39125379485 success, but user installed the newer fix and still reports "Оригинал не был получен" on device; #95 likewise. Therefore do NOT claim device issue fixed.
+
+## Current diagnostic atom (#101) — awaiting CI and device test
+User installed #100 and confirms another edited channel discussion comment shows "Оригинал не получен"; revision is available. Thus CI #100 passed but device validation NEGATIVE. The #100 PTS early-capture change is insufficient.
+Do NOT iterate blind fixes. User was in ANOTHER chat while Swiftgram stayed foreground; absence of the original may be because the target discussion was not observed, or because of another source/queue/identity issue. The #99 68 server originals / 68 queued / 0 SQL bridge hits plus 2 missing-original edits were aggregate observations, not per-message evidence.
+#101 adds opt-in PER-MESSAGE scoped routing trace for a user-selected Goldgram archive folder (selected channel plus linked discussion sources), without changing normal observation/polling or touching SQLite capture logic.
+Files: submodules/TelegramCore/Sources/State/GoldgramNativeHistory.swift (bounded 256 local trace records, account and peer-filtered, with numeric routing IDs and fixed stage labels only; stages include server original eligible/enqueued, Postbox edited/unedited, inline known/missing, SQL original attempted/hit);
+submodules/TelegramCore/Sources/State/AccountStateManagementUtils.swift (channel new/edit API received and PTS accepted/stale/gap/state unknown);
+build-system/gold-next/GoldgramArchiveScreen.swift (Test available inside a selected archived conversation; start clears diagnostic-only trace, scope to that folder's peer sources; long-press an archived edited message > "Маршрут оригинала" shows message-specific routing stages plus existing SQLite original/revision status; "Остановить и удалить диагностику" clears diagnostic records and disables trace).
+No plaintext chat texts, authors or text hashes are logged. Numeric account/peer/message routing IDs stay locally in the temporary diagnostic store only. UI does not show IDs.
+Application commit a3457ec093459abbbca8600fb14e36be17a2280c, tree 1ab0c3bd17bdd14e2f91b0bcfba935484a6cebe6.
+CI #101 https://github.com/sviridovski/Telegram-iOS/actions/runs/39326550145 queued when written; do NOT call green yet.
+Device after green: install #101 over #100, preserve archive, open Goldgram > updated/deleted > Channels > PARTICULAR channel/linked discussion folder, tap Test > Start new test; leave Swiftgram in another chat and wait for NEW comment + edit. Return to same archive folder, long-press this edited row, screenshot "Маршрут оригинала". Existing edits from before starting diagnostic have no trace. Keep test running until screenshot, then stop/delete diagnostics. The SQL row's original is a persisted truth; "queued" alone is not persisted. This test cannot guarantee remote delivery or reconstruct never-received originals.
+No unrelated modifications or automatic polling expansion. Detailed improvement proposals only after each completed commit.
 
 ## Current follow-up (#100): user tested #99 in different foreground chat
 User clarifies: Swiftgram stayed FOREGROUND, but the two comments were posted and edited in a DIFFERENT discussion from the one currently shown. Aggregate #99 on-device diagnostics: serverOriginalEligible=68, writerAccepted=68, Postbox unedited=895, edited=880, capture-enabled=1774, SQL original-bridge hits=0, inlineKnown=3, inlineUnknown=2. SQLite since diagnostic start: 1412 messages, 855 marked known original, 2 edited without original out of 3 edited. These are aggregate counts and cannot be attributed to the two specific comments; writerAccepted means enqueued, not confirmed disk.
