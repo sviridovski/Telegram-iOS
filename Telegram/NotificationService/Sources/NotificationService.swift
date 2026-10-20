@@ -2028,6 +2028,10 @@ private final class NotificationServiceHandler {
                                         }
                                         
                                         if let messageId = messageId {
+                                            goldgramNoteNotificationTrace(
+                                                transaction: transaction, accountPeerId: stateManager.accountPeerId,
+                                                id: messageId, stage: "extensionPushPolled"
+                                            )
                                             if let readState = transaction.getCombinedPeerReadState(messageId.peerId) {
                                                 for (namespace, state) in readState.states {
                                                     if namespace == messageId.namespace {
@@ -2059,6 +2063,20 @@ private final class NotificationServiceHandler {
                                             var content = content
                                             
                                             var parsedMedia: Media?
+                                            if let messageId {
+                                                let found = transaction.getMessage(messageId)
+                                                let stage: String
+                                                if let found {
+                                                    stage = found.attributes.contains(where: { $0 is EditedMessageAttribute })
+                                                        ? "extensionPostboxEdited" : "extensionPostboxUnedited"
+                                                } else {
+                                                    stage = "extensionPostboxMissing"
+                                                }
+                                                goldgramNoteNotificationTrace(
+                                                    transaction: transaction, accountPeerId: stateManager.accountPeerId,
+                                                    id: messageId, stage: stage
+                                                )
+                                            }
                                             if let messageId, let message = transaction.getMessage(messageId), !message.containsSecretMedia, !message.attributes.contains(where: { $0 is MediaSpoilerMessageAttribute }) {
                                                 // The full local message exists after the normal
                                                 // Telegram poll, not merely in an APNs preview.

@@ -92,6 +92,44 @@ public final class GoldgramNativeArchiveMetadata: NSObject {
               primary.account.peerId.id._internalGetInt64Value() == accountId
         else { completion(["status": "account_changed", "items": []]); return }
         let recordId = primary.account.id
+        if let action = request["action"] as? String,
+           action == "notification_trace_start" || action == "notification_trace_stop" || action == "notification_trace_read" {
+            let entries = request["items"] as? [[String: Any]] ?? []
+            guard entries.count <= 50 else { completion(["status": "invalid", "items": []]); return }
+            let ids: [MessageId] = entries.compactMap { row in
+                guard let kind = (row["peerKind"] as? NSNumber)?.int32Value,
+                      let raw = (row["peerId"] as? NSNumber)?.int64Value,
+                      let peer = self.peerId(kind: kind, raw: raw),
+                      let rawMsg = (row["messageId"] as? NSNumber)?.int64Value,
+                      let msg = Int32(exactly: rawMsg), msg > 0 else { return nil }
+                return MessageId(peerId: peer, namespace: Namespaces.Message.Cloud, id: msg)
+            }
+            let targets: [PeerId] = entries.compactMap { row in
+                guard let kind = (row["peerKind"] as? NSNumber)?.int32Value,
+                      let raw = (row["peerId"] as? NSNumber)?.int64Value else { return nil }
+                return self.peerId(kind: kind, raw: raw)
+            }
+            if action == "notification_trace_read" && ids.count != 1 {
+                completion(["status": "invalid", "items": []]); return
+            }
+            let _ = (primary.account.postbox.transaction { transaction -> [String] in
+                if action == "notification_trace_read", let id = ids.first {
+                    return goldgramNotificationTraceStages(transaction: transaction,
+                        accountPeerId: primary.account.peerId, id: id)
+                }
+                goldgramSetNotificationTrace(transaction: transaction,
+                    accountPeerId: primary.account.peerId,
+                    peers: action == "notification_trace_stop" ? [] : targets)
+                return []
+            } |> deliverOnMainQueue).start(next: { stages in
+                guard let current = goldgramNativeNavigationContext?.sgPrimaryAccountContextForMigration(),
+                      current.account.id == recordId else {
+                    completion(["status": "account_changed", "items": []]); return
+                }
+                completion(["status": "ok", "stages": stages])
+            })
+            return
+        }
         if request["action"] as? String == "prepare_jump" || request["action"] as? String == "open_message" {
             guard entries.count == 1, let row = entries.first,
                   let raw = (row["peerId"] as? NSNumber)?.int64Value,

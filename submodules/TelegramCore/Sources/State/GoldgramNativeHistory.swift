@@ -226,6 +226,61 @@ func goldgramCaptureServerOriginal(accountPeerId: PeerId, message: StoreMessage,
     }
 }
 
+// #103: cross-process notification diagnostics, scoped to a selected folder.
+// The Postbox entry is shared by the app and its notification extension. Only
+// routing IDs and fixed stages are stored; no message/preview content.
+private struct GoldgramNotificationTraceEntry: Codable {
+    let peer: Int64
+    let message: Int32
+    var stages: [String]
+}
+private struct GoldgramNotificationTrace: Codable {
+    let account: Int64
+    let peers: [Int64]
+    let startedAt: Int64
+    var entries: [GoldgramNotificationTraceEntry]
+}
+private let goldgramNotificationTraceKey = ItemCacheEntryId(collectionId: -105, key: ValueBoxKey(length: 0))
+
+public func goldgramSetNotificationTrace(transaction: Transaction, accountPeerId: PeerId, peers: [PeerId]) {
+    if peers.isEmpty {
+        transaction.removeItemCacheEntry(id: goldgramNotificationTraceKey)
+        return
+    }
+    guard goldgramCaptureEnabled(accountPeerId: accountPeerId, transaction: transaction) else { return }
+    let trace = GoldgramNotificationTrace(
+        account: accountPeerId.toInt64(), peers: Array(Set(peers.map { $0.toInt64() })).prefix(16).map { $0 },
+        startedAt: Int64(Date().timeIntervalSince1970), entries: []
+    )
+    if let value = CodableEntry(trace) {
+        transaction.putItemCacheEntry(id: goldgramNotificationTraceKey, entry: value)
+    }
+}
+public func goldgramNoteNotificationTrace(transaction: Transaction, accountPeerId: PeerId, id: MessageId, stage: String) {
+    guard case let .some(trace) = transaction.retrieveItemCacheEntry(id: goldgramNotificationTraceKey)?.get(GoldgramNotificationTrace.self),
+          trace.account == accountPeerId.toInt64(),
+          Int64(Date().timeIntervalSince1970) - trace.startedAt < 86400,
+          trace.peers.contains(id.peerId.toInt64()), id.id > 0 else { return }
+    var updated = trace
+    if let index = updated.entries.firstIndex(where: { $0.peer == id.peerId.toInt64() && $0.message == id.id }) {
+        var entry = updated.entries.remove(at: index)
+        if !entry.stages.contains(stage) { entry.stages.append(stage) }
+        updated.entries.append(entry)
+    } else {
+        updated.entries.append(GoldgramNotificationTraceEntry(peer: id.peerId.toInt64(), message: id.id, stages: [stage]))
+        if updated.entries.count > 192 { updated.entries.removeFirst(updated.entries.count - 192) }
+    }
+    if let value = CodableEntry(updated) {
+        transaction.putItemCacheEntry(id: goldgramNotificationTraceKey, entry: value)
+    }
+}
+public func goldgramNotificationTraceStages(transaction: Transaction, accountPeerId: PeerId, id: MessageId) -> [String] {
+    guard let trace = transaction.retrieveItemCacheEntry(id: goldgramNotificationTraceKey)?.get(GoldgramNotificationTrace.self),
+          trace.account == accountPeerId.toInt64(),
+          trace.peers.contains(id.peerId.toInt64()) else { return [] }
+    return trace.entries.first(where: { $0.peer == id.peerId.toInt64() && $0.message == id.id })?.stages ?? []
+}
+
 // A notification service extension may run when iOS has suspended the app.
 // Only a complete, actually materialized, unedited Postbox message is evidence.
 // Never archive an APNs preview or infer an original from the first edit.
@@ -235,13 +290,23 @@ public func goldgramCaptureNotificationOriginal(
     accountPeerId: PeerId, transaction: Transaction, message: Message
 ) {
     guard goldgramNativeWriter() == nil,
-          goldgramCaptureEnabled(accountPeerId: accountPeerId, transaction: transaction),
-          message.id.namespace == Namespaces.Message.Cloud, message.id.id > 0,
+          goldgramCaptureEnabled(accountPeerId: accountPeerId, transaction: transaction) else {
+        goldgramNoteNotificationTrace(transaction: transaction, accountPeerId: accountPeerId,
+            id: message.id, stage: "extensionCaptureDisabled")
+        return
+    }
+    guard message.id.namespace == Namespaces.Message.Cloud, message.id.id > 0,
           !message.containsSecretMedia,
           !message.attributes.contains(where: { $0 is EditedMessageAttribute }),
           !message.text.isEmpty || !message.media.isEmpty,
           let kind = goldgramKind(message.id.peerId, transaction.getPeer(message.id.peerId))
-    else { return }
+    else {
+        goldgramNoteNotificationTrace(transaction: transaction, accountPeerId: accountPeerId,
+            id: message.id, stage: "extensionOriginalIneligible")
+        return
+    }
+    goldgramNoteNotificationTrace(transaction: transaction, accountPeerId: accountPeerId,
+        id: message.id, stage: "extensionOriginalEligible")
     let original = goldgramArchiveText(message.text, message.media)
     let author = message.author?.id
     let payload: [String: Any] = [
@@ -256,7 +321,9 @@ public func goldgramCaptureNotificationOriginal(
         "threadId": message.threadId ?? 0,
         "mediaKeys": goldgramMediaKeys(message.media)
     ]
-    let _ = goldgramWrite(payload, transaction: transaction)
+    let accepted = goldgramWrite(payload, transaction: transaction)
+    goldgramNoteNotificationTrace(transaction: transaction, accountPeerId: accountPeerId,
+        id: message.id, stage: accepted ? "extensionOriginalQueued" : "extensionQueueRejected")
 }
 
 // Returns local history metadata to persist together with the server version.

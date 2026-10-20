@@ -65,6 +65,12 @@ public final class GoldgramArchiveScreen: UITableViewController {
             let scoped = (self.sources ?? []).compactMap(Self.tracePeer)
             defaults.set(scoped, forKey: Self.traceScopePrefix + String(account))
             defaults.set(!scoped.isEmpty, forKey: Self.traceActivePrefix + String(account))
+            if !scoped.isEmpty {
+                goldgramResolveNativeMetadata([
+                    "action": "notification_trace_start", "accountId": NSNumber(value: account),
+                    "items": self.sources ?? []
+                ]) { _ in }
+            }
             defaults.set(Int64(Date().timeIntervalSince1970 * 1000), forKey: sinceKey)
             defaults.set(true, forKey: "GoldgramDiagnosticEnabledV1")
             let alert = UIAlertController(title: "Диагностика включена",
@@ -89,6 +95,10 @@ public final class GoldgramArchiveScreen: UITableViewController {
                 defaults.removeObject(forKey: Self.traceScopePrefix + String(account))
                 defaults.removeObject(forKey: Self.traceActivePrefix + String(account))
                 defaults.set(false, forKey: "GoldgramDiagnosticEnabledV1")
+                goldgramResolveNativeMetadata([
+                    "action": "notification_trace_stop", "accountId": NSNumber(value: account),
+                    "items": self.sources ?? []
+                ]) { _ in }
             })
         }
         menu.addAction(UIAlertAction(title: "Закрыть", style: .cancel))
@@ -354,10 +364,35 @@ public final class GoldgramArchiveScreen: UITableViewController {
         let count = (entry["revisionCount"] as? NSNumber)?.intValue ?? 0
         let body = stages.isEmpty ? "Нет следов после начала адресного теста. Сообщение могло появиться раньше или вне выбранной группы."
             : stages.map { "• " + (descriptions[$0] ?? $0) }.joined(separator: "\n")
-        let report = "SQLite: оригинал \(hasOriginal ? "ЕСТЬ" : "ОТСУТСТВУЕТ"), сохранённых версий: \(count).\n\n" + body
-        let alert = UIAlertController(title: "Маршрут оригинала", message: report, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "Закрыть", style: .default))
-        present(alert, animated: true)
+        // Read extension events through authenticated shared Postbox, not
+        // UserDefaults.standard (which differs between the two processes).
+        goldgramResolveNativeMetadata([
+            "action": "notification_trace_read",
+            "accountId": NSNumber(value: account), "items": [entry]
+        ]) { [weak self] response in
+            guard let self else { return }
+            let details = response as NSDictionary
+            let ext = details["stages"] as? [String] ?? []
+            let extNames: [String: String] = [
+                "extensionPushPolled": "Получено уведомление; начата проверка Telegram",
+                "extensionPostboxMissing": "NotificationService: сообщение не найдено в Postbox",
+                "extensionPostboxEdited": "NotificationService: найдена уже изменённая версия",
+                "extensionPostboxUnedited": "NotificationService: найдена версия без метки правки",
+                "extensionOriginalEligible": "NotificationService: подлинный оригинал подтверждён",
+                "extensionOriginalQueued": "NotificationService: оригинал поставлен в очередь",
+                "extensionQueueRejected": "NotificationService: не удалось поставить оригинал в очередь",
+                "extensionCaptureDisabled": "NotificationService: захват не разрешён",
+                "extensionOriginalIneligible": "NotificationService: содержимое не подходит для захвата"
+            ]
+            let extensionResult = ext.isEmpty
+                ? "Нет данных о работе NotificationService для этого сообщения. Это НЕ доказывает отсутствие уведомления."
+                : ext.map { "• " + (extNames[$0] ?? $0) }.joined(separator: "\n")
+            let report = "SQLite: оригинал \(hasOriginal ? "ЕСТЬ" : "ОТСУТСТВУЕТ"), сохранённых версий: \(count).\n\nОсновное приложение:\n" + body
+                + "\n\nNotificationService:\n" + extensionResult
+            let alert = UIAlertController(title: "Маршрут оригинала", message: report, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "Закрыть", style: .default))
+            self.present(alert, animated: true)
+        }
     }
 
     private static func purgeRetained(_ items: [[String: Any]], account: NSNumber, offset: Int = 0, completion: @escaping (Bool) -> Void) {
