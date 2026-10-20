@@ -1,5 +1,9 @@
 # Goldgram — current handoff, 2026-10-18
 ## Authoritative current state
+## Deferred fallback — always-on Telegram observer + secure archive sync (NOT APPROVED FOR IMPLEMENTATION)
+On 2026-10-20 user explicitly asked to retain this as an optional **last-resort** alternative, only if foreground/background iOS techniques, notification handoff, targeted discussion tracking and Ghostgram mechanism research fail. DO NOT create VPS, start server components, request Telegram credentials, add client networking or modify gold-next until user explicitly authorizes revisiting this. Detailed architecture, constraints, staged proof-of-concept and security requirements: [GOLDGRAM_DEFERRED_SERVER_MONITORING.md](GOLDGRAM_DEFERRED_SERVER_MONITORING.md).
+Current priority remains #103 / iOS-side diagnostics and research, not a server solution. Last read #103 workflow https://github.com/sviridovski/Telegram-iOS/actions/runs/39443985388 reported failure (its single job was marked cancelled), so DO NOT claim a green #103 or device-ready IPA until CI is resolved. Docs-only update; app branch remains untouched.
+
 Repository sviridovski/Telegram-iOS. Branch gold-next.
 App HEAD 7735a5ce58f7c0bd7a66c3bbd532e2f0e9a7c9b9 (#103 scoped NSE route diagnosis, CI pending). Prior #102 45c71563a4f975060f3f8417d55eac5e97f45d22 CI SUCCESS; device screenshot still missing original for sampled background edited message. #101 foreground works, background original absent.
 CI #103 https://github.com/sviridovski/Telegram-iOS/actions/runs/39443985388 queued as of handoff. #102 https://github.com/sviridovski/Telegram-iOS/actions/runs/39419888007 SUCCESS, but background original missing in sampled device case. #101 SUCCESS; user-observed foreground success/background failure.
