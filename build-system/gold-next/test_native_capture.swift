@@ -119,6 +119,15 @@ struct NativeCaptureFixture {
         precondition((diagnostic?["known"] as? NSNumber)?.intValue == 5, "real original count")
         precondition((diagnostic?["missingEdited"] as? NSNumber)?.intValue == 1, "missing-original edits remain distinct")
         precondition((diagnostic?["edited"] as? NSNumber)?.intValue == 3, "edited diagnostic subset")
+        // Simulate a complete original fetched by the notification extension
+        // before any edit: bounded handoff has the same writer schema.
+        try send(1001, event: 0, text: "Полный оригинал из Postbox уведомления",
+                 known: true, original: "Полный оригинал из Postbox уведомления", baselineOnly: true)
+        GoldgramHistoryStore.storageQueue.sync {}
+        precondition(row("SELECT original_text,original_observed FROM messages WHERE message_id=1001") ==
+            ["Полный оригинал из Postbox уведомления", "1"], "extension handoff must persist real original")
+        precondition(row("SELECT COUNT(*) FROM events WHERE message_id=1001") == ["0"],
+                     "extension original must not create a false edit")
         print("Goldgram #91: durable original bridge and selected-account archive totals passed against actual Swift writer/reader")
         print("Goldgram #89: production async writer preserves received content/authors on ID-only deletion; observations never become edit events")
     }

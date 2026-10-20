@@ -226,6 +226,39 @@ func goldgramCaptureServerOriginal(accountPeerId: PeerId, message: StoreMessage,
     }
 }
 
+// A notification service extension may run when iOS has suspended the app.
+// Only a complete, actually materialized, unedited Postbox message is evidence.
+// Never archive an APNs preview or infer an original from the first edit.
+// The extension has no app-host C writer, so it uses the existing bounded
+// account-scoped Postbox handoff (-104), drained by the app on next execution.
+public func goldgramCaptureNotificationOriginal(
+    accountPeerId: PeerId, transaction: Transaction, message: Message
+) {
+    guard goldgramNativeWriter() == nil,
+          goldgramCaptureEnabled(accountPeerId: accountPeerId, transaction: transaction),
+          message.id.namespace == Namespaces.Message.Cloud, message.id.id > 0,
+          !message.containsSecretMedia,
+          !message.attributes.contains(where: { $0 is EditedMessageAttribute }),
+          !message.text.isEmpty || !message.media.isEmpty,
+          let kind = goldgramKind(message.id.peerId, transaction.getPeer(message.id.peerId))
+    else { return }
+    let original = goldgramArchiveText(message.text, message.media)
+    let author = message.author?.id
+    let payload: [String: Any] = [
+        "accountId": accountPeerId.id._internalGetInt64Value(),
+        "peerKind": kind, "peerId": message.id.peerId.id._internalGetInt64Value(),
+        "messageId": message.id.id, "eventKind": 0,
+        "text": original, "originalText": original,
+        "originalObserved": true, "baselineOnly": true,
+        "senderId": author?.id._internalGetInt64Value() ?? 0,
+        "senderKind": author.flatMap { goldgramKind($0, transaction.getPeer($0)) } ?? -1,
+        "sentAt": Int64(message.timestamp) * 1000,
+        "threadId": message.threadId ?? 0,
+        "mediaKeys": goldgramMediaKeys(message.media)
+    ]
+    let _ = goldgramWrite(payload, transaction: transaction)
+}
+
 // Returns local history metadata to persist together with the server version.
 private func goldgramCaptureMutation(accountPeerId: PeerId, transaction: Transaction,
     message: StoreMessage, previous: StoreMessage?) -> GoldgramMessageHistoryAttribute? {

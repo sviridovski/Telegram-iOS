@@ -2060,6 +2060,14 @@ private final class NotificationServiceHandler {
                                             
                                             var parsedMedia: Media?
                                             if let messageId, let message = transaction.getMessage(messageId), !message.containsSecretMedia, !message.attributes.contains(where: { $0 is MediaSpoilerMessageAttribute }) {
+                                                // The full local message exists after the normal
+                                                // Telegram poll, not merely in an APNs preview.
+                                                // Finish Postbox handoff in this transaction
+                                                // before returning notification content.
+                                                goldgramCaptureNotificationOriginal(
+                                                    accountPeerId: stateManager.accountPeerId,
+                                                    transaction: transaction, message: message
+                                                )
                                                 if let media = message.media.first {
                                                     parsedMedia = media
                                                 }
