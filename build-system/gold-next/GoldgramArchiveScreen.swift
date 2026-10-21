@@ -131,7 +131,7 @@ public final class GoldgramArchiveScreen: UITableViewController {
             let message: String
             switch status {
             case "enabled":
-                message = "Связанная группа добавлена в приоритетные (\\(count)/8). Приоритет действует, пока Swiftgram или доступное фоновое окно выполняют код. При полной приостановке iOS обновления не поступают."
+                message = "Связанная группа добавлена в приоритетные (\(count)/8). Приоритет действует, пока Swiftgram или доступное фоновое окно выполняют код. При полной приостановке iOS обновления не поступают."
             case "disabled":
                 message = "Приоритетное наблюдение за этим каналом отключено. Обычная история Goldgram сохранена."
             case "limit_reached":
