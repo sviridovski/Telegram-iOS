@@ -680,6 +680,76 @@ public func goldgramClearRetainedMedia(accountId: Int64, completion: @escaping (
     }
 }
 
+// #104: opt-in, account-local priority groups for linked channel discussions.
+// This does not join groups, request notifications or keep iOS alive.
+private struct GoldgramPriorityDiscussion: Codable {
+    let channel: Int64
+    let discussion: Int64
+}
+private struct GoldgramPriorityDiscussions: Codable {
+    let account: Int64
+    let items: [GoldgramPriorityDiscussion]
+}
+private let goldgramPriorityDiscussionsKey = ItemCacheEntryId(collectionId: -106, key: ValueBoxKey(length: 0))
+
+// Accept only an actual broadcast channel and its validated linked group.
+// An archive folder title or a nearby message never proves a relationship.
+public func goldgramSetPriorityDiscussion(transaction: Transaction, accountPeerId: PeerId,
+    channelPeerId: PeerId, enabled: Bool) -> (status: String, count: Int) {
+    guard goldgramCaptureEnabled(accountPeerId: accountPeerId, transaction: transaction),
+          let channel = transaction.getPeer(channelPeerId) as? TelegramChannel,
+          case .broadcast = channel.info else { return ("unavailable", 0) }
+    let old = transaction.retrieveItemCacheEntry(id: goldgramPriorityDiscussionsKey)?
+        .get(GoldgramPriorityDiscussions.self)
+    var items = old?.account == accountPeerId.toInt64() ? old!.items : []
+    items.removeAll(where: { $0.channel == channelPeerId.toInt64() })
+    if enabled {
+        guard let cached = transaction.getPeerCachedData(peerId: channelPeerId) as? CachedChannelData,
+              case let .known(linkedId) = cached.linkedDiscussionPeerId,
+              let linkedId,
+              let discussion = transaction.getPeer(linkedId) as? TelegramChannel,
+              case .group = discussion.info,
+              apiInputPeer(discussion) != nil else {
+            return ("linked_group_unavailable", old?.items.count ?? 0)
+        }
+        // A known reverse mapping must be consistent.
+        if let opposite = transaction.getPeerCachedData(peerId: linkedId) as? CachedChannelData,
+           case let .known(backId) = opposite.linkedDiscussionPeerId,
+           backId != channelPeerId {
+            return ("linked_group_unavailable", old?.items.count ?? 0)
+        }
+        guard items.count < 8 else { return ("limit_reached", items.count) }
+        items.append(GoldgramPriorityDiscussion(
+            channel: channelPeerId.toInt64(), discussion: linkedId.toInt64()))
+    }
+    let value = GoldgramPriorityDiscussions(account: accountPeerId.toInt64(), items: items)
+    guard let entry = CodableEntry(value) else { return ("unavailable", items.count) }
+    transaction.putItemCacheEntry(id: goldgramPriorityDiscussionsKey, entry: entry)
+    return (enabled ? "enabled" : "disabled", items.count)
+}
+
+private func goldgramPriorityPeers(transaction: Transaction, accountPeerId: PeerId) -> [PeerId] {
+    guard let stored = transaction.retrieveItemCacheEntry(id: goldgramPriorityDiscussionsKey)?
+        .get(GoldgramPriorityDiscussions.self),
+        stored.account == accountPeerId.toInt64() else { return [] }
+    var result: [PeerId] = []
+    for entry in stored.items.prefix(8) {
+        let channelId = PeerId(entry.channel)
+        let groupId = PeerId(entry.discussion)
+        guard let channel = transaction.getPeer(channelId) as? TelegramChannel,
+              case .broadcast = channel.info,
+              let cached = transaction.getPeerCachedData(peerId: channelId) as? CachedChannelData,
+              case let .known(linkedId) = cached.linkedDiscussionPeerId, linkedId == groupId,
+              let discussion = transaction.getPeer(groupId) as? TelegramChannel,
+              case .group = discussion.info, apiInputPeer(discussion) != nil else { continue }
+        if let reverse = transaction.getPeerCachedData(peerId: groupId) as? CachedChannelData,
+           case let .known(backId) = reverse.linkedDiscussionPeerId,
+           backId != channelId { continue }
+        if !result.contains(groupId) { result.append(groupId) }
+    }
+    return result
+}
+
 // Account-local, bounded list of recently received/opened cloud dialogs.
 // Seed recent bodies on wake; channel polling shares the stock reference count.
 private struct GoldgramDiscussionTarget: Codable {
@@ -762,11 +832,17 @@ private final class GoldgramDiscussionMonitor {
                 guard goldgramNativeHistoryEnabled() else { return [] }
                 let now = Int64(Date().timeIntervalSince1970)
                 let items = transaction.retrieveItemCacheEntry(id: goldgramDiscussionTargetsKey)?.get(GoldgramDiscussionTargets.self)?.items ?? []
-                return items.filter { now - $0.seen < 86400 }.prefix(8).compactMap { item in
+                // Keep user-selected linked discussions first (max 8), then
+                // fill remaining slots with recently opened dialogs (max 10).
+                // All subscriptions stop when the host stops executing.
+                var wanted = goldgramPriorityPeers(transaction: transaction, accountPeerId: account.peerId)
+                for item in items where now - item.seen < 86400 && wanted.count < 10 {
                     let id = PeerId(item.peer)
-                    guard goldgramKind(id, transaction.getPeer(id)) != nil else { return nil }
-                    return id
+                    guard goldgramKind(id, transaction.getPeer(id)) != nil,
+                          !wanted.contains(id) else { continue }
+                    wanted.append(id)
                 }
+                return wanted
             }
         }
         |> deliverOn(queue)).start(next: { [weak self] ids in

@@ -176,6 +176,32 @@ public final class GoldgramNativeArchiveMetadata: NSObject {
             })
             return
         }
+        // Archive-selected broadcast channels only: no inferred peer IDs,
+        // no joining and no implicit subscription beyond the user's choice.
+        if let action = request["action"] as? String,
+           action == "priority_discussion_add" || action == "priority_discussion_remove" {
+            guard entries.count == 1, let entry = entries.first,
+                  (entry["peerKind"] as? NSNumber)?.int32Value == 3,
+                  let raw = (entry["peerId"] as? NSNumber)?.int64Value,
+                  let channelId = self.peerId(kind: 3, raw: raw) else {
+                completion(["status": "invalid", "items": []]); return
+            }
+            let _ = (primary.account.postbox.transaction { transaction -> (String, Int) in
+                let result = goldgramSetPriorityDiscussion(
+                    transaction: transaction, accountPeerId: primary.account.peerId,
+                    channelPeerId: channelId,
+                    enabled: action == "priority_discussion_add"
+                )
+                return (result.status, result.count)
+            } |> deliverOnMainQueue).start(next: { status, count in
+                guard let active = goldgramNativeNavigationContext?.sgPrimaryAccountContextForMigration(),
+                      active.account.id == recordId else {
+                    completion(["status": "account_changed", "items": []]); return
+                }
+                completion(["status": status, "count": NSNumber(value: count), "items": []])
+            })
+            return
+        }
         if request["action"] as? String == "purge_retained" {
             let _ = (primary.account.postbox.transaction { transaction -> Void in
                 var ids: [MessageId] = []

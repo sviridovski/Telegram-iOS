@@ -101,9 +101,53 @@ public final class GoldgramArchiveScreen: UITableViewController {
                 ]) { _ in }
             })
         }
+        // #104: explicit monitoring preference, independent of the one-off test.
+        // Channel folders include a verified broadcast source when available.
+        if category == 2, let source = sources?.first(where: {
+            ($0["peerKind"] as? NSNumber)?.int32Value == 3
+        }) {
+            menu.addAction(UIAlertAction(title: "Следить за комментариями канала", style: .default) { _ in
+                self.updatePriorityDiscussion(source: source, enabled: true, account: account)
+            })
+            menu.addAction(UIAlertAction(title: "Отключить слежение за каналом", style: .default) { _ in
+                self.updatePriorityDiscussion(source: source, enabled: false, account: account)
+            })
+        }
         menu.addAction(UIAlertAction(title: "Закрыть", style: .cancel))
         menu.popoverPresentationController?.barButtonItem = navigationItem.rightBarButtonItem
         present(menu, animated: true)
+    }
+
+    private func updatePriorityDiscussion(source: [String: Any], enabled: Bool, account: Int64) {
+        guard boundAccount == account else { return }
+        goldgramResolveNativeMetadata([
+            "action": enabled ? "priority_discussion_add" : "priority_discussion_remove",
+            "accountId": NSNumber(value: account), "items": [source]
+        ]) { [weak self] response in
+            guard let self else { return }
+            let result = response as NSDictionary
+            let status = result["status"] as? String ?? "unavailable"
+            let count = (result["count"] as? NSNumber)?.intValue ?? 0
+            let message: String
+            switch status {
+            case "enabled":
+                message = "Связанная группа добавлена в приоритетные (\\(count)/8). Приоритет действует, пока Swiftgram или доступное фоновое окно выполняют код. При полной приостановке iOS обновления не поступают."
+            case "disabled":
+                message = "Приоритетное наблюдение за этим каналом отключено. Обычная история Goldgram сохранена."
+            case "limit_reached":
+                message = "Достигнут предел 8 приоритетных обсуждений. Отключи другое в соответствующей папке."
+            case "linked_group_unavailable":
+                message = "Связанная группа не найдена в проверенных данных аккаунта. Открой комментарии под публикацией канала и повтори попытку."
+            case "account_changed":
+                message = "Telegram-аккаунт изменился. Открой архив заново."
+            default:
+                message = "Не удалось изменить наблюдение. Убедись, что сохранение оригиналов включено."
+            }
+            let alert = UIAlertController(title: enabled ? "Наблюдение за комментариями" : "Настройки наблюдения",
+                                          message: message, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "Понятно", style: .default))
+            self.present(alert, animated: true)
+        }
     }
 
     private func showCaptureDiagnosticReport(account: Int64, since: NSNumber?) {
