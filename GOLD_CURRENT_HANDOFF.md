@@ -1,5 +1,10 @@
 # Goldgram — current handoff, 2026-10-18
 ## Authoritative current state
+## New device report — 2026-10-21, #105 did NOT recover background originals
+User installed #105 and reports "всё равно оригинал не получен". Both #104 run39521199258 and #105 run39521328877 have CI conclusion SUCCESS; **device outcome is NEGATIVE** for the user's target, i.e. genuinely original pre-edit comments while Swiftgram minimized. Do not present #104–105 as a fix for iOS suspension. Opt-in state **not yet verified**: must confirm whether user entered a specific channel archive folder > Тест > Следить за комментариями канала and saw "Связанная группа добавлена в приоритетные". Without this, the new pinned list may never have been active. Even if it was enabled, account's pinned `polledChannel` runs only while the iOS app is executing; the OS can suspend it. An edit subsequently shown by Postbox on reopening is not evidence the original was received by iOS during suspension.
+The next conversation question: ask exactly whether "Следить за комментариями канала" was activated with a confirmation for the affected channel. If yes, avoid blind additional channel poller changes. Instead verify/apply per-message delivery timing of genuinely NEW comments and pursue Ghostgram A/B comparison or legal OS-supported background mechanisms. No new application commit is indicated merely by this report.
+Server/VPS solution remains user-deferred until native alternatives investigated; see GOLDGRAM_DEFERRED_SERVER_MONITORING.md.
+
 ## ACTIVE #104–105 — opt-in priority monitoring of linked discussion groups (CI pending)
 User explicitly requested NEXT iOS-native capture atom rather than attempting to revive diagnostic-only #103, prioritizing genuine pre-edit originals when Swiftgram is minimized. The persistent VPS/client proposal remains strictly deferred in GOLDGRAM_DEFERRED_SERVER_MONITORING.md and is not implemented.
 #103 workflow run39443985388 concluded failure; its single job was marked CANCELLED, not confirmed compiler failure. Hence #103 was not green. #102 completed green but on device only edited versions were observed after minimizing the app.
