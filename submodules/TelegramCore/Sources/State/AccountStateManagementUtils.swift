@@ -3790,7 +3790,25 @@ private func pollChannel(accountPeerId: PeerId, postbox: Postbox, network: Netwo
                         var attributes = message.attributes
                         attributes.append(ChannelMessageStateVersionAttribute(pts: pts))
                         message = message.withUpdatedAttributes(attributes)
-                        
+                        // Goldgram #106: a getChannelDifference catch-up may return
+                        // an unedited new_messages body plus an edit for the
+                        // same ID in other_updates. Store the real original NOW,
+                        // before AccountMutableState applies/coalesces edits and
+                        // before its eventual Postbox replay.
+                        // The common writer rejects EditedMessageAttribute:
+                        // an already-edited server snapshot is NOT an original.
+                        if goldgramNativeHistoryEnabled(),
+                           let kind = goldgramVerifiedPublicKind(
+                            peerId: message.id.peerId,
+                            peer: updatedState.peers[message.id.peerId]
+                           ) {
+                            goldgramCaptureServerOriginal(
+                                accountPeerId: accountPeerId,
+                                message: message,
+                                peerKind: kind
+                            )
+                        }
+
                         if let preCachedResources = apiMessage.preCachedResources {
                             for (resource, data) in preCachedResources {
                                 updatedState.addPreCachedResource(resource, data: data)

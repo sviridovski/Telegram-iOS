@@ -128,6 +128,28 @@ struct NativeCaptureFixture {
             ["Полный оригинал из Postbox уведомления", "1"], "extension handoff must persist real original")
         precondition(row("SELECT COUNT(*) FROM events WHERE message_id=1001") == ["0"],
                      "extension original must not create a false edit")
+        // #106: getChannelDifference can supply both a genuine new_messages
+        // original and its subsequent other_updates edit in the same reply.
+        // TelegramCore must enqueue the pre-edit body BEFORE replaying edits.
+        // Exercise the real writer/SQLite merge with precisely that ordering.
+        try send(1002, event: 0, text: "Исходный комментарий до правки",
+                 known: true, original: "Исходный комментарий до правки", baselineOnly: true)
+        try send(1002, event: 1, text: "Исправленный комментарий")
+        GoldgramHistoryStore.storageQueue.sync {}
+        precondition(row("SELECT original_text, original_observed FROM messages WHERE message_id=1002") ==
+            ["Исходный комментарий до правки", "1"],
+            "catch-up new_messages must preserve a verified pre-edit original")
+        precondition(row("SELECT content FROM revisions WHERE message_id=1002 ORDER BY version_index DESC LIMIT 1") ==
+            ["Исправленный комментарий"],
+            "catch-up edit must remain the latest version")
+        precondition(row("SELECT COUNT(*) FROM events WHERE message_id=1002 AND event_kind=1") == ["1"],
+            "catch-up edit creates exactly one real edit event")
+        try send(1003, event: 1, text: "Редакция, исходный текст не получен")
+        GoldgramHistoryStore.storageQueue.sync {}
+        precondition(row("SELECT original_text, original_observed FROM messages WHERE message_id=1003") ==
+            ["NULL", "0"],
+            "an edited-only catch-up must NOT fabricate an original")
+        print("Goldgram #106: ordered difference original/edit writer regression passes")
         print("Goldgram #91: durable original bridge and selected-account archive totals passed against actual Swift writer/reader")
         print("Goldgram #89: production async writer preserves received content/authors on ID-only deletion; observations never become edit events")
     }
