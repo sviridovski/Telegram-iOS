@@ -40,6 +40,15 @@ jobs:
           sudo rm -rf /Users/Shared/telegram-ios
           cp -R "$GITHUB_WORKSPACE" /Users/Shared/telegram-ios
 
+      # #107: reuse immutable compiler actions across ephemeral macOS runners.
+      # Do not archive the full output_user_root, app IPA, or signing data.
+      - name: Restore bounded Bazel disk cache
+        uses: actions/cache/restore@v4
+        with:
+          path: /private/var/tmp/goldgram-bazel-action-cache
+          key: gold-next-bazel-macos15-${{ hashFiles('versions.json', '.bazelrc', 'MODULE.bazel.lock') }}-${{ github.sha }}
+          restore-keys: |
+            gold-next-bazel-macos15-${{ hashFiles('versions.json', '.bazelrc', 'MODULE.bazel.lock') }}-
       - name: Fetch pinned Mx 1.0.0 source
         uses: actions/checkout@v4
         with:
@@ -92,6 +101,7 @@ jobs:
           python3 build-system/gold-next/test_native_write_boundary.py
           python3 build-system/gold-next/test_discussion_priority_policy.py
           python3 build-system/gold-next/test_difference_original_capture.py
+          python3 build-system/gold-next/test_background_refresh_ci.py
           python3 build-system/gold-next/run_retention_guard.py
           python3 build-system/gold-next/run_notification_handoff.py
           swiftc build-system/gold-next/GoldgramHistoryStore.swift build-system/gold-next/test_native_capture.swift -o "$RUNNER_TEMP/goldgram-native-capture-test"
@@ -193,7 +203,8 @@ jobs:
               )
           PY
 
-          python3 -u build-system/Make/Make.py             --bazelUserRoot="$BAZEL_USER_ROOT"             build             --configurationPath="build-system/appstore-configuration.json"             --codesigningInformationPath=build-system/fake-codesigning             --configuration=release_arm64             --buildNumber="$BUILD_NUMBER"
+          mkdir -p "/private/var/tmp/goldgram-bazel-action-cache"
+          python3 -u build-system/Make/Make.py             --bazelUserRoot="$BAZEL_USER_ROOT"             --cacheDir="/private/var/tmp/goldgram-bazel-action-cache"             build             --configurationPath="build-system/appstore-configuration.json"             --codesigningInformationPath=build-system/fake-codesigning             --configuration=release_arm64             --buildNumber="$BUILD_NUMBER"
 
           OUTPUT_PATH=build/artifacts
           rm -rf "$OUTPUT_PATH"
@@ -204,6 +215,36 @@ jobs:
           cp "$IPA" "$OUTPUT_PATH/Swiftgram.ipa"
           ls -lh "$OUTPUT_PATH/Swiftgram.ipa"
 
+      # Bound GitHub cache usage; Bazel disk CAS safely tolerates eviction.
+      - name: Trim Bazel cache to 3 GiB
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          cache = Path("/private/var/tmp/goldgram-bazel-action-cache")
+          cap = 3 * (1024 ** 3)
+          paths = sorted((p for p in cache.rglob('*') if p.is_file() and not p.is_symlink()),
+                         key=lambda p: p.stat().st_mtime, reverse=True)
+          size = sum(p.stat().st_size for p in paths)
+          print(f'Bazel cache before trim: {size / 1024**3:.2f} GiB')
+          for path in reversed(paths):
+              if size <= cap:
+                  break
+              try:
+                  n = path.stat().st_size
+                  path.unlink()
+                  size -= n
+              except FileNotFoundError:
+                  continue
+          print(f'Bazel cache after trim: {size / 1024**3:.2f} GiB')
+          PY
+
+      - name: Save bounded Bazel disk cache
+        uses: actions/cache/save@v4
+        with:
+          path: /private/var/tmp/goldgram-bazel-action-cache
+          key: gold-next-bazel-macos15-${{ hashFiles('versions.json', '.bazelrc', 'MODULE.bazel.lock') }}-${{ github.sha }}
       - name: Inject Mx into the host only
         shell: bash
         run: |

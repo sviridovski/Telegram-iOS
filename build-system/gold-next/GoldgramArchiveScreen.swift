@@ -180,6 +180,19 @@ public final class GoldgramArchiveScreen: UITableViewController {
             } else {
                 report += "\n\nSQLite: \(status)"
             }
+            // OS refresh evidence, never interpreted as proof of original delivery.
+            let defaults = UserDefaults.standard
+            func refreshDate(_ key: String) -> String {
+                let timestamp = defaults.double(forKey: key)
+                guard timestamp > 0 else { return "нет" }
+                return self.dateFormatter.string(from: Date(timeIntervalSince1970: timestamp))
+            }
+            report += "\n\nФоновые проверки iOS:"
+            report += "\nЗапрошено: \(refreshDate("GoldgramLastRefreshScheduledV1"))"
+            report += "\nЗапущено системой: \(refreshDate("GoldgramLastRefreshStartedV1"))"
+            report += "\nЗавершено: \(refreshDate("GoldgramLastRefreshFinishedV1"))"
+            report += "\nПрервано: \(refreshDate("GoldgramLastRefreshExpiredV1"))"
+            report += "\nЗапуск зависит от iOS, а завершение не гарантирует получение оригиналов."
             report += "\n\nСчётчики относятся только к выбранному аккаунту. Повторная доставка может увеличить значения."
             let alert = UIAlertController(title: "Результат диагностического теста",
                                           message: report, preferredStyle: .alert)

@@ -870,6 +870,30 @@ private final class GoldgramDiscussionMonitor {
     }
 }
 
+// #107: an iOS-discretionary BGAppRefresh window, not a keep-alive.
+// Use ONLY user-pinned verified linked discussions and the existing PTS
+// difference replay. Correct original evidence must precede subsequent edits.
+public func goldgramRefreshPriorityDiscussions(account: Account) -> Signal<Never, NoError> {
+    return account.postbox.transaction { transaction -> [PeerId] in
+        guard goldgramNativeHistoryEnabled(),
+              goldgramCaptureEnabled(accountPeerId: account.peerId, transaction: transaction) else {
+            return []
+        }
+        goldgramDrainPending(accountPeerId: account.peerId, transaction: transaction)
+        return Array(goldgramPriorityPeers(transaction: transaction,
+            accountPeerId: account.peerId).prefix(3))
+    }
+    |> mapToSignal { ids -> Signal<Never, NoError> in
+        return ids.reduce(Signal<Never, NoError>.complete()) { previous, id in
+            return previous |> then(standalonePollChannelOnce(
+                accountPeerId: account.peerId, postbox: account.postbox,
+                network: account.network, peerId: id,
+                stateManager: account.stateManager
+            ))
+        }
+    }
+}
+
 // The UI owns this subscription while the selected account is the active
 // service master, including native background execution / push wake windows.
 // Stop polling when iOS execution time ends or the account switches.

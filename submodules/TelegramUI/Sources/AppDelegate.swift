@@ -323,6 +323,62 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         }
     }
     
+    // #107: background app refresh is discretionary and time-limited.
+    private let goldgramRefreshWork = MetaDisposable()
+    private var goldgramRefreshActive = false
+
+    private func goldgramScheduleRefresh() {
+        guard #available(iOS 13.0, *), goldgramNativeHistoryEnabled() else { return }
+        let request = BGAppRefreshTaskRequest(identifier: "\(Bundle.main.bundleIdentifier!).refresh")
+        request.earliestBeginDate = Date(timeIntervalSinceNow: 15.0 * 60.0)
+        do {
+            try BGTaskScheduler.shared.submit(request)
+            UserDefaults.standard.set(Date().timeIntervalSince1970,
+                forKey: "GoldgramLastRefreshScheduledV1")
+        } catch {
+            Logger.shared.log("Goldgram", "BG refresh request denied: \(error)")
+        }
+    }
+
+    @available(iOS 13.0, *)
+    private func goldgramRunRefresh(_ task: BGAppRefreshTask) {
+        // Re-arm for another OS-granted opportunity before doing any work.
+        self.goldgramScheduleRefresh()
+        guard !self.goldgramRefreshActive, goldgramNativeHistoryEnabled() else {
+            task.setTaskCompleted(success: true)
+            return
+        }
+        self.goldgramRefreshActive = true
+        UserDefaults.standard.set(Date().timeIntervalSince1970,
+            forKey: "GoldgramLastRefreshStartedV1")
+        var finished = false
+        let complete: (Bool) -> Void = { [weak self, weak task] success in
+            DispatchQueue.main.async {
+                guard let self, !finished else { return }
+                finished = true
+                self.goldgramRefreshWork.set(nil)
+                self.goldgramRefreshActive = false
+                UserDefaults.standard.set(Date().timeIntervalSince1970,
+                    forKey: success ? "GoldgramLastRefreshFinishedV1" : "GoldgramLastRefreshExpiredV1")
+                task?.setTaskCompleted(success: success)
+            }
+        }
+        task.expirationHandler = { complete(false) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 24.0) { complete(false) }
+        self.goldgramRefreshWork.set((self.sharedContextPromise.get()
+        |> take(1)
+        |> deliverOnMainQueue
+        |> mapToSignal { applicationContext -> Signal<Never, NoError> in
+            return applicationContext.sharedContext.activeAccountContexts
+            |> take(1)
+            |> mapToSignal { primary, _, _ -> Signal<Never, NoError> in
+                guard let account = primary?.account else { return .complete() }
+                return goldgramRefreshPriorityDiscussions(account: account)
+            }
+        }
+        |> deliverOnMainQueue).start(completed: { complete(true) }))
+    }
+
     private var clearNotificationsManager: ClearNotificationsManager?
     
     private let idleTimerExtensionSubscribers = Bag<Void>()
@@ -1613,6 +1669,22 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         }
         #endif
         
+        // #107: register while the app launches. Telegram Bazel's
+        // Info.plist already permits <bundle>.refresh and background fetch.
+        if #available(iOS 13.0, *) {
+            BGTaskScheduler.shared.register(
+                forTaskWithIdentifier: "\(baseAppBundleId).refresh",
+                using: DispatchQueue.main
+            ) { [weak self] task in
+                guard let refresh = task as? BGAppRefreshTask else {
+                    task.setTaskCompleted(success: false)
+                    return
+                }
+                self?.goldgramRunRefresh(refresh)
+            }
+            self.goldgramScheduleRefresh()
+        }
+
         if #available(iOS 13.0, *) {
             let cleanupTaskId = "\(baseAppBundleId).cleanup"
             
@@ -1989,6 +2061,7 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     }
 
     func applicationDidEnterBackground(_ application: UIApplication) {
+        self.goldgramScheduleRefresh()
         let _ = (self.sharedContextPromise.get()
         |> take(1)
         |> deliverOnMainQueue).start(next: { sharedApplicationContext in
