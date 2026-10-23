@@ -4,6 +4,135 @@ import Postbox
 import SwiftSignalKit
 import TelegramApi
 
+// #108: bounded diagnostic evidence for system-granted refresh runs.
+// No message text, sender, peer IDs or Telegram session contents are stored.
+// One record per OS launch, up to 8 runs; counters may include retries.
+public struct GoldgramBackgroundRefreshRun: Codable {
+    public let token: String
+    public let startedAt: Double
+    public var endedAt: Double?
+    public var accountId: Int64?
+    public var outcome: String
+    public var targets: Int
+    public var requests: Int
+    public var completed: Int
+    public var difference: Int
+    public var empty: Int
+    public var tooLong: Int
+    public var unavailable: Int
+    public var returnedNew: Int
+    public var returnedEdits: Int
+    public var originalsQueued: Int
+
+    public init(token: String) {
+        self.token = token
+        self.startedAt = Date().timeIntervalSince1970
+        self.endedAt = nil
+        self.accountId = nil
+        self.outcome = "running"
+        self.targets = 0
+        self.requests = 0
+        self.completed = 0
+        self.difference = 0
+        self.empty = 0
+        self.tooLong = 0
+        self.unavailable = 0
+        self.returnedNew = 0
+        self.returnedEdits = 0
+        self.originalsQueued = 0
+    }
+}
+
+public enum GoldgramBackgroundRefreshTrace {
+    private static let lock = NSLock()
+    private static let storage = "GoldgramBackgroundRefreshRunsV1"
+
+    private static func read() -> [GoldgramBackgroundRefreshRun] {
+        guard let data = UserDefaults.standard.data(forKey: storage),
+              let rows = try? PropertyListDecoder().decode([GoldgramBackgroundRefreshRun].self, from: data) else {
+            return []
+        }
+        return rows
+    }
+
+    private static func write(_ rows: [GoldgramBackgroundRefreshRun]) {
+        if let data = try? PropertyListEncoder().encode(Array(rows.suffix(8))) {
+            UserDefaults.standard.set(data, forKey: storage)
+        }
+    }
+
+    public static func begin() -> String {
+        let token = UUID().uuidString
+        lock.lock()
+        defer { lock.unlock() }
+        var rows = read()
+        rows.append(GoldgramBackgroundRefreshRun(token: token))
+        write(rows)
+        return token
+    }
+
+    private static func change(_ token: String, _ body: (inout GoldgramBackgroundRefreshRun) -> Void) {
+        lock.lock()
+        defer { lock.unlock() }
+        var rows = read()
+        guard let index = rows.firstIndex(where: { $0.token == token }),
+              rows[index].outcome == "running" else { return }
+        body(&rows[index])
+        write(rows)
+    }
+
+    public static func targets(_ token: String, accountId: Int64, count: Int) {
+        change(token) { row in
+            row.accountId = accountId
+            row.targets = count
+        }
+    }
+
+    public static func request(_ token: String) {
+        change(token) { $0.requests += 1 }
+    }
+
+    public static func completedRequest(_ token: String) {
+        change(token) { $0.completed += 1 }
+    }
+
+    public static func response(_ token: String, kind: String, new: Int = 0, edits: Int = 0) {
+        change(token) { row in
+            switch kind {
+            case "difference": row.difference += 1
+            case "empty": row.empty += 1
+            case "tooLong": row.tooLong += 1
+            default: row.unavailable += 1
+            }
+            row.returnedNew += new
+            row.returnedEdits += edits
+        }
+    }
+
+    public static func originalQueued(_ token: String) {
+        change(token) { $0.originalsQueued += 1 }
+    }
+
+    public static func finish(_ token: String, reason: String) {
+        change(token) { row in
+            row.endedAt = Date().timeIntervalSince1970
+            row.outcome = reason
+        }
+    }
+
+    public static func find(_ token: String) -> GoldgramBackgroundRefreshRun? {
+        lock.lock()
+        defer { lock.unlock() }
+        return read().first(where: { $0.token == token })
+    }
+
+    public static func recent(forAccountId accountId: Int64) -> [GoldgramBackgroundRefreshRun] {
+        lock.lock()
+        defer { lock.unlock() }
+        return Array(read().filter { $0.accountId == nil || $0.accountId == accountId }.suffix(4).reversed())
+    }
+}
+
 // #97: opt-in, account-scoped stage counts. No message contents, IDs,
 // peer names or message hashes are recorded. Disabled outside explicit test.
 private enum GoldgramCaptureDiagnostics {
@@ -202,11 +331,12 @@ private func goldgramCaptureSince(_ account: PeerId, transaction: Transaction? =
 // gets to archive its first snapshot. Record positively received unedited
 // server content immediately, independently of that transaction/replay path.
 // A delayed original repairs the baseline only, never the latest revision.
-func goldgramCaptureServerOriginal(accountPeerId: PeerId, message: StoreMessage, peerKind: Int32) {
+@discardableResult
+func goldgramCaptureServerOriginal(accountPeerId: PeerId, message: StoreMessage, peerKind: Int32) -> Bool {
     guard goldgramNativeHistoryEnabled(), (0...3).contains(peerKind),
           case let .Id(id) = message.id, id.namespace == Namespaces.Message.Cloud, id.id > 0,
           !message.attributes.contains(where: { $0 is EditedMessageAttribute }),
-          !message.text.isEmpty || !message.media.isEmpty else { return }
+          !message.text.isEmpty || !message.media.isEmpty else { return false }
     goldgramDiagnosticRecord(accountPeerId: accountPeerId, stage: "serverEligible")
     goldgramTraceMessage(accountPeerId: accountPeerId, id: id, stage: "originalEligible")
     let sender = message.authorId
@@ -223,7 +353,9 @@ func goldgramCaptureServerOriginal(accountPeerId: PeerId, message: StoreMessage,
     ]) {
         goldgramDiagnosticRecord(accountPeerId: accountPeerId, stage: "writerAccepted")
         goldgramTraceMessage(accountPeerId: accountPeerId, id: id, stage: "originalQueued")
+        return true
     }
+    return false
 }
 
 // #103: cross-process notification diagnostics, scoped to a selected folder.
@@ -873,23 +1005,39 @@ private final class GoldgramDiscussionMonitor {
 // #107: an iOS-discretionary BGAppRefresh window, not a keep-alive.
 // Use ONLY user-pinned verified linked discussions and the existing PTS
 // difference replay. Correct original evidence must precede subsequent edits.
-public func goldgramRefreshPriorityDiscussions(account: Account) -> Signal<Never, NoError> {
+public func goldgramRefreshPriorityDiscussions(
+    account: Account, diagnosticToken: String
+) -> Signal<Never, NoError> {
     return account.postbox.transaction { transaction -> [PeerId] in
         guard goldgramNativeHistoryEnabled(),
               goldgramCaptureEnabled(accountPeerId: account.peerId, transaction: transaction) else {
+            GoldgramBackgroundRefreshTrace.targets(diagnosticToken,
+                accountId: account.peerId.id._internalGetInt64Value(), count: 0)
             return []
         }
         goldgramDrainPending(accountPeerId: account.peerId, transaction: transaction)
-        return Array(goldgramPriorityPeers(transaction: transaction,
+        let ids = Array(goldgramPriorityPeers(transaction: transaction,
             accountPeerId: account.peerId).prefix(3))
+        GoldgramBackgroundRefreshTrace.targets(diagnosticToken,
+            accountId: account.peerId.id._internalGetInt64Value(), count: ids.count)
+        return ids
     }
     |> mapToSignal { ids -> Signal<Never, NoError> in
         return ids.reduce(Signal<Never, NoError>.complete()) { previous, id in
-            return previous |> then(standalonePollChannelOnce(
-                accountPeerId: account.peerId, postbox: account.postbox,
-                network: account.network, peerId: id,
-                stateManager: account.stateManager
-            ))
+            let polled: Signal<Never, NoError> = Signal { subscriber in
+                GoldgramBackgroundRefreshTrace.request(diagnosticToken)
+                let disposable = standalonePollChannelOnce(
+                    accountPeerId: account.peerId, postbox: account.postbox,
+                    network: account.network, peerId: id,
+                    stateManager: account.stateManager,
+                    diagnosticToken: diagnosticToken
+                ).start(completed: {
+                    GoldgramBackgroundRefreshTrace.completedRequest(diagnosticToken)
+                    subscriber.putCompletion()
+                })
+                return ActionDisposable { disposable.dispose() }
+            }
+            return previous |> then(polled)
         }
     }
 }

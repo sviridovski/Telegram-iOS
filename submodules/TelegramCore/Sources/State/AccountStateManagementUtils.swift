@@ -3471,9 +3471,12 @@ func pollChannelOnce(accountPeerId: PeerId, postbox: Postbox, network: Network, 
     |> switchToLatest
 }
 
-public func standalonePollChannelOnce(accountPeerId: PeerId, postbox: Postbox, network: Network, peerId: PeerId, stateManager: AccountStateManager) -> Signal<Never, NoError> {
+public func standalonePollChannelOnce(accountPeerId: PeerId, postbox: Postbox, network: Network, peerId: PeerId, stateManager: AccountStateManager, diagnosticToken: String? = nil) -> Signal<Never, NoError> {
     return postbox.transaction { transaction -> Signal<Never, NoError> in
         guard let accountState = (transaction.getState() as? AuthorizedAccountState)?.state, let peer = transaction.getPeer(peerId) else {
+            if let diagnosticToken {
+                GoldgramBackgroundRefreshTrace.response(diagnosticToken, kind: "unavailable")
+            }
             return .complete()
         }
 
@@ -3497,7 +3500,7 @@ public func standalonePollChannelOnce(accountPeerId: PeerId, postbox: Postbox, n
             }
         }
         let initialState = AccountMutableState(initialState: AccountInitialState(state: accountState, peerIds: Set(), peerIdsRequiringLocalChatState: Set(), channelStates: channelStates, peerChatInfos: peerChatInfos, locallyGeneratedMessageTimestamps: [:], cloudReadStates: [:], channelsToPollExplicitely: Set()), initialPeers: initialPeers, initialReferencedReplyMessageIds: ReferencedReplyMessageIds(), initialReferencedGeneralMessageIds: Set(), initialStoredMessages: Set(), initialStoredStories: [:], initialReadInboxMaxIds: [:], storedMessagesByPeerIdAndTimestamp: [:], initialSentScheduledMessageIds: Set())
-        return pollChannel(accountPeerId: accountPeerId, postbox: postbox, network: network, peer: peer, state: initialState)
+        return pollChannel(accountPeerId: accountPeerId, postbox: postbox, network: network, peer: peer, state: initialState, diagnosticToken: diagnosticToken)
         |> mapToSignal { (finalState, _, timeout) -> Signal<Never, NoError> in
             return resolveAssociatedMessages(accountPeerId: accountPeerId, postbox: postbox, network: network, state: finalState)
             |> mapToSignal { resultingState -> Signal<AccountMutableState, NoError> in
@@ -3730,7 +3733,7 @@ func resetChannels(accountPeerId: PeerId, postbox: Postbox, network: Network, pe
     }
 }
 
-private func pollChannel(accountPeerId: PeerId, postbox: Postbox, network: Network, peer: Peer, state: AccountMutableState) -> Signal<(AccountMutableState, Bool, Int32?), NoError> {
+private func pollChannel(accountPeerId: PeerId, postbox: Postbox, network: Network, peer: Peer, state: AccountMutableState, diagnosticToken: String? = nil) -> Signal<(AccountMutableState, Bool, Int32?), NoError> {
     if let inputChannel = apiInputChannel(peer) {
         let limit: Int32
         #if DEBUG
@@ -3758,12 +3761,23 @@ private func pollChannel(accountPeerId: PeerId, postbox: Postbox, network: Netwo
         |> retryRequest
         |> mapToSignal { difference -> Signal<(AccountMutableState, Bool, Int32?), NoError> in
             guard let difference = difference else {
+                if let diagnosticToken {
+                    GoldgramBackgroundRefreshTrace.response(diagnosticToken, kind: "unavailable")
+                }
                 return .single((state, false, nil))
             }
             
             switch difference {
             case let .channelDifference(channelDifferenceData):
                 let (_, pts, timeout, newMessages, otherUpdates, chats, users) = (channelDifferenceData.flags, channelDifferenceData.pts, channelDifferenceData.timeout, channelDifferenceData.newMessages, channelDifferenceData.otherUpdates, channelDifferenceData.chats, channelDifferenceData.users)
+                if let diagnosticToken {
+                    let edits = otherUpdates.reduce(0) { count, update -> Int in
+                        if case .updateEditChannelMessage = update { return count + 1 }
+                        return count
+                    }
+                    GoldgramBackgroundRefreshTrace.response(diagnosticToken,
+                        kind: "difference", new: newMessages.count, edits: edits)
+                }
                 var updatedState = state
                 var apiTimeout: Int32?
                 
@@ -3802,11 +3816,13 @@ private func pollChannel(accountPeerId: PeerId, postbox: Postbox, network: Netwo
                             peerId: message.id.peerId,
                             peer: updatedState.peers[message.id.peerId]
                            ) {
-                            goldgramCaptureServerOriginal(
+                            if goldgramCaptureServerOriginal(
                                 accountPeerId: accountPeerId,
                                 message: message,
                                 peerKind: kind
-                            )
+                            ), let diagnosticToken {
+                                GoldgramBackgroundRefreshTrace.originalQueued(diagnosticToken)
+                            }
                         }
 
                         if let preCachedResources = apiMessage.preCachedResources {
@@ -3926,6 +3942,9 @@ private func pollChannel(accountPeerId: PeerId, postbox: Postbox, network: Netwo
                     }
                 }
             case let .channelDifferenceEmpty(channelDifferenceEmptyData):
+                if let diagnosticToken {
+                    GoldgramBackgroundRefreshTrace.response(diagnosticToken, kind: "empty")
+                }
                 let (_, pts, timeout) = (channelDifferenceEmptyData.flags, channelDifferenceEmptyData.pts, channelDifferenceEmptyData.timeout)
                 var updatedState = state
                 var apiTimeout: Int32?
@@ -3942,6 +3961,9 @@ private func pollChannel(accountPeerId: PeerId, postbox: Postbox, network: Netwo
 
                 return .single((updatedState, true, apiTimeout))
             case let .channelDifferenceTooLong(channelDifferenceTooLongData):
+                if let diagnosticToken {
+                    GoldgramBackgroundRefreshTrace.response(diagnosticToken, kind: "tooLong")
+                }
                 let (_, timeout, dialog, messages, chats, users) = (channelDifferenceTooLongData.flags, channelDifferenceTooLongData.timeout, channelDifferenceTooLongData.dialog, channelDifferenceTooLongData.messages, channelDifferenceTooLongData.chats, channelDifferenceTooLongData.users)
                 var updatedState = state
                 var apiTimeout: Int32?

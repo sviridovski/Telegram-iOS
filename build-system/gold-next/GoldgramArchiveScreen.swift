@@ -3,6 +3,24 @@ import Foundation
 import UIKit
 import tgapiC
 
+// Mirror the tiny, versioned diagnostic record without linking the app-only
+// archive UI into TelegramCore. Extra fields in the plist are ignored.
+private struct GoldgramBackgroundRunReport: Decodable {
+    let startedAt: Double
+    let accountId: Int64?
+    let outcome: String
+    let targets: Int
+    let requests: Int
+    let completed: Int
+    let difference: Int
+    let empty: Int
+    let tooLong: Int
+    let unavailable: Int
+    let returnedNew: Int
+    let returnedEdits: Int
+    let originalsQueued: Int
+}
+
 @objc(GoldgramArchiveScreen)
 public final class GoldgramArchiveScreen: UITableViewController {
     private let category: Int
@@ -193,6 +211,45 @@ public final class GoldgramArchiveScreen: UITableViewController {
             report += "\nЗавершено: \(refreshDate("GoldgramLastRefreshFinishedV1"))"
             report += "\nПрервано: \(refreshDate("GoldgramLastRefreshExpiredV1"))"
             report += "\nЗапуск зависит от iOS, а завершение не гарантирует получение оригиналов."
+            let allSessions: [GoldgramBackgroundRunReport]
+            if let data = UserDefaults.standard.data(forKey: "GoldgramBackgroundRefreshRunsV1"),
+               let decoded = try? PropertyListDecoder().decode([GoldgramBackgroundRunReport].self, from: data) {
+                allSessions = decoded
+            } else {
+                allSessions = []
+            }
+            let sessions = Array(allSessions.filter {
+                $0.accountId == nil || $0.accountId == account
+            }.suffix(4).reversed())
+            if sessions.isEmpty {
+                report += "\n\nЖурнал фоновых сеансов №108: пока пуст."
+            } else {
+                report += "\n\nЖурнал фоновых сеансов №108 (последние \(sessions.count)):"
+                for (index, item) in sessions.enumerated() {
+                    let reason: String
+                    switch item.outcome {
+                    case "running": reason = "выполняется / нет отметки завершения"
+                    case "completed": reason = "завершён"
+                    case "ios_expiration": reason = "остановлен iOS"
+                    case "goldgram_deadline": reason = "лимит Goldgram 24 секунды"
+                    case "no_targets": reason = "нет закреплённых обсуждений"
+                    case "no_account": reason = "аккаунт не успел загрузиться"
+                    case "capture_disabled": reason = "архив выключен"
+                    case "already_running": reason = "другая проверка уже выполняется"
+                    case "incomplete_requests": reason = "не все запросы завершены"
+                    default: reason = item.outcome
+                    }
+                    report += "\n\n\(index + 1). \(self.dateFormatter.string(from: Date(timeIntervalSince1970: item.startedAt)))"
+                    report += "\nИтог: \(reason)"
+                    report += "\nВыбрано обсуждений: \(item.targets)"
+                    report += "\nЗапросов начато/завершено: \(item.requests)/\(item.completed)"
+                    report += "\nОтветы API: обычных \(item.difference), пустых \(item.empty), слишком длинных \(item.tooLong), недоступных \(item.unavailable)"
+                    report += "\nВ ответах API: новых \(item.returnedNew), редакций \(item.returnedEdits)"
+                    report += "\nОригиналов поставлено в очередь SQLite: \(item.originalsQueued)"
+                }
+            }
+            report += "\nЭто счётчики запросов и очереди, не подтверждение сохранения оригиналов на диск."
+
             report += "\n\nСчётчики относятся только к выбранному аккаунту. Повторная доставка может увеличить значения."
             let alert = UIAlertController(title: "Результат диагностического теста",
                                           message: report, preferredStyle: .alert)

@@ -342,29 +342,40 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
 
     @available(iOS 13.0, *)
     private func goldgramRunRefresh(_ task: BGAppRefreshTask) {
-        // Re-arm for another OS-granted opportunity before doing any work.
+        // An OS launch is proof of execution, not proof of a Telegram response.
+        let token = GoldgramBackgroundRefreshTrace.begin()
         self.goldgramScheduleRefresh()
         guard !self.goldgramRefreshActive, goldgramNativeHistoryEnabled() else {
+            GoldgramBackgroundRefreshTrace.finish(token,
+                reason: self.goldgramRefreshActive ? "already_running" : "capture_disabled")
             task.setTaskCompleted(success: true)
             return
         }
         self.goldgramRefreshActive = true
         UserDefaults.standard.set(Date().timeIntervalSince1970,
             forKey: "GoldgramLastRefreshStartedV1")
+
+        // All callers marshal to main queue before completing the BGTask once.
         var finished = false
-        let complete: (Bool) -> Void = { [weak self, weak task] success in
+        let complete: (String, Bool) -> Void = { [weak self, weak task] reason, success in
             DispatchQueue.main.async {
                 guard let self, !finished else { return }
                 finished = true
                 self.goldgramRefreshWork.set(nil)
                 self.goldgramRefreshActive = false
+                GoldgramBackgroundRefreshTrace.finish(token, reason: reason)
                 UserDefaults.standard.set(Date().timeIntervalSince1970,
                     forKey: success ? "GoldgramLastRefreshFinishedV1" : "GoldgramLastRefreshExpiredV1")
                 task?.setTaskCompleted(success: success)
             }
         }
-        task.expirationHandler = { complete(false) }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 24.0) { complete(false) }
+
+        task.expirationHandler = { complete("ios_expiration", false) }
+        // Independent bounded deadline. Distinguish it from the OS expiration.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 24.0) {
+            complete("goldgram_deadline", false)
+        }
+
         self.goldgramRefreshWork.set((self.sharedContextPromise.get()
         |> take(1)
         |> deliverOnMainQueue
@@ -372,11 +383,28 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
             return applicationContext.sharedContext.activeAccountContexts
             |> take(1)
             |> mapToSignal { primary, _, _ -> Signal<Never, NoError> in
-                guard let account = primary?.account else { return .complete() }
-                return goldgramRefreshPriorityDiscussions(account: account)
+                guard let account = primary?.account else {
+                    complete("no_account", false)
+                    return .complete()
+                }
+                return goldgramRefreshPriorityDiscussions(
+                    account: account, diagnosticToken: token)
             }
         }
-        |> deliverOnMainQueue).start(completed: { complete(true) }))
+        |> deliverOnMainQueue).start(completed: {
+            // No permission to claim original persistence: the core trace
+            // records queue admission separately from durable SQL commits.
+            let sample = GoldgramBackgroundRefreshTrace.find(token)
+            let reason: String
+            if let sample, sample.targets == 0 {
+                reason = "no_targets"
+            } else if let sample, sample.requests != sample.completed {
+                reason = "incomplete_requests"
+            } else {
+                reason = "completed"
+            }
+            complete(reason, reason == "completed")
+        }))
     }
 
     private var clearNotificationsManager: ClearNotificationsManager?
