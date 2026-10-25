@@ -103,6 +103,7 @@ jobs:
           python3 build-system/gold-next/test_difference_original_capture.py
           python3 build-system/gold-next/test_background_refresh_ci.py
           python3 build-system/gold-next/test_background_run_diagnostics.py
+          python3 build-system/gold-next/test_background_session_stages.py
           python3 build-system/gold-next/run_retention_guard.py
           python3 build-system/gold-next/run_notification_handoff.py
           swiftc build-system/gold-next/GoldgramHistoryStore.swift build-system/gold-next/test_native_capture.swift -o "$RUNNER_TEMP/goldgram-native-capture-test"

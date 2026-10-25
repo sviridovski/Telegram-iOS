@@ -19,6 +19,14 @@ private struct GoldgramBackgroundRunReport: Decodable {
     let returnedNew: Int
     let returnedEdits: Int
     let originalsQueued: Int
+    // Optional fields decode #108-109 snapshots with no stage information.
+    let phase: String?
+    let phaseAt: Double?
+    let storedPinned: Int?
+    let rejectedPeer: Int?
+    let rejectedLink: Int?
+    let rejectedGroup: Int?
+    let rejectedAccess: Int?
 }
 
 @objc(GoldgramArchiveScreen)
@@ -237,10 +245,38 @@ public final class GoldgramArchiveScreen: UITableViewController {
                     case "capture_disabled": reason = "архив выключен"
                     case "already_running": reason = "другая проверка уже выполняется"
                     case "incomplete_requests": reason = "не все запросы завершены"
+                    case "postbox_unreached": reason = "не дошли до списка обсуждений Postbox"
+                    case "targets_unavailable": reason = "закрепления есть, но группы недоступны"
+                    case "stale_reclaimed": reason = "зависшая попытка освобождена"
                     default: reason = item.outcome
                     }
                     report += "\n\n\(index + 1). \(self.dateFormatter.string(from: Date(timeIntervalSince1970: item.startedAt)))"
                     report += "\nИтог: \(reason)"
+                    let stageLabels: [String: String] = [
+                        "task_invoked": "iOS вызвала обработчик",
+                        "await_context": "ожидание контекста Telegram",
+                        "context_ready": "контекст Telegram загружен",
+                        "await_account": "ожидание активного аккаунта",
+                        "account_ready": "аккаунт определён",
+                        "await_postbox": "ожидание доступа к Postbox",
+                        "postbox_entered": "выполняется транзакция Postbox",
+                        "postbox_checked": "настройки обсуждений прочитаны",
+                        "capture_disabled": "захват сообщений выключен",
+                        "telegram_requested": "Telegram-запрос отправлен",
+                        "api_answered": "ответ от Telegram получен",
+                        "replay_completed": "ответ Telegram обработан",
+                        "no_account": "аккаунт не получен"
+                    ]
+                    report += "\nПоследний этап: \(stageLabels[item.phase ?? ""] ?? "нет данных №110")"
+                    if let recorded = item.phaseAt {
+                        report += " (\(self.dateFormatter.string(from: Date(timeIntervalSince1970: recorded))))"
+                    }
+                    if let configured = item.storedPinned {
+                        report += "\nЗакреплений сохранено: \(configured)"
+                        report += "\nНедоступные: канал \(item.rejectedPeer ?? 0), связь \(item.rejectedLink ?? 0), группа \(item.rejectedGroup ?? 0), доступ \(item.rejectedAccess ?? 0)"
+                    } else {
+                        report += "\nЗакрепления: не проверены (до Postbox не дошли)"
+                    }
                     report += "\nВыбрано обсуждений: \(item.targets)"
                     report += "\nЗапросов начато/завершено: \(item.requests)/\(item.completed)"
                     report += "\nОтветы API: обычных \(item.difference), пустых \(item.empty), слишком длинных \(item.tooLong), недоступных \(item.unavailable)"

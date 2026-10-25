@@ -34,7 +34,7 @@ assert "goldgramRefreshPriorityDiscussions(" in bg and "diagnosticToken: token" 
 
 func = core.split("public func goldgramRefreshPriorityDiscussions(", 1)[1].split(
     "// The UI owns this subscription", 1)[0]
-assert "goldgramPriorityPeers(transaction:" in func
+assert "goldgramPrioritySelection(transaction:" in func, "Capture eligibility and pinned rejection reasons"
 assert ".prefix(3)" in func
 assert "GoldgramBackgroundRefreshTrace.targets(" in func
 assert "GoldgramBackgroundRefreshTrace.request(" in func
@@ -42,6 +42,10 @@ assert "GoldgramBackgroundRefreshTrace.completedRequest(" in func
 assert "standalonePollChannelOnce(" in func
 assert "diagnosticToken: diagnosticToken" in func
 assert "joinChannel(" not in func
+assert "GoldgramBackgroundRefreshTrace.selection(" in func, "Pinned validation results must be recorded"
+assert 'GoldgramBackgroundRefreshTrace.phase(diagnosticToken, "postbox_entered")' in func
+assert '"storedPinned"' not in func, "Only serializable sanitized counts belong in diagnostics"
+
 
 standalone = state.split("public func standalonePollChannelOnce(", 1)[1].split(
     "\nfunc keepPollingChannel(", 1)[0]

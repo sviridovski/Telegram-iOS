@@ -23,6 +23,14 @@ public struct GoldgramBackgroundRefreshRun: Codable {
     public var returnedNew: Int
     public var returnedEdits: Int
     public var originalsQueued: Int
+    // Optional to decode #108/#109 persisted runs without dropping history.
+    public var phase: String?
+    public var phaseAt: Double?
+    public var storedPinned: Int?
+    public var rejectedPeer: Int?
+    public var rejectedLink: Int?
+    public var rejectedGroup: Int?
+    public var rejectedAccess: Int?
 
     public init(token: String) {
         self.token = token
@@ -40,6 +48,13 @@ public struct GoldgramBackgroundRefreshRun: Codable {
         self.returnedNew = 0
         self.returnedEdits = 0
         self.originalsQueued = 0
+        self.phase = "task_invoked"
+        self.phaseAt = self.startedAt
+        self.storedPinned = nil
+        self.rejectedPeer = nil
+        self.rejectedLink = nil
+        self.rejectedGroup = nil
+        self.rejectedAccess = nil
     }
 }
 
@@ -81,6 +96,27 @@ public enum GoldgramBackgroundRefreshTrace {
         write(rows)
     }
 
+    public static func phase(_ token: String, _ phase: String, accountId: Int64? = nil) {
+        change(token) { row in
+            row.phase = phase
+            row.phaseAt = Date().timeIntervalSince1970
+            if let accountId { row.accountId = accountId }
+        }
+    }
+
+    public static func selection(_ token: String, stored: Int,
+        rejectedPeer: Int, rejectedLink: Int, rejectedGroup: Int, rejectedAccess: Int) {
+        change(token) { row in
+            row.storedPinned = stored
+            row.rejectedPeer = rejectedPeer
+            row.rejectedLink = rejectedLink
+            row.rejectedGroup = rejectedGroup
+            row.rejectedAccess = rejectedAccess
+            row.phase = "postbox_checked"
+            row.phaseAt = Date().timeIntervalSince1970
+        }
+    }
+
     public static func targets(_ token: String, accountId: Int64, count: Int) {
         change(token) { row in
             row.accountId = accountId
@@ -89,11 +125,19 @@ public enum GoldgramBackgroundRefreshTrace {
     }
 
     public static func request(_ token: String) {
-        change(token) { $0.requests += 1 }
+        change(token) { row in
+            row.requests += 1
+            row.phase = "telegram_requested"
+            row.phaseAt = Date().timeIntervalSince1970
+        }
     }
 
     public static func completedRequest(_ token: String) {
-        change(token) { $0.completed += 1 }
+        change(token) { row in
+            row.completed += 1
+            row.phase = "replay_completed"
+            row.phaseAt = Date().timeIntervalSince1970
+        }
     }
 
     public static func response(_ token: String, kind: String, new: Int = 0, edits: Int = 0) {
@@ -106,6 +150,8 @@ public enum GoldgramBackgroundRefreshTrace {
             }
             row.returnedNew += new
             row.returnedEdits += edits
+            row.phase = "api_answered"
+            row.phaseAt = Date().timeIntervalSince1970
         }
     }
 
@@ -860,26 +906,59 @@ public func goldgramSetPriorityDiscussion(transaction: Transaction, accountPeerI
     return (enabled ? "enabled" : "disabled", items.count)
 }
 
-private func goldgramPriorityPeers(transaction: Transaction, accountPeerId: PeerId) -> [PeerId] {
+// #110: distinguish a missing watch list from pinned channels whose cached
+// linked peers cannot currently be validated. Never infer group access.
+private struct GoldgramPrioritySelection {
+    var peers: [PeerId] = []
+    var stored = 0
+    var rejectedPeer = 0
+    var rejectedLink = 0
+    var rejectedGroup = 0
+    var rejectedAccess = 0
+}
+
+private func goldgramPrioritySelection(transaction: Transaction, accountPeerId: PeerId) -> GoldgramPrioritySelection {
+    var selection = GoldgramPrioritySelection()
     guard let stored = transaction.retrieveItemCacheEntry(id: goldgramPriorityDiscussionsKey)?
         .get(GoldgramPriorityDiscussions.self),
-        stored.account == accountPeerId.toInt64() else { return [] }
-    var result: [PeerId] = []
+        stored.account == accountPeerId.toInt64() else { return selection }
+    selection.stored = stored.items.count
     for entry in stored.items.prefix(8) {
         let channelId = PeerId(entry.channel)
         let groupId = PeerId(entry.discussion)
         guard let channel = transaction.getPeer(channelId) as? TelegramChannel,
-              case .broadcast = channel.info,
-              let cached = transaction.getPeerCachedData(peerId: channelId) as? CachedChannelData,
-              case let .known(linkedId) = cached.linkedDiscussionPeerId, linkedId == groupId,
-              let discussion = transaction.getPeer(groupId) as? TelegramChannel,
-              case .group = discussion.info, apiInputPeer(discussion) != nil else { continue }
-        if let reverse = transaction.getPeerCachedData(peerId: groupId) as? CachedChannelData,
-           case let .known(backId) = reverse.linkedDiscussionPeerId,
-           backId != channelId { continue }
-        if !result.contains(groupId) { result.append(groupId) }
+              case .broadcast = channel.info else {
+            selection.rejectedPeer += 1
+            continue
+        }
+        guard let cached = transaction.getPeerCachedData(peerId: channelId) as? CachedChannelData,
+              case let .known(linkedId) = cached.linkedDiscussionPeerId,
+              linkedId == groupId else {
+            selection.rejectedLink += 1
+            continue
+        }
+        guard let discussion = transaction.getPeer(groupId) as? TelegramChannel,
+              case .group = discussion.info else {
+            selection.rejectedGroup += 1
+            continue
+        }
+        guard apiInputPeer(discussion) != nil else {
+            selection.rejectedAccess += 1
+            continue
+        }
+        if let opposite = transaction.getPeerCachedData(peerId: groupId) as? CachedChannelData,
+           case let .known(backId) = opposite.linkedDiscussionPeerId,
+           backId != channelId {
+            selection.rejectedLink += 1
+            continue
+        }
+        if !selection.peers.contains(groupId) { selection.peers.append(groupId) }
     }
-    return result
+    return selection
+}
+
+private func goldgramPriorityPeers(transaction: Transaction, accountPeerId: PeerId) -> [PeerId] {
+    return goldgramPrioritySelection(transaction: transaction, accountPeerId: accountPeerId).peers
 }
 
 // Account-local, bounded list of recently received/opened cloud dialogs.
@@ -1008,18 +1087,29 @@ private final class GoldgramDiscussionMonitor {
 public func goldgramRefreshPriorityDiscussions(
     account: Account, diagnosticToken: String
 ) -> Signal<Never, NoError> {
+    GoldgramBackgroundRefreshTrace.phase(diagnosticToken, "await_postbox",
+        accountId: account.peerId.id._internalGetInt64Value())
     return account.postbox.transaction { transaction -> [PeerId] in
+        GoldgramBackgroundRefreshTrace.phase(diagnosticToken, "postbox_entered")
         guard goldgramNativeHistoryEnabled(),
               goldgramCaptureEnabled(accountPeerId: account.peerId, transaction: transaction) else {
+            GoldgramBackgroundRefreshTrace.phase(diagnosticToken, "capture_disabled")
             GoldgramBackgroundRefreshTrace.targets(diagnosticToken,
                 accountId: account.peerId.id._internalGetInt64Value(), count: 0)
             return []
         }
         goldgramDrainPending(accountPeerId: account.peerId, transaction: transaction)
-        let ids = Array(goldgramPriorityPeers(transaction: transaction,
-            accountPeerId: account.peerId).prefix(3))
+        let selected = goldgramPrioritySelection(transaction: transaction,
+            accountPeerId: account.peerId)
+        let ids = Array(selected.peers.prefix(3))
         GoldgramBackgroundRefreshTrace.targets(diagnosticToken,
             accountId: account.peerId.id._internalGetInt64Value(), count: ids.count)
+        GoldgramBackgroundRefreshTrace.selection(diagnosticToken,
+            stored: selected.stored,
+            rejectedPeer: selected.rejectedPeer,
+            rejectedLink: selected.rejectedLink,
+            rejectedGroup: selected.rejectedGroup,
+            rejectedAccess: selected.rejectedAccess)
         return ids
     }
     |> mapToSignal { ids -> Signal<Never, NoError> in

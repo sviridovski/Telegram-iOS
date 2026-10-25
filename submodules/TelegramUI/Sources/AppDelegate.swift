@@ -326,6 +326,11 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     // #107: background app refresh is discretionary and time-limited.
     private let goldgramRefreshWork = MetaDisposable()
     private var goldgramRefreshActive = false
+    // Recovery for a previous task that iOS suspended before its expiry
+    // callback could run. Only the current token may clear current work.
+    private var goldgramRefreshActiveToken: String?
+    private var goldgramRefreshActiveSince: Date?
+    private var goldgramRefreshFinish: ((String, Bool) -> Void)?
 
     private func goldgramScheduleRefresh() {
         guard #available(iOS 13.0, *), goldgramNativeHistoryEnabled() else { return }
@@ -342,69 +347,109 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
 
     @available(iOS 13.0, *)
     private func goldgramRunRefresh(_ task: BGAppRefreshTask) {
-        // An OS launch is proof of execution, not proof of a Telegram response.
+        // The entry record exists even if Telegram's account context never loads.
         let token = GoldgramBackgroundRefreshTrace.begin()
         self.goldgramScheduleRefresh()
+
+        // On a suspended/resumed process a deadline callback can itself have
+        // been deferred. Reclaim its task before accepting a new OS launch.
+        if self.goldgramRefreshActive,
+           let started = self.goldgramRefreshActiveSince,
+           Date().timeIntervalSince(started) > 60.0 {
+            self.goldgramRefreshFinish?("stale_reclaimed", false)
+        }
         guard !self.goldgramRefreshActive, goldgramNativeHistoryEnabled() else {
             GoldgramBackgroundRefreshTrace.finish(token,
                 reason: self.goldgramRefreshActive ? "already_running" : "capture_disabled")
             task.setTaskCompleted(success: true)
             return
         }
+
         self.goldgramRefreshActive = true
+        self.goldgramRefreshActiveSince = Date()
+        self.goldgramRefreshActiveToken = token
         UserDefaults.standard.set(Date().timeIntervalSince1970,
             forKey: "GoldgramLastRefreshStartedV1")
 
-        // All callers marshal to main queue before completing the BGTask once.
         var finished = false
         let complete: (String, Bool) -> Void = { [weak self, weak task] reason, success in
-            DispatchQueue.main.async {
+            let apply = {
                 guard let self, !finished else { return }
                 finished = true
-                self.goldgramRefreshWork.set(nil)
-                self.goldgramRefreshActive = false
+                // A delayed callback from an old task MUST NOT cancel a newer one.
+                if self.goldgramRefreshActiveToken == token {
+                    self.goldgramRefreshWork.set(nil)
+                    self.goldgramRefreshActive = false
+                    self.goldgramRefreshActiveToken = nil
+                    self.goldgramRefreshActiveSince = nil
+                    self.goldgramRefreshFinish = nil
+                }
                 GoldgramBackgroundRefreshTrace.finish(token, reason: reason)
                 UserDefaults.standard.set(Date().timeIntervalSince1970,
                     forKey: success ? "GoldgramLastRefreshFinishedV1" : "GoldgramLastRefreshExpiredV1")
                 task?.setTaskCompleted(success: success)
             }
+            if Thread.isMainThread {
+                apply()
+            } else {
+                DispatchQueue.main.async(execute: apply)
+            }
         }
+        self.goldgramRefreshFinish = complete
 
         task.expirationHandler = { complete("ios_expiration", false) }
-        // Independent bounded deadline. Distinguish it from the OS expiration.
+        // Own deadline is NOT an iOS expiry. It is not a guaranteed 24s run.
         DispatchQueue.main.asyncAfter(deadline: .now() + 24.0) {
             complete("goldgram_deadline", false)
         }
 
-        self.goldgramRefreshWork.set((self.sharedContextPromise.get()
+        GoldgramBackgroundRefreshTrace.phase(token, "await_context")
+        let work = (self.sharedContextPromise.get()
         |> take(1)
         |> deliverOnMainQueue
         |> mapToSignal { applicationContext -> Signal<Never, NoError> in
+            GoldgramBackgroundRefreshTrace.phase(token, "context_ready")
+            GoldgramBackgroundRefreshTrace.phase(token, "await_account")
             return applicationContext.sharedContext.activeAccountContexts
             |> take(1)
             |> mapToSignal { primary, _, _ -> Signal<Never, NoError> in
                 guard let account = primary?.account else {
+                    GoldgramBackgroundRefreshTrace.phase(token, "no_account")
                     complete("no_account", false)
                     return .complete()
                 }
+                GoldgramBackgroundRefreshTrace.phase(token, "account_ready",
+                    accountId: account.peerId.id._internalGetInt64Value())
                 return goldgramRefreshPriorityDiscussions(
                     account: account, diagnosticToken: token)
             }
         }
         |> deliverOnMainQueue).start(completed: {
-            // No permission to claim original persistence: the core trace
-            // records queue admission separately from durable SQL commits.
+            // Targets=0 before Postbox is read means UNKNOWN, not "not pinned".
             let sample = GoldgramBackgroundRefreshTrace.find(token)
             let reason: String
-            if let sample, sample.targets == 0 {
+            if sample?.phase == "capture_disabled" {
+                reason = "capture_disabled"
+            } else if sample?.storedPinned == nil {
+                reason = "postbox_unreached"
+            } else if sample?.storedPinned == 0 {
                 reason = "no_targets"
+            } else if sample?.targets == 0 {
+                reason = "targets_unavailable"
             } else if let sample, sample.requests != sample.completed {
                 reason = "incomplete_requests"
             } else {
                 reason = "completed"
             }
             complete(reason, reason == "completed")
-        }))
+        })
+        // Some paths complete synchronously (e.g. no active account).
+        // Do not re-install a finished disposable after completing the task.
+        if self.goldgramRefreshActiveToken == token {
+            self.goldgramRefreshWork.set(work)
+        } else {
+            work.dispose()
+        }
     }
 
     private var clearNotificationsManager: ClearNotificationsManager?
