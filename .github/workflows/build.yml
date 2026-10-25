@@ -217,15 +217,16 @@ jobs:
           cp "$IPA" "$OUTPUT_PATH/Swiftgram.ipa"
           ls -lh "$OUTPUT_PATH/Swiftgram.ipa"
 
-      # Bound GitHub cache usage; Bazel disk CAS safely tolerates eviction.
-      - name: Trim Bazel cache to 3 GiB
+      # Preserve more reusable Swift/ObjC actions, but keep a strict cap.
+      # First 6 GiB snapshot may be slower to upload; measure cache hits next run.
+      - name: Trim Bazel cache to 6 GiB
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
           cache = Path("/private/var/tmp/goldgram-bazel-action-cache")
-          cap = 3 * (1024 ** 3)
+          cap = 6 * (1024 ** 3)
           paths = sorted((p for p in cache.rglob('*') if p.is_file() and not p.is_symlink()),
                          key=lambda p: p.stat().st_mtime, reverse=True)
           size = sum(p.stat().st_size for p in paths)

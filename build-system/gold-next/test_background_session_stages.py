@@ -57,4 +57,28 @@ assert '"ios_expiration"' in bg and '"goldgram_deadline"' in bg
 assert 'let storedPinned: Int?' in ui and 'let phase: String?' in ui
 assert 'нет данных №110' in ui and 'до Postbox не дошли' in ui
 assert 'stale_reclaimed' in ui and 'targets_unavailable' in ui
-print("Goldgram #110: per-stage bootstrap and stale-task recovery gates OK")
+
+# #111: the wakeup manager must own this capability. Bypassing a single
+# Postbox transaction with ignoreDisabled=True leaves MTProto inactive.
+wakeup = (root / "submodules/TelegramUI/Sources/SharedWakeupManager.swift").read_text()
+workflow = (root / ".github/workflows/build.yml").read_text()
+lease = wakeup.split("func acquireGoldgramRefreshLease(token: String)", 1)[1].split(
+    "public init(", 1)[0]
+assert 'self.goldgramRefreshLeaseToken = token' in lease
+assert 'self.goldgramRefreshLeaseToken = nil' in lease
+assert 'self.checkTasks()' in lease
+assert 'self.goldgramRefreshLeaseToken == token' in lease
+assert 'ActionDisposable' in lease and 'Queue.mainQueue().isCurrent()' in lease
+assert 'self.goldgramRefreshLeaseToken != nil || self.silenceAudioRenderer != nil' in wakeup
+assert '(self.goldgramRefreshLeaseToken != nil && primary)' in wakeup
+assert 'account.shouldExplicitelyKeepWorkerConnections.set' in wakeup
+assert 'account.postbox.setCanBeginTransactions(true)' in wakeup
+assert 'self.goldgramRefreshLease?.dispose()' in bg
+assert 'self.goldgramRefreshLease = nil' in bg
+assert 'applicationContext.wakeupManager.acquireGoldgramRefreshLease(token: token)' in bg
+assert '"wakeup_lease_active"' in bg and 'менеджеру Telegram разрешена фоновая работа' in ui
+assert 'ignoreDisabled: true' not in refresh, "No unsafe blanket Postbox bypass"
+assert 'Trim Bazel cache to 6 GiB' in workflow and 'cap = 6 * (1024 ** 3)' in workflow
+assert 'actions/cache/save@v4' in workflow and 'actions/cache/restore@v4' in workflow
+
+print("Goldgram #110–111: background Postbox lease, stages and bounded 6 GiB Bazel cache OK")

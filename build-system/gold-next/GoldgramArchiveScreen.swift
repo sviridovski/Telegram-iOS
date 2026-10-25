@@ -256,6 +256,7 @@ public final class GoldgramArchiveScreen: UITableViewController {
                         "task_invoked": "iOS вызвала обработчик",
                         "await_context": "ожидание контекста Telegram",
                         "context_ready": "контекст Telegram загружен",
+                        "wakeup_lease_active": "менеджеру Telegram разрешена фоновая работа",
                         "await_account": "ожидание активного аккаунта",
                         "account_ready": "аккаунт определён",
                         "await_postbox": "ожидание доступа к Postbox",

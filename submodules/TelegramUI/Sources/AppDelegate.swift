@@ -331,6 +331,7 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     private var goldgramRefreshActiveToken: String?
     private var goldgramRefreshActiveSince: Date?
     private var goldgramRefreshFinish: ((String, Bool) -> Void)?
+    private var goldgramRefreshLease: Disposable?
 
     private func goldgramScheduleRefresh() {
         guard #available(iOS 13.0, *), goldgramNativeHistoryEnabled() else { return }
@@ -378,6 +379,10 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
                 finished = true
                 // A delayed callback from an old task MUST NOT cancel a newer one.
                 if self.goldgramRefreshActiveToken == token {
+                    // Release the manager-owned Postbox/network allowance before
+                    // reporting the OS task complete, even on expiration.
+                    self.goldgramRefreshLease?.dispose()
+                    self.goldgramRefreshLease = nil
                     self.goldgramRefreshWork.set(nil)
                     self.goldgramRefreshActive = false
                     self.goldgramRefreshActiveToken = nil
@@ -409,6 +414,13 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         |> deliverOnMainQueue
         |> mapToSignal { applicationContext -> Signal<Never, NoError> in
             GoldgramBackgroundRefreshTrace.phase(token, "context_ready")
+            // The OS has ALREADY launched our task: integrate that finite
+            // allowance with Telegram's own Postbox/service-master gate.
+            // This lease is never acquired on ordinary app backgrounding.
+            if self.goldgramRefreshActiveToken == token {
+                self.goldgramRefreshLease = applicationContext.wakeupManager.acquireGoldgramRefreshLease(token: token)
+                GoldgramBackgroundRefreshTrace.phase(token, "wakeup_lease_active")
+            }
             GoldgramBackgroundRefreshTrace.phase(token, "await_account")
             return applicationContext.sharedContext.activeAccountContexts
             |> take(1)

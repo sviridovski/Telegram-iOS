@@ -91,6 +91,35 @@ public final class SharedWakeupManager {
     private var managedPausedInBackgroundPlayer: Disposable?
     private var keepIdleDisposable: Disposable?
     private var silenceAudioRenderer: MediaPlayerAudioRenderer?
+    private var goldgramRefreshLeaseToken: String?
+
+    // #111: Only BGAppRefreshTask's actual system-granted execution may hold
+    // this scoped lease. It does not schedule or extend background runtime.
+    // The same wakeup manager that pauses Postbox now permits its own
+    // transactions and foreground-independent service master for this window.
+    func acquireGoldgramRefreshLease(token: String) -> Disposable {
+        assert(Queue.mainQueue().isCurrent())
+        guard self.goldgramRefreshLeaseToken == nil else {
+            return EmptyDisposable
+        }
+        self.goldgramRefreshLeaseToken = token
+        self.checkTasks()
+        return ActionDisposable { [weak self] in
+            let release = {
+                guard let self, self.goldgramRefreshLeaseToken == token else {
+                    return
+                }
+                self.goldgramRefreshLeaseToken = nil
+                self.checkTasks()
+            }
+            if Queue.mainQueue().isCurrent() {
+                release()
+            } else {
+                Queue.mainQueue().async(release)
+            }
+        }
+    }
+
     
     private var accountsAndTasks: [(Account, Bool, AccountTasks)] = []
     
@@ -1141,18 +1170,18 @@ public final class SharedWakeupManager {
     private func updateAccounts(hasTasks: Bool, endTaskAfterTransactionsComplete: UIBackgroundTaskIdentifier?) {
         let hasBackgroundLocationTask = self.accountsAndTasks.contains(where: { $0.2.backgroundLocation })
         
-        if self.inForeground || self.hasActiveAudioSession || self.isInBackgroundExtension || self.backgroundProcessingTaskId != nil || self.backgroundStoryProcessingTaskId != nil || hasBackgroundLocationTask || (hasTasks && self.currentExternalCompletion != nil) || self.activeExplicitExtensionTimer != nil || self.silenceAudioRenderer != nil {
+        if self.inForeground || self.hasActiveAudioSession || self.isInBackgroundExtension || self.backgroundProcessingTaskId != nil || self.backgroundStoryProcessingTaskId != nil || hasBackgroundLocationTask || (hasTasks && self.currentExternalCompletion != nil) || self.activeExplicitExtensionTimer != nil || self.goldgramRefreshLeaseToken != nil || self.silenceAudioRenderer != nil {
             Logger.shared.log("Wakeup", "enableBeginTransactions: true (active)")
             
             for (account, primary, tasks) in self.accountsAndTasks {
                 account.postbox.setCanBeginTransactions(true)
                 
-                if (self.inForeground && primary) || !tasks.isEmpty || (self.activeExplicitExtensionTimer != nil && primary) {
+                if (self.inForeground && primary) || !tasks.isEmpty || (self.activeExplicitExtensionTimer != nil && primary) || (self.goldgramRefreshLeaseToken != nil && primary) {
                     account.shouldBeServiceTaskMaster.set(.single(.always))
                 } else {
                     account.shouldBeServiceTaskMaster.set(.single(.never))
                 }
-                account.shouldExplicitelyKeepWorkerConnections.set(.single(tasks.backgroundAudio || tasks.backgroundLocation || tasks.importantTasks.pendingStoryCount != 0 || tasks.importantTasks.pendingMessageCount != 0))
+                account.shouldExplicitelyKeepWorkerConnections.set(.single(tasks.backgroundAudio || tasks.backgroundLocation || tasks.importantTasks.pendingStoryCount != 0 || tasks.importantTasks.pendingMessageCount != 0 || (self.goldgramRefreshLeaseToken != nil && primary)))
                 account.shouldKeepOnlinePresence.set(.single(primary && self.inForeground))
                 account.shouldKeepBackgroundDownloadConnections.set(.single(tasks.backgroundDownloads))
             }
