@@ -317,6 +317,74 @@ public enum GoldgramBackgroundRefreshTrace {
     }
 }
 
+// #115: bounded, opt-in foreground sync trace. It is diagnostic only:
+// no message data, peer IDs, auth/session material or transport control.
+public struct GoldgramForegroundSyncEvent: Codable {
+    public let at: Double
+    public let stage: String
+    public let rawNetwork: String?
+    public let stateManagerUpdating: Bool?
+    public let mtprotoFlags: Int32?
+}
+
+public enum GoldgramForegroundSyncTrace {
+    private static let lock = NSLock()
+    private static let keyPrefix = "GoldgramForegroundSyncEventsV1."
+    private static let enabledKey = "GoldgramDiagnosticEnabledV1"
+    private static let foregroundKey = "GoldgramForegroundActiveV1"
+    public static let lastActivatedKey = "GoldgramForegroundLastActivatedV1"
+    public static let lastDeactivatedKey = "GoldgramForegroundLastDeactivatedV1"
+
+    public static func lifecycle(active: Bool) {
+        let defaults = UserDefaults.standard
+        defaults.set(active, forKey: foregroundKey)
+        if defaults.bool(forKey: enabledKey) {
+            defaults.set(Date().timeIntervalSince1970,
+                         forKey: active ? lastActivatedKey : lastDeactivatedKey)
+        }
+    }
+
+    private static func append(accountPeerId: PeerId, stage: String,
+                               rawNetwork: String? = nil,
+                               updating: Bool? = nil, flags: Int32? = nil) {
+        let defaults = UserDefaults.standard
+        guard defaults.bool(forKey: enabledKey),
+              defaults.bool(forKey: foregroundKey) else { return }
+        let key = keyPrefix + String(accountPeerId.id._internalGetInt64Value())
+        lock.lock()
+        defer { lock.unlock() }
+        let rows: [GoldgramForegroundSyncEvent]
+        if let data = defaults.data(forKey: key),
+           let decoded = try? PropertyListDecoder().decode([GoldgramForegroundSyncEvent].self, from: data) {
+            rows = decoded
+        } else {
+            rows = []
+        }
+        if stage == "state", let last = rows.last,
+           last.stage == stage, last.rawNetwork == rawNetwork,
+           last.stateManagerUpdating == updating, last.mtprotoFlags == flags {
+            return
+        }
+        var updated = rows
+        updated.append(GoldgramForegroundSyncEvent(
+            at: Date().timeIntervalSince1970, stage: stage,
+            rawNetwork: rawNetwork, stateManagerUpdating: updating, mtprotoFlags: flags))
+        if let data = try? PropertyListEncoder().encode(Array(updated.suffix(48))) {
+            defaults.set(data, forKey: key)
+        }
+    }
+
+    public static func state(accountPeerId: PeerId, rawNetwork: String,
+                             updating: Bool, mtprotoFlags: Int32) {
+        append(accountPeerId: accountPeerId, stage: "state", rawNetwork: rawNetwork,
+               updating: updating, flags: mtprotoFlags)
+    }
+
+    public static func poll(accountPeerId: PeerId, stage: String) {
+        append(accountPeerId: accountPeerId, stage: stage)
+    }
+}
+
 // #97: opt-in, account-scoped stage counts. No message contents, IDs,
 // peer names or message hashes are recorded. Disabled outside explicit test.
 private enum GoldgramCaptureDiagnostics {

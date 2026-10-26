@@ -138,3 +138,45 @@ assert 'Trim Bazel cache to 6 GiB' in workflow and 'cap = 6 * (1024 ** 3)' in wo
 assert 'actions/cache/save@v4' in workflow and 'actions/cache/restore@v4' in workflow
 
 print("Goldgram #114: bounded BG gate readiness trace, existing RPC/replay, lease and cache OK")
+
+# #115: foreground status labels must expose their TWO actual sources:
+# raw MTProto flags and AccountStateManager.isUpdating. The network and
+# updates.getDifference behavior must remain unaltered.
+net = (root / "submodules/TelegramCore/Sources/Network/Network.swift").read_text()
+manager = (root / "submodules/TelegramCore/Sources/State/AccountStateManager.swift").read_text()
+foreground = core.split("// #115: bounded, opt-in foreground sync trace.", 1)[1].split(
+    "// #97:", 1)[0]
+for field in ("at", "stage", "rawNetwork", "stateManagerUpdating", "mtprotoFlags"):
+    assert "public let " + field in foreground, field
+assert '"GoldgramDiagnosticEnabledV1"' in foreground
+assert '"GoldgramForegroundActiveV1"' in foreground
+assert "updated.suffix(48)" in foreground, "Bound foreground trace storage"
+assert 'last.stage == stage' in foreground, "Deduplicate repeated identical status"
+assert 'guard defaults.bool(forKey: enabledKey)' in foreground
+assert 'defaults.bool(forKey: foregroundKey)' in foreground
+for forbidden in ("message.text", "accessHash", "authKey", "serializedMessage"):
+    assert forbidden not in foreground, forbidden
+assert 'mtprotoDiagnosticFlags.set(Int32(info.flags.rawValue))' in net
+assert 'public var mtprotoDiagnosticFlags: Signal<Int32, NoError>' in net
+assert 'case .updating(proxyAddress: info.proxyAddress)' in net, "Keep real MTProto status"
+assert 'self._connectionStatus = _connectionStatus' in net
+assert 'self._mtprotoDiagnosticFlags = _mtprotoDiagnosticFlags' in net
+assert 'combineLatest(queue: networkStateQueue, self.stateManager.isUpdating, network.connectionStatus, network.mtprotoDiagnosticFlags)' in account
+assert 'GoldgramForegroundSyncTrace.state(accountPeerId: diagnosticAccountPeerId,' in account
+assert 'if isUpdating {' in account and 'return .updating(proxy: proxyState)' in account
+assert 'GoldgramForegroundSyncTrace.lifecycle(active: false)' in app
+assert app.count('GoldgramForegroundSyncTrace.lifecycle(active: true)') == 2, "Observe will-enter-foreground before MTProto changes"
+for point in ("pollDifference_begin", "getDifference_rpc_subscribed", "getDifference_reply_",
+              "getDifference_error_code_", "pollDifference_replay_result",
+              "state_manager_updating_on", "state_manager_updating_off"):
+    assert point in manager, point
+assert 'let request = Signal<Api.updates.Difference, MTRpcError>' in manager
+assert '|> retryRequest' in manager, "Do not alter stock retry policy"
+assert 'GoldgramForegroundSyncTrace.poll(accountPeerId:' in manager
+assert 'GoldgramForegroundSyncRow' in ui and '"Синхронизация №115:"' in ui
+assert 'GoldgramForegroundLastActivatedV1' in ui
+assert 'Self.foregroundTracePrefix + String(account)' in ui
+assert 'if (flags & 4) != 0' in ui and 'if (flags & 8) != 0' in ui
+assert 'Сохрани' not in foreground, "Only UI should describe the test"
+print("Goldgram #115: foreground MTProto/state/retry trace guarded, bounded, UI and stock updates intact")
+

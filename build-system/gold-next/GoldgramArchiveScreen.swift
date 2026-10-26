@@ -5,6 +5,15 @@ import tgapiC
 
 // Mirror the tiny, versioned diagnostic record without linking the app-only
 // archive UI into TelegramCore. Extra fields in the plist are ignored.
+// #115: mirror content-free foreground state trace from TelegramCore.
+private struct GoldgramForegroundSyncRow: Decodable {
+    let at: Double
+    let stage: String
+    let rawNetwork: String?
+    let stateManagerUpdating: Bool?
+    let mtprotoFlags: Int32?
+}
+
 private struct GoldgramBackgroundRunReport: Decodable {
     let startedAt: Double
     let accountId: Int64?
@@ -90,6 +99,7 @@ public final class GoldgramArchiveScreen: UITableViewController {
     required init?(coder: NSCoder) { return nil }
 
     private static let diagnosticCountPrefix = "GoldgramDiagnosticCountsV1."
+    private static let foregroundTracePrefix = "GoldgramForegroundSyncEventsV1."
     private static let diagnosticSincePrefix = "GoldgramDiagnosticSinceV1."
     private static let tracePrefix = "GoldgramDiagnosticTraceRowsV2."
     private static let traceScopePrefix = "GoldgramDiagnosticTraceScopeV2."
@@ -112,6 +122,8 @@ public final class GoldgramArchiveScreen: UITableViewController {
                                      preferredStyle: .actionSheet)
         menu.addAction(UIAlertAction(title: "Начать новый тест", style: .default) { _ in
             defaults.set([String: Int](), forKey: Self.diagnosticCountPrefix + String(account))
+            // #115 reset only diagnostic breadcrumbs, never the SQLite archive.
+            defaults.removeObject(forKey: Self.foregroundTracePrefix + String(account))
             defaults.set([[String: Any]](), forKey: Self.tracePrefix + String(account))
             let scoped = (self.sources ?? []).compactMap(Self.tracePeer)
             defaults.set(scoped, forKey: Self.traceScopePrefix + String(account))
@@ -244,6 +256,73 @@ public final class GoldgramArchiveScreen: UITableViewController {
             report += "\nЗавершено: \(refreshDate("GoldgramLastRefreshFinishedV1"))"
             report += "\nПрервано: \(refreshDate("GoldgramLastRefreshExpiredV1"))"
             report += "\nЗапуск зависит от iOS, а завершение не гарантирует получение оригиналов."
+            // #115: examine a stuck foreground Updating BEFORE force-quitting.
+            // These breadcrumbs contain no message texts, peer IDs or credentials.
+            report += "\n\nСинхронизация №115:"
+            report += "\nПоследний возврат: \(refreshDate("GoldgramForegroundLastActivatedV1"))"
+            report += "\nПоследнее сворачивание: \(refreshDate("GoldgramForegroundLastDeactivatedV1"))"
+            let syncRows: [GoldgramForegroundSyncRow]
+            if let data = defaults.data(forKey: Self.foregroundTracePrefix + String(account)),
+               let decoded = try? PropertyListDecoder().decode([GoldgramForegroundSyncRow].self, from: data) {
+                syncRows = decoded
+            } else {
+                syncRows = []
+            }
+            if syncRows.isEmpty {
+                report += "\nПереходов пока нет. Запусти новый тест и сверни приложение."
+            } else {
+                let latest = syncRows.last(where: { $0.stage == "state" })
+                if let latest, let raw = latest.rawNetwork {
+                    let updating = latest.stateManagerUpdating ?? false
+                    let flags = latest.mtprotoFlags ?? 0
+                    let cause: String
+                    if raw == "updating" {
+                        if (flags & 4) != 0 && (flags & 8) != 0 {
+                            cause = "MTProto: контекст + служебные задачи"
+                        } else if (flags & 4) != 0 {
+                            cause = "MTProto: обновление контекста"
+                        } else if (flags & 8) != 0 {
+                            cause = "MTProto: служебные задачи"
+                        } else {
+                            cause = "MTProto updating: флаги не подтверждены"
+                        }
+                    } else if raw == "online" && updating {
+                        cause = "AccountStateManager.isUpdating"
+                    } else {
+                        cause = "нет подтверждённого зависшего Updating"
+                    }
+                    report += "\nПоследний статус: сеть \(raw), менеджер \(updating ? "да" : "нет")"
+                    report += "\nMTProto флаги: \(flags) (connected \((flags & 2) != 0 ? "да" : "нет"), context \((flags & 4) != 0 ? "да" : "нет"), service \((flags & 8) != 0 ? "да" : "нет"))"
+                    report += "\nИсточник надписи: \(cause)"
+                }
+                report += "\nПоследние переходы (\(min(24, syncRows.count)) из \(syncRows.count)):"
+                let labels: [String: String] = [
+                    "pollDifference_begin": "getDifference: начало операции",
+                    "getDifference_rpc_subscribed": "getDifference: RPC-подписка (не отправка)",
+                    "getDifference_reply_difference": "getDifference: получен difference",
+                    "getDifference_reply_slice": "getDifference: получен slice",
+                    "getDifference_reply_empty": "getDifference: получен empty",
+                    "getDifference_reply_too_long": "getDifference: получен tooLong",
+                    "getState_fallback": "getState: запасной маршрут",
+                    "pollDifference_reset_state": "getDifference: сброс состояния",
+                    "pollDifference_replay_result": "getDifference: Postbox/replay обработан",
+                    "state_manager_updating_on": "Менеджер: updating включён",
+                    "state_manager_updating_off": "Менеджер: updating выключен"
+                ]
+                for row in syncRows.suffix(24) {
+                    let when = self.dateFormatter.string(from: Date(timeIntervalSince1970: row.at))
+                    if row.stage == "state" {
+                        report += "\n\(when): MTProto \(row.rawNetwork ?? "?"), менеджер \((row.stateManagerUpdating ?? false) ? "1" : "0"), флаги \(row.mtprotoFlags ?? -1)"
+                    } else {
+                        let label = labels[row.stage] ?? (row.stage.hasPrefix("getDifference_error_code_")
+                            ? "getDifference: ошибка RPC, код " + String(row.stage.dropFirst("getDifference_error_code_".count))
+                            : row.stage)
+                        report += "\n\(when): \(label)"
+                    }
+                }
+            }
+            report += "\nЕсли «Обновление» застряло, сохрани этот экран до перезапуска."
+
             let allSessions: [GoldgramBackgroundRunReport]
             if let data = UserDefaults.standard.data(forKey: "GoldgramBackgroundRefreshRunsV1"),
                let decoded = try? PropertyListDecoder().decode([GoldgramBackgroundRunReport].self, from: data) {

@@ -626,10 +626,13 @@ func initializedNetwork(accountId: AccountRecordId, arguments: NetworkInitializa
             mtProto.checkForProxyConnectionIssues = true
             
             let connectionStatus = Promise<ConnectionStatus>(.waitingForNetwork)
+            // #115: read-only raw MTProto flags to distinguish two Updating causes.
+            let mtprotoDiagnosticFlags = ValuePromise<Int32>(0, ignoreRepeated: true)
             
             let requestService = MTRequestMessageService(context: context)!
             let connectionStatusDelegate = MTProtoConnectionStatusDelegate()
             connectionStatusDelegate.action = { [weak connectionStatus] info in
+                mtprotoDiagnosticFlags.set(Int32(info.flags.rawValue))
                 if info.flags.contains(.Connected) {
                     if !info.flags.intersection([.UpdatingConnectionContext, .PerformingServiceTasks]).isEmpty {
                         connectionStatus?.set(.single(.updating(proxyAddress: info.proxyAddress)))
@@ -656,7 +659,7 @@ func initializedNetwork(accountId: AccountRecordId, arguments: NetworkInitializa
                 useExperimentalFeatures = false
             }
             
-            let network = Network(queue: queue, datacenterId: datacenterId, context: context, mtProto: mtProto, requestService: requestService, connectionStatusDelegate: connectionStatusDelegate, _connectionStatus: connectionStatus, basePath: basePath, appDataDisposable: appDataDisposable, encryptionProvider: arguments.encryptionProvider, useRequestTimeoutTimers: useRequestTimeoutTimers, useBetaFeatures: arguments.useBetaFeatures, useExperimentalFeatures: useExperimentalFeatures)
+            let network = Network(queue: queue, datacenterId: datacenterId, context: context, mtProto: mtProto, requestService: requestService, connectionStatusDelegate: connectionStatusDelegate, _connectionStatus: connectionStatus, _mtprotoDiagnosticFlags: mtprotoDiagnosticFlags, basePath: basePath, appDataDisposable: appDataDisposable, encryptionProvider: arguments.encryptionProvider, useRequestTimeoutTimers: useRequestTimeoutTimers, useBetaFeatures: arguments.useBetaFeatures, useExperimentalFeatures: useExperimentalFeatures)
             
             if let data = appConfiguration.data, let notifyInterval = data["upload_premium_speedup_notify_period"] as? Double {
                 network.updateNetworkSpeedLimitedEventNotifyInterval(value: notifyInterval)
@@ -835,6 +838,13 @@ public final class Network: NSObject, MTRequestMessageServiceDelegate {
     public var connectionStatus: Signal<ConnectionStatus, NoError> {
         return self._connectionStatus.get() |> distinctUntilChanged
     }
+
+    // #115 diagnostic observer. Bits: 1 available, 2 connected,
+    // 4 updating context, 8 service tasks, 16 proxy trouble.
+    private let _mtprotoDiagnosticFlags: ValuePromise<Int32>
+    public var mtprotoDiagnosticFlags: Signal<Int32, NoError> {
+        return self._mtprotoDiagnosticFlags.get() |> distinctUntilChanged
+    }
     
     public var networkSpeedLimitedEvents: Signal<NetworkSpeedLimitedEvent, NoError> {
         return self.networkSpeedLimitedEventPipe.signal()
@@ -867,7 +877,7 @@ public final class Network: NSObject, MTRequestMessageServiceDelegate {
         return "Network context: \(self.context)"
     }
     
-    fileprivate init(queue: Queue, datacenterId: Int, context: MTContext, mtProto: MTProto, requestService: MTRequestMessageService, connectionStatusDelegate: MTProtoConnectionStatusDelegate, _connectionStatus: Promise<ConnectionStatus>, basePath: String, appDataDisposable: Disposable, encryptionProvider: EncryptionProvider, useRequestTimeoutTimers: Bool, useBetaFeatures: Bool, useExperimentalFeatures: Bool) {
+    fileprivate init(queue: Queue, datacenterId: Int, context: MTContext, mtProto: MTProto, requestService: MTRequestMessageService, connectionStatusDelegate: MTProtoConnectionStatusDelegate, _connectionStatus: Promise<ConnectionStatus>, _mtprotoDiagnosticFlags: ValuePromise<Int32>, basePath: String, appDataDisposable: Disposable, encryptionProvider: EncryptionProvider, useRequestTimeoutTimers: Bool, useBetaFeatures: Bool, useExperimentalFeatures: Bool) {
         self.encryptionProvider = encryptionProvider
         
         self.queue = queue
@@ -878,6 +888,7 @@ public final class Network: NSObject, MTRequestMessageServiceDelegate {
         self.requestService = requestService
         self.connectionStatusDelegate = connectionStatusDelegate
         self._connectionStatus = _connectionStatus
+        self._mtprotoDiagnosticFlags = _mtprotoDiagnosticFlags
         self.appDataDisposable = appDataDisposable
         self.basePath = basePath
         self.useRequestTimeoutTimers = useRequestTimeoutTimers

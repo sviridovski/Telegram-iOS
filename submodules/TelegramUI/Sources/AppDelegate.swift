@@ -2136,6 +2136,7 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     }
 
     func applicationWillResignActive(_ application: UIApplication) {
+        GoldgramForegroundSyncTrace.lifecycle(active: false)
         self.isActiveValue = false
         self.isActivePromise.set(false)
         self.clearNotificationsManager?.commitNow()
@@ -2211,6 +2212,8 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     }
 
     func applicationWillEnterForeground(_ application: UIApplication) {
+        // Start trace before the resumed connection changes state.
+        GoldgramForegroundSyncTrace.lifecycle(active: true)
         if self.isActiveValue {
             self.isInForegroundValue = true
             self.isInForegroundPromise.set(true)
@@ -2253,6 +2256,7 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     }
 
     func applicationDidBecomeActive(_ application: UIApplication) {
+        GoldgramForegroundSyncTrace.lifecycle(active: true)
         self.isInForegroundValue = true
         self.isInForegroundPromise.set(true)
         self.isActiveValue = true

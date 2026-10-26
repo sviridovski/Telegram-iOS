@@ -1329,9 +1329,21 @@ public class Account {
         }
         
         let networkStateQueue = Queue()
-        
-        let networkStateSignal = combineLatest(queue: networkStateQueue, self.stateManager.isUpdating, network.connectionStatus)
-        |> map { isUpdating, connectionStatus -> AccountNetworkState in
+        let diagnosticAccountPeerId = self.peerId
+
+        let networkStateSignal = combineLatest(queue: networkStateQueue, self.stateManager.isUpdating, network.connectionStatus, network.mtprotoDiagnosticFlags)
+        |> map { isUpdating, connectionStatus, diagnosticFlags -> AccountNetworkState in
+            // #115: observe both inputs of the existing UI state mapping.
+            // This only stores bounded, opt-in status transitions.
+            let rawStatus: String
+            switch connectionStatus {
+            case .waitingForNetwork: rawStatus = "waiting"
+            case .connecting: rawStatus = "connecting"
+            case .updating: rawStatus = "updating"
+            case .online: rawStatus = "online"
+            }
+            GoldgramForegroundSyncTrace.state(accountPeerId: diagnosticAccountPeerId,
+                rawNetwork: rawStatus, updating: isUpdating, mtprotoFlags: diagnosticFlags)
             switch connectionStatus {
                 case .waitingForNetwork:
                     return .waitingForNetwork

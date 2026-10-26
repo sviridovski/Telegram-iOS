@@ -234,6 +234,8 @@ public final class AccountStateManager {
             didSet {
                 if self.currentIsUpdatingValue != oldValue {
                     self.isUpdatingValue.set(self.currentIsUpdatingValue)
+                    GoldgramForegroundSyncTrace.poll(accountPeerId: self.accountPeerId,
+                        stage: self.currentIsUpdatingValue ? "state_manager_updating_on" : "state_manager_updating_off")
                 }
             }
         }
@@ -807,6 +809,8 @@ public final class AccountStateManager {
             switch operation.content {
             case let .pollDifference(_, currentEvents):
                 self.operationTimer?.invalidate()
+                GoldgramForegroundSyncTrace.poll(accountPeerId: self.accountPeerId,
+                    stage: "pollDifference_begin")
                 self.currentIsUpdatingValue = true
                 let queue = self.queue
                 let accountManager = self.accountManager
@@ -860,7 +864,33 @@ public final class AccountStateManager {
                             }
                         }
                         
-                        let request = network.request(Api.functions.updates.getDifference(flags: flags, pts: authorizedState.pts, ptsLimit: nil, ptsTotalLimit: ptsTotalLimit, date: authorizedState.date, qts: authorizedState.qts, qtsLimit: nil))
+                        // #115: observe each real RPC subscription/error before the
+                        // unchanged retryRequest, never turn an error into a success.
+                        let request = Signal<Api.updates.Difference, MTRpcError> { subscriber in
+                            GoldgramForegroundSyncTrace.poll(accountPeerId: accountPeerId,
+                                stage: "getDifference_rpc_subscribed")
+                            return network.request(Api.functions.updates.getDifference(flags: flags, pts: authorizedState.pts, ptsLimit: nil, ptsTotalLimit: ptsTotalLimit, date: authorizedState.date, qts: authorizedState.qts, qtsLimit: nil)).start(
+                                next: { difference in
+                                    let kind: String
+                                    switch difference {
+                                    case .difference: kind = "difference"
+                                    case .differenceSlice: kind = "slice"
+                                    case .differenceEmpty: kind = "empty"
+                                    case .differenceTooLong: kind = "too_long"
+                                    }
+                                    GoldgramForegroundSyncTrace.poll(accountPeerId: accountPeerId,
+                                        stage: "getDifference_reply_" + kind)
+                                    subscriber.putNext(difference)
+                                },
+                                error: { error in
+                                    GoldgramForegroundSyncTrace.poll(accountPeerId: accountPeerId,
+                                        stage: "getDifference_error_code_" + String(error.errorCode))
+                                    subscriber.putError(error)
+                                },
+                                completed: {
+                                    subscriber.putCompletion()
+                                })
+                        }
                         |> map(Optional.init)
                         |> `catch` { error -> Signal<Api.updates.Difference?, MTRpcError> in
                             if error.errorCode == 406 && error.errorDescription == "AUTH_KEY_DUPLICATED" {
@@ -924,6 +954,8 @@ public final class AccountStateManager {
                             }
                         }
                     } else {
+                        GoldgramForegroundSyncTrace.poll(accountPeerId: accountPeerId,
+                            stage: "getState_fallback")
                         let appliedState = network.request(Api.functions.updates.getState())
                         |> retryRequest
                         |> mapToSignal { state in
@@ -947,6 +979,8 @@ public final class AccountStateManager {
                     guard let strongSelf = self else {
                         return
                     }
+                    GoldgramForegroundSyncTrace.poll(accountPeerId: accountPeerId,
+                        stage: resetState ? "pollDifference_reset_state" : "pollDifference_replay_result")
                     if resetState {
                         let _ = (_internal_resetAccountState(postbox: postbox, network: network, accountPeerId: accountPeerId)
                         |> deliverOn(strongSelf.queue)).start(completed: {
