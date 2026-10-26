@@ -1,3 +1,9 @@
+## 2026-10-26 Goldgram #113 — BG RPC trace (app commit b6bb0412)
+- [App commit #113](https://github.com/sviridovski/Telegram-iOS/commit/b6bb0412c2ab959e0a347212369b5bea8104a573) created from green #112; [Actions run](https://github.com/sviridovski/Telegram-iOS/actions/runs/40253260921) initially in progress; recheck real conclusion.
+- Diagnostic atom only: observe inner Postbox, MTProto readiness, real RPC subscription, errors/retries, raw typed response final/PTS/timeout, associated-data resolution and replay. Existing 24s BG limit, normal retryRequest, SQLite/Mx remain.
+- New on-device issue: sometimes “Обновление…” persists after 1.5h minimized until relaunch. UI is ambiguous: transport status .updating OR global stateManager.isUpdating. Do not assume BG channel poll itself causes it; next evidence should separate foreground updates.getDifference lifecycle from transport. See detailed #113 section in GOLD_CURRENT_HANDOFF.md.
+- Deferred separate atom: fix 7-edit diagnostics by edit event observed_at and discussion/thread scope, then controlled edit test. Ghostgram/VPS alternate remains deferred.
+
 ## CURRENT HANDOFF — 2026-10-18, #90 GREEN/device findings -> #91 notification-service capture, durable originals, totals
 
 
