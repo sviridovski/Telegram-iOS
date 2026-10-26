@@ -3473,6 +3473,9 @@ func pollChannelOnce(accountPeerId: PeerId, postbox: Postbox, network: Network, 
 
 public func standalonePollChannelOnce(accountPeerId: PeerId, postbox: Postbox, network: Network, peerId: PeerId, stateManager: AccountStateManager, diagnosticToken: String? = nil) -> Signal<Never, NoError> {
     return postbox.transaction { transaction -> Signal<Never, NoError> in
+        if let diagnosticToken {
+            GoldgramBackgroundRefreshTrace.phase(diagnosticToken, "inner_postbox_entered")
+        }
         guard let accountState = (transaction.getState() as? AuthorizedAccountState)?.state, let peer = transaction.getPeer(peerId) else {
             if let diagnosticToken {
                 GoldgramBackgroundRefreshTrace.response(diagnosticToken, kind: "unavailable")
@@ -3500,19 +3503,34 @@ public func standalonePollChannelOnce(accountPeerId: PeerId, postbox: Postbox, n
             }
         }
         let initialState = AccountMutableState(initialState: AccountInitialState(state: accountState, peerIds: Set(), peerIdsRequiringLocalChatState: Set(), channelStates: channelStates, peerChatInfos: peerChatInfos, locallyGeneratedMessageTimestamps: [:], cloudReadStates: [:], channelsToPollExplicitely: Set()), initialPeers: initialPeers, initialReferencedReplyMessageIds: ReferencedReplyMessageIds(), initialReferencedGeneralMessageIds: Set(), initialStoredMessages: Set(), initialStoredStories: [:], initialReadInboxMaxIds: [:], storedMessagesByPeerIdAndTimestamp: [:], initialSentScheduledMessageIds: Set())
+        if let diagnosticToken {
+            GoldgramBackgroundRefreshTrace.phase(diagnosticToken, "channel_state_ready")
+        }
         return pollChannel(accountPeerId: accountPeerId, postbox: postbox, network: network, peer: peer, state: initialState, diagnosticToken: diagnosticToken)
         |> mapToSignal { (finalState, _, timeout) -> Signal<Never, NoError> in
+            if let diagnosticToken {
+                GoldgramBackgroundRefreshTrace.phase(diagnosticToken, "resolve_messages")
+            }
             return resolveAssociatedMessages(accountPeerId: accountPeerId, postbox: postbox, network: network, state: finalState)
             |> mapToSignal { resultingState -> Signal<AccountMutableState, NoError> in
+                if let diagnosticToken {
+                    GoldgramBackgroundRefreshTrace.phase(diagnosticToken, "resolve_stories")
+                }
                 return resolveAssociatedStories(postbox: postbox, network: network, accountPeerId: accountPeerId, state: finalState)
             }
             |> mapToSignal { resultingState -> Signal<AccountFinalState, NoError> in
+                if let diagnosticToken {
+                    GoldgramBackgroundRefreshTrace.phase(diagnosticToken, "resolve_peer_infos")
+                }
                 return resolveMissingPeerChatInfos(accountPeerId: accountPeerId, network: network, state: resultingState)
                 |> map { resultingState, _ -> AccountFinalState in
                     return AccountFinalState(state: resultingState, shouldPoll: false, incomplete: false, missingUpdatesFromChannels: Set(), discard: false)
                 }
             }
             |> mapToSignal { finalState -> Signal<Never, NoError> in
+                if let diagnosticToken {
+                    GoldgramBackgroundRefreshTrace.phase(diagnosticToken, "replay_started")
+                }
                 return stateManager.standaloneReplayAsynchronouslyBuiltFinalState(finalState: finalState)
             }
         }
@@ -3748,9 +3766,52 @@ private func pollChannel(accountPeerId: PeerId, postbox: Postbox, network: Netwo
         } else {
             pollPts = 1
         }
-        return (network.request(Api.functions.updates.getChannelDifference(flags: 0, channel: inputChannel, filter: .channelMessagesFilterEmpty, pts: max(pollPts, 1), limit: limit))
+        let request: Signal<Api.updates.ChannelDifference, MTRpcError> =
+            network.request(Api.functions.updates.getChannelDifference(flags: 0, channel: inputChannel, filter: .channelMessagesFilterEmpty, pts: max(pollPts, 1), limit: limit))
+        let trackedRequest: Signal<Api.updates.ChannelDifference, MTRpcError>
+        if let diagnosticToken {
+            // The request enters MTRequestMessageService here; it does not prove
+            // that any bytes were transmitted. A retry re-subscribes this signal.
+            trackedRequest = Signal { subscriber in
+                GoldgramBackgroundRefreshTrace.rpcAttempt(diagnosticToken)
+                return request.start(next: { difference in
+                    switch difference {
+                    case let .channelDifference(data):
+                        GoldgramBackgroundRefreshTrace.rpcResponse(diagnosticToken,
+                            final: (data.flags & 1) != 0, pts: data.pts, timeout: data.timeout)
+                    case let .channelDifferenceEmpty(data):
+                        GoldgramBackgroundRefreshTrace.rpcResponse(diagnosticToken,
+                            final: (data.flags & 1) != 0, pts: data.pts, timeout: data.timeout)
+                    case let .channelDifferenceTooLong(data):
+                        GoldgramBackgroundRefreshTrace.rpcResponse(diagnosticToken,
+                            final: (data.flags & 1) != 0, pts: nil, timeout: data.timeout)
+                    }
+                    subscriber.putNext(difference)
+                }, error: { error in
+                    subscriber.putError(error)
+                }, completed: {
+                    subscriber.putCompletion()
+                })
+            }
+        } else {
+            trackedRequest = request
+        }
+        return (trackedRequest
         |> map(Optional.init)
         |> `catch` { error -> Signal<Api.updates.ChannelDifference?, MTRpcError> in
+            if let diagnosticToken {
+                let category: String
+                switch error.errorDescription {
+                case "CHANNEL_PRIVATE": category = "channel_private"
+                case "CHANNEL_INVALID": category = "channel_invalid"
+                case "CHANNEL_PUBLIC_GROUP_NA": category = "public_group_unavailable"
+                case "PERSISTENT_TIMESTAMP_INVALID", "PERSISTENT_TIMESTAMP_EMPTY": category = "invalid_pts"
+                case "PERSISTENT_TIMESTAMP_OUTDATED": category = "outdated_pts"
+                default:
+                    category = error.errorDescription.hasPrefix("FLOOD_WAIT") ? "flood_wait" : "other_rpc"
+                }
+                GoldgramBackgroundRefreshTrace.rpcError(diagnosticToken, category: category)
+            }
             switch error.errorDescription {
             case "CHANNEL_PRIVATE", "CHANNEL_INVALID":
                 return .single(nil)
@@ -3934,8 +3995,14 @@ private func pollChannel(accountPeerId: PeerId, postbox: Postbox, network: Netwo
                     }
                 }
                 
+                if let diagnosticToken {
+                    GoldgramBackgroundRefreshTrace.phase(diagnosticToken, "resolve_forum_threads")
+                }
                 return resolveForumThreads(accountPeerId: accountPeerId, postbox: postbox, source: .network(network), state: updatedState)
                 |> mapToSignal { updatedState in
+                    if let diagnosticToken {
+                        GoldgramBackgroundRefreshTrace.phase(diagnosticToken, "resolve_poll_stories")
+                    }
                     return resolveAssociatedStories(postbox: postbox, network: network, accountPeerId: accountPeerId, state: updatedState)
                     |> map { updatedState -> (AccountMutableState, Bool, Int32?) in
                         return (updatedState, true, apiTimeout)

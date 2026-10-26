@@ -27,6 +27,17 @@ private struct GoldgramBackgroundRunReport: Decodable {
     let rejectedLink: Int?
     let rejectedGroup: Int?
     let rejectedAccess: Int?
+    // #113 optional network/RPC fields; absent in archived #108-112 samples.
+    let networkStatus: String?
+    let networkTransitions: Int?
+    let firstOnlineAt: Double?
+    let rpcAttempts: Int?
+    let rpcErrors: Int?
+    let lastRpcError: String?
+    let rpcResponseAt: Double?
+    let rpcFinal: Bool?
+    let rpcPts: Int32?
+    let rpcTimeout: Int32?
 }
 
 @objc(GoldgramArchiveScreen)
@@ -263,9 +274,20 @@ public final class GoldgramArchiveScreen: UITableViewController {
                         "postbox_entered": "выполняется транзакция Postbox",
                         "postbox_checked": "настройки обсуждений прочитаны",
                         "capture_disabled": "захват сообщений выключен",
-                        "telegram_requested": "Telegram-запрос отправлен",
-                        "api_answered": "ответ от Telegram получен",
-                        "replay_completed": "ответ Telegram обработан",
+                        "telegram_requested": "запущена цепочка опроса (ещё не RPC)",
+                        "inner_postbox_entered": "внутренняя транзакция Postbox началась",
+                        "channel_state_ready": "состояние обсуждения получено",
+                        "rpc_enqueued": "RPC передан сетевому сервису (отправка не подтверждена)",
+                        "rpc_error": "RPC вернул ошибку",
+                        "rpc_response": "получен типизированный RPC-ответ",
+                        "resolve_forum_threads": "обработка веток обсуждений",
+                        "resolve_poll_stories": "обработка связанных историй опроса",
+                        "resolve_messages": "обработка связанных сообщений",
+                        "resolve_stories": "обработка историй",
+                        "resolve_peer_infos": "обработка данных участников",
+                        "replay_started": "начата запись обновлений в Postbox",
+                        "api_answered": "тип ответа Telegram классифицирован",
+                        "replay_completed": "запись обновлений в Postbox завершена",
                         "no_account": "аккаунт не получен"
                     ]
                     report += "\nПоследний этап: \(stageLabels[item.phase ?? ""] ?? "нет данных №110")"
@@ -279,7 +301,25 @@ public final class GoldgramArchiveScreen: UITableViewController {
                         report += "\nЗакрепления: не проверены (до Postbox не дошли)"
                     }
                     report += "\nВыбрано обсуждений: \(item.targets)"
-                    report += "\nЗапросов начато/завершено: \(item.requests)/\(item.completed)"
+                    report += "\nЦепочек опроса начато/завершено: \(item.requests)/\(item.completed)"
+                    if let status = item.networkStatus {
+                        report += "\nMTProto: \(status), смен состояний \(item.networkTransitions ?? 0)"
+                    }
+                    if let firstOnlineAt = item.firstOnlineAt {
+                        report += "\nПервый online: через \(Int(max(0, firstOnlineAt - item.startedAt))) с"
+                    }
+                    if let attempts = item.rpcAttempts {
+                        report += "\nRPC-подписок: \(attempts), ошибок \(item.rpcErrors ?? 0)"
+                    }
+                    if let rpcError = item.lastRpcError {
+                        report += "\nПоследняя ошибка RPC: \(rpcError)"
+                    }
+                    if let responseAt = item.rpcResponseAt {
+                        report += "\nПоследний ответ RPC: через \(Int(max(0, responseAt - item.startedAt))) с"
+                        report += ", final \(item.rpcFinal.map { $0 ? "да" : "нет" } ?? "неизвестно")"
+                        if let pts = item.rpcPts { report += ", PTS \(pts)" }
+                        if let timeout = item.rpcTimeout { report += ", timeout \(timeout) с" }
+                    }
                     report += "\nОтветы API: обычных \(item.difference), пустых \(item.empty), слишком длинных \(item.tooLong), недоступных \(item.unavailable)"
                     report += "\nВ ответах API: новых \(item.returnedNew), редакций \(item.returnedEdits)"
                     report += "\nОригиналов поставлено в очередь SQLite: \(item.originalsQueued)"

@@ -31,6 +31,17 @@ public struct GoldgramBackgroundRefreshRun: Codable {
     public var rejectedLink: Int?
     public var rejectedGroup: Int?
     public var rejectedAccess: Int?
+    // #113: Optional, content-free per-request telemetry (old rows decode unchanged).
+    public var networkStatus: String?
+    public var networkTransitions: Int?
+    public var firstOnlineAt: Double?
+    public var rpcAttempts: Int?
+    public var rpcErrors: Int?
+    public var lastRpcError: String?
+    public var rpcResponseAt: Double?
+    public var rpcFinal: Bool?
+    public var rpcPts: Int32?
+    public var rpcTimeout: Int32?
 
     public init(token: String) {
         self.token = token
@@ -55,6 +66,16 @@ public struct GoldgramBackgroundRefreshRun: Codable {
         self.rejectedLink = nil
         self.rejectedGroup = nil
         self.rejectedAccess = nil
+        self.networkStatus = nil
+        self.networkTransitions = nil
+        self.firstOnlineAt = nil
+        self.rpcAttempts = nil
+        self.rpcErrors = nil
+        self.lastRpcError = nil
+        self.rpcResponseAt = nil
+        self.rpcFinal = nil
+        self.rpcPts = nil
+        self.rpcTimeout = nil
     }
 }
 
@@ -129,6 +150,46 @@ public enum GoldgramBackgroundRefreshTrace {
             row.requests += 1
             row.phase = "telegram_requested"
             row.phaseAt = Date().timeIntervalSince1970
+        }
+    }
+
+    public static func networkStatus(_ token: String, status: String) {
+        change(token) { row in
+            guard row.networkStatus != status else { return }
+            row.networkStatus = status
+            row.networkTransitions = (row.networkTransitions ?? 0) + 1
+            if status == "online" && row.firstOnlineAt == nil {
+                row.firstOnlineAt = Date().timeIntervalSince1970
+            }
+        }
+    }
+
+    // Count subscriptions to Network.request, not packets sent over the wire.
+    public static func rpcAttempt(_ token: String) {
+        change(token) { row in
+            row.rpcAttempts = (row.rpcAttempts ?? 0) + 1
+            row.phase = "rpc_enqueued"
+            row.phaseAt = Date().timeIntervalSince1970
+        }
+    }
+
+    public static func rpcError(_ token: String, category: String) {
+        change(token) { row in
+            row.rpcErrors = (row.rpcErrors ?? 0) + 1
+            row.lastRpcError = category
+            row.phase = "rpc_error"
+            row.phaseAt = Date().timeIntervalSince1970
+        }
+    }
+
+    public static func rpcResponse(_ token: String, final: Bool?, pts: Int32?, timeout: Int32?) {
+        change(token) { row in
+            row.rpcResponseAt = Date().timeIntervalSince1970
+            row.rpcFinal = final
+            row.rpcPts = pts
+            row.rpcTimeout = timeout
+            row.phase = "rpc_response"
+            row.phaseAt = row.rpcResponseAt
         }
     }
 
@@ -1116,16 +1177,30 @@ public func goldgramRefreshPriorityDiscussions(
         return ids.reduce(Signal<Never, NoError>.complete()) { previous, id in
             let polled: Signal<Never, NoError> = Signal { subscriber in
                 GoldgramBackgroundRefreshTrace.request(diagnosticToken)
+                let statusDisposable = account.network.connectionStatus.start(next: { status in
+                    let label: String
+                    switch status {
+                    case .waitingForNetwork: label = "waiting"
+                    case .connecting: label = "connecting"
+                    case .updating: label = "updating"
+                    case .online: label = "online"
+                    }
+                    GoldgramBackgroundRefreshTrace.networkStatus(diagnosticToken, status: label)
+                })
                 let disposable = standalonePollChannelOnce(
                     accountPeerId: account.peerId, postbox: account.postbox,
                     network: account.network, peerId: id,
                     stateManager: account.stateManager,
                     diagnosticToken: diagnosticToken
                 ).start(completed: {
+                    statusDisposable.dispose()
                     GoldgramBackgroundRefreshTrace.completedRequest(diagnosticToken)
                     subscriber.putCompletion()
                 })
-                return ActionDisposable { disposable.dispose() }
+                return ActionDisposable {
+                    statusDisposable.dispose()
+                    disposable.dispose()
+                }
             }
             return previous |> then(polled)
         }

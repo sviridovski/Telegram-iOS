@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""#110: distinguish BG bootstrap failure from genuinely absent pinned peers.
+"""#113: trace BG bootstrap, MTProto RPC and replay without changing retry policy.
 
 Safe app-owned counters only; no messages, group IDs or session content.
 The full Swift/Bazel compilation separately validates API and type linkage.
@@ -24,6 +24,17 @@ trace = core.split("public enum GoldgramBackgroundRefreshTrace", 1)[1].split("//
 assert 'GoldgramBackgroundRefreshRunsV1' in trace, "Retain backwards-readable storage key"
 assert "rows.suffix(8)" in trace and 'outcome == "running"' in trace
 assert "func phase(" in trace and "func selection(" in trace
+# #113 fields are optional: PropertyListDecoder must keep reading #108-112 rows.
+for field, type_name in (("networkStatus", "String"), ("networkTransitions", "Int"),
+                         ("firstOnlineAt", "Double"), ("rpcAttempts", "Int"),
+                         ("rpcErrors", "Int"), ("lastRpcError", "String"),
+                         ("rpcResponseAt", "Double"), ("rpcFinal", "Bool"),
+                         ("rpcPts", "Int32"), ("rpcTimeout", "Int32")):
+    assert f"public var {field}: {type_name}?" in model
+    assert f"self.{field} = nil" in model
+for operation in ("networkStatus", "rpcAttempt", "rpcError", "rpcResponse"):
+    assert f"func {operation}(" in trace
+assert '"rpc_enqueued"' in trace and '"rpc_error"' in trace and '"rpc_response"' in trace
 
 peers = core.split("private struct GoldgramPrioritySelection", 1)[1].split(
     "// Account-local, bounded list", 1)[0]
@@ -38,6 +49,8 @@ assert '"await_postbox"' in refresh and '"postbox_entered"' in refresh
 assert 'GoldgramBackgroundRefreshTrace.selection(diagnosticToken,' in refresh
 assert 'GoldgramBackgroundRefreshTrace.targets(diagnosticToken,' in refresh
 assert '.prefix(3)' in refresh and 'standalonePollChannelOnce(' in refresh
+assert "account.network.connectionStatus.start" in refresh
+assert "statusDisposable.dispose()" in refresh, "Network observer must be released on finish/cancel"
 
 bg = app.split("private func goldgramRunRefresh(", 1)[1].split(
     "private var clearNotificationsManager", 1)[0]
@@ -57,6 +70,21 @@ assert '"ios_expiration"' in bg and '"goldgram_deadline"' in bg
 assert 'let storedPinned: Int?' in ui and 'let phase: String?' in ui
 assert 'нет данных №110' in ui and 'до Postbox не дошли' in ui
 assert 'stale_reclaimed' in ui and 'targets_unavailable' in ui
+for field in ("networkStatus", "firstOnlineAt", "rpcAttempts", "rpcErrors",
+              "lastRpcError", "rpcResponseAt", "rpcFinal", "rpcPts", "rpcTimeout"):
+    assert f"let {field}: " in ui
+assert 'RPC-подписок:' in ui and '"inner_postbox_entered"' in ui
+utils = (root / "submodules/TelegramCore/Sources/State/AccountStateManagementUtils.swift").read_text()
+standalone = utils.split("public func standalonePollChannelOnce(", 1)[1].split(
+    "func keepPollingChannel(", 1)[0]
+assert '"inner_postbox_entered"' in standalone and '"replay_started"' in standalone
+assert '"resolve_messages"' in standalone and '"resolve_peer_infos"' in standalone
+poll = utils.split("private func pollChannel(", 1)[1].split("func ", 1)[0]
+assert "GoldgramBackgroundRefreshTrace.rpcAttempt(diagnosticToken)" in poll
+assert "GoldgramBackgroundRefreshTrace.rpcResponse(diagnosticToken," in poll
+assert "GoldgramBackgroundRefreshTrace.rpcError(diagnosticToken," in poll
+assert "return request.start(next:" in poll, "Count actual Network.request subscriptions"
+assert "|> retryRequest" in poll, "Keep stock Telegram retry for this diagnostic atom"
 
 # #111: the wakeup manager must own this capability. Bypassing a single
 # Postbox transaction with ignoreDisabled=True leaves MTProto inactive.
@@ -81,4 +109,4 @@ assert 'ignoreDisabled: true' not in refresh, "No unsafe blanket Postbox bypass"
 assert 'Trim Bazel cache to 6 GiB' in workflow and 'cap = 6 * (1024 ** 3)' in workflow
 assert 'actions/cache/save@v4' in workflow and 'actions/cache/restore@v4' in workflow
 
-print("Goldgram #110–111: background Postbox lease, stages and bounded 6 GiB Bazel cache OK")
+print("Goldgram #113: BG RPC telemetry, scoped lease, replay phases and 6 GiB cache OK")
