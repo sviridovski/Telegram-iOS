@@ -158,7 +158,7 @@ for forbidden in ("message.text", "accessHash", "authKey", "serializedMessage"):
     assert forbidden not in foreground, forbidden
 assert 'mtprotoDiagnosticFlags.set(Int32(info.flags.rawValue))' in net
 assert 'public var mtprotoDiagnosticFlags: Signal<Int32, NoError>' in net
-assert 'case .updating(proxyAddress: info.proxyAddress)' in net, "Keep real MTProto status"
+assert '.updating(proxyAddress: info.proxyAddress)' in net and 'info.flags.intersection([.UpdatingConnectionContext, .PerformingServiceTasks])' in net, "Keep real MTProto status"
 assert 'self._connectionStatus = _connectionStatus' in net
 assert 'self._mtprotoDiagnosticFlags = _mtprotoDiagnosticFlags' in net
 assert 'combineLatest(queue: networkStateQueue, self.stateManager.isUpdating, network.connectionStatus, network.mtprotoDiagnosticFlags)' in account
@@ -173,7 +173,7 @@ for point in ("pollDifference_begin", "getDifference_rpc_subscribed", "getDiffer
 assert 'let request = Signal<Api.updates.Difference, MTRpcError>' in manager
 assert '|> retryRequest' in manager, "Do not alter stock retry policy"
 assert 'GoldgramForegroundSyncTrace.poll(accountPeerId:' in manager
-assert 'GoldgramForegroundSyncRow' in ui and '"Синхронизация №115:"' in ui
+assert 'GoldgramForegroundSyncRow' in ui and 'Синхронизация №115:' in ui
 assert 'GoldgramForegroundLastActivatedV1' in ui
 assert 'Self.foregroundTracePrefix + String(account)' in ui
 assert 'if (flags & 4) != 0' in ui and 'if (flags & 8) != 0' in ui
