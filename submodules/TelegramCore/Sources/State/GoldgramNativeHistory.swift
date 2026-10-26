@@ -42,6 +42,21 @@ public struct GoldgramBackgroundRefreshRun: Codable {
     public var rpcFinal: Bool?
     public var rpcPts: Int32?
     public var rpcTimeout: Int32?
+    // #114: Read-only timestamps and states of the effective BG network gates.
+    // All fields are Optional so earlier sessions continue to decode.
+    public var leaseActivatedAt: Double?
+    public var serviceMasterMode: String?
+    public var serviceMasterAt: Double?
+    public var serviceMasterTransitions: Int?
+    public var postboxMaster: Bool?
+    public var postboxMasterAt: Double?
+    public var postboxMasterTransitions: Int?
+    public var networkAllowed: Bool?
+    public var networkAllowedAt: Double?
+    public var networkAllowedTransitions: Int?
+    public var firstConnectingAt: Double?
+    public var rpcEnqueuedAt: Double?
+    public var rpcBudgetRemaining: Double?
 
     public init(token: String) {
         self.token = token
@@ -76,6 +91,19 @@ public struct GoldgramBackgroundRefreshRun: Codable {
         self.rpcFinal = nil
         self.rpcPts = nil
         self.rpcTimeout = nil
+        self.leaseActivatedAt = nil
+        self.serviceMasterMode = nil
+        self.serviceMasterAt = nil
+        self.serviceMasterTransitions = nil
+        self.postboxMaster = nil
+        self.postboxMasterAt = nil
+        self.postboxMasterTransitions = nil
+        self.networkAllowed = nil
+        self.networkAllowedAt = nil
+        self.networkAllowedTransitions = nil
+        self.firstConnectingAt = nil
+        self.rpcEnqueuedAt = nil
+        self.rpcBudgetRemaining = nil
     }
 }
 
@@ -145,6 +173,48 @@ public enum GoldgramBackgroundRefreshTrace {
         }
     }
 
+    // This records the manager's lease acquisition call, not MTProto readiness.
+    public static func leaseActivated(_ token: String) {
+        change(token) { row in
+            if row.leaseActivatedAt == nil {
+                row.leaseActivatedAt = Date().timeIntervalSince1970
+            }
+        }
+    }
+
+    public static func serviceMaster(_ token: String, mode: String) {
+        change(token) { row in
+            guard row.serviceMasterMode != mode else { return }
+            row.serviceMasterMode = mode
+            row.serviceMasterTransitions = (row.serviceMasterTransitions ?? 0) + 1
+            if (mode == "always" || mode == "now") && row.serviceMasterAt == nil {
+                row.serviceMasterAt = Date().timeIntervalSince1970
+            }
+        }
+    }
+
+    public static func postboxMaster(_ token: String, value: Bool) {
+        change(token) { row in
+            guard row.postboxMaster != value else { return }
+            row.postboxMaster = value
+            row.postboxMasterTransitions = (row.postboxMasterTransitions ?? 0) + 1
+            if value && row.postboxMasterAt == nil {
+                row.postboxMasterAt = Date().timeIntervalSince1970
+            }
+        }
+    }
+
+    public static func networkPermission(_ token: String, value: Bool) {
+        change(token) { row in
+            guard row.networkAllowed != value else { return }
+            row.networkAllowed = value
+            row.networkAllowedTransitions = (row.networkAllowedTransitions ?? 0) + 1
+            if value && row.networkAllowedAt == nil {
+                row.networkAllowedAt = Date().timeIntervalSince1970
+            }
+        }
+    }
+
     public static func request(_ token: String) {
         change(token) { row in
             row.requests += 1
@@ -158,6 +228,9 @@ public enum GoldgramBackgroundRefreshTrace {
             guard row.networkStatus != status else { return }
             row.networkStatus = status
             row.networkTransitions = (row.networkTransitions ?? 0) + 1
+            if status == "connecting" && row.firstConnectingAt == nil {
+                row.firstConnectingAt = Date().timeIntervalSince1970
+            }
             if status == "online" && row.firstOnlineAt == nil {
                 row.firstOnlineAt = Date().timeIntervalSince1970
             }
@@ -168,6 +241,10 @@ public enum GoldgramBackgroundRefreshTrace {
     public static func rpcAttempt(_ token: String) {
         change(token) { row in
             row.rpcAttempts = (row.rpcAttempts ?? 0) + 1
+            let now = Date().timeIntervalSince1970
+            row.rpcEnqueuedAt = now
+            // The app's own 24s timer, NOT a guarantee of iOS execution time.
+            row.rpcBudgetRemaining = max(0, 24.0 - (now - row.startedAt))
             row.phase = "rpc_enqueued"
             row.phaseAt = Date().timeIntervalSince1970
         }
@@ -1142,6 +1219,40 @@ private final class GoldgramDiscussionMonitor {
     }
 }
 
+// #114: Observe existing service-master/network gates ONLY for an actual
+// OS BGAppRefresh account. Neither signal is modified by this observer.
+public func goldgramObserveBackgroundConnectionReadiness(
+    account: Account, diagnosticToken: String
+) -> Disposable {
+    let observations = DisposableSet()
+    observations.add(account.shouldBeServiceTaskMaster.get().start(next: { mode in
+        let label: String
+        switch mode {
+        case .never: label = "never"
+        case .now: label = "now"
+        case .always: label = "always"
+        }
+        GoldgramBackgroundRefreshTrace.serviceMaster(diagnosticToken, mode: label)
+    }))
+    observations.add(account.postbox.isMasterClient().start(next: { isMaster in
+        GoldgramBackgroundRefreshTrace.postboxMaster(diagnosticToken, value: isMaster)
+    }))
+    observations.add(account.network.shouldKeepConnection.get().start(next: { enabled in
+        GoldgramBackgroundRefreshTrace.networkPermission(diagnosticToken, value: enabled)
+    }))
+    observations.add(account.network.connectionStatus.start(next: { status in
+        let label: String
+        switch status {
+        case .waitingForNetwork: label = "waiting"
+        case .connecting: label = "connecting"
+        case .updating: label = "updating"
+        case .online: label = "online"
+        }
+        GoldgramBackgroundRefreshTrace.networkStatus(diagnosticToken, status: label)
+    }))
+    return observations
+}
+
 // #107: an iOS-discretionary BGAppRefresh window, not a keep-alive.
 // Use ONLY user-pinned verified linked discussions and the existing PTS
 // difference replay. Correct original evidence must precede subsequent edits.
@@ -1177,28 +1288,16 @@ public func goldgramRefreshPriorityDiscussions(
         return ids.reduce(Signal<Never, NoError>.complete()) { previous, id in
             let polled: Signal<Never, NoError> = Signal { subscriber in
                 GoldgramBackgroundRefreshTrace.request(diagnosticToken)
-                let statusDisposable = account.network.connectionStatus.start(next: { status in
-                    let label: String
-                    switch status {
-                    case .waitingForNetwork: label = "waiting"
-                    case .connecting: label = "connecting"
-                    case .updating: label = "updating"
-                    case .online: label = "online"
-                    }
-                    GoldgramBackgroundRefreshTrace.networkStatus(diagnosticToken, status: label)
-                })
                 let disposable = standalonePollChannelOnce(
                     accountPeerId: account.peerId, postbox: account.postbox,
                     network: account.network, peerId: id,
                     stateManager: account.stateManager,
                     diagnosticToken: diagnosticToken
                 ).start(completed: {
-                    statusDisposable.dispose()
                     GoldgramBackgroundRefreshTrace.completedRequest(diagnosticToken)
                     subscriber.putCompletion()
                 })
                 return ActionDisposable {
-                    statusDisposable.dispose()
                     disposable.dispose()
                 }
             }

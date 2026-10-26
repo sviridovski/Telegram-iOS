@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""#113: trace BG bootstrap, MTProto RPC and replay without changing retry policy.
+"""#114: trace BG master/connection gates before RPC without changing retry policy.
 
 Safe app-owned counters only; no messages, group IDs or session content.
 The full Swift/Bazel compilation separately validates API and type linkage.
@@ -36,6 +36,30 @@ for operation in ("networkStatus", "rpcAttempt", "rpcError", "rpcResponse"):
     assert f"func {operation}(" in trace
 assert '"rpc_enqueued"' in trace and '"rpc_error"' in trace and '"rpc_response"' in trace
 
+# #114: account/MTProto readiness must be observed from account_ready,
+# before a nested Postbox query or RPC, and disposed on completion/expiry.
+for field, type_name in (("leaseActivatedAt", "Double"), ("serviceMasterMode", "String"), ("serviceMasterAt", "Double"), ("serviceMasterTransitions", "Int"), ("postboxMaster", "Bool"), ("postboxMasterAt", "Double"), ("postboxMasterTransitions", "Int"), ("networkAllowed", "Bool"), ("networkAllowedAt", "Double"), ("networkAllowedTransitions", "Int"), ("firstConnectingAt", "Double"), ("rpcEnqueuedAt", "Double"), ("rpcBudgetRemaining", "Double")):
+    assert f"public var {field}: {type_name}?" in model
+    assert f"self.{field} = nil" in model
+for operation in ("leaseActivated", "serviceMaster", "postboxMaster", "networkPermission"):
+    assert f"func {operation}(" in trace
+assert 'row.rpcBudgetRemaining = max(0, 24.0 - (now - row.startedAt))' in trace
+assert 'status == "connecting" && row.firstConnectingAt == nil' in trace
+observer = core.split("public func goldgramObserveBackgroundConnectionReadiness(", 1)[1].split(
+    "// #107:", 1)[0]
+for gate in ("account.shouldBeServiceTaskMaster.get()", "account.postbox.isMasterClient()",
+             "account.network.shouldKeepConnection.get()", "account.network.connectionStatus"):
+    assert gate in observer, gate
+assert 'let observations = DisposableSet()' in observer and 'return observations' in observer
+assert 'shouldKeepConnection.set' not in observer and 'becomeMasterClient' not in observer
+assert 'GoldgramBackgroundRefreshTrace.networkStatus(diagnosticToken,' in observer
+account = (root / "submodules/TelegramCore/Sources/Account/Account.swift").read_text()
+assert "combineLatest(self.shouldBeServiceTaskMaster.get(), postbox.isMasterClient())" in account
+assert "self.network.shouldKeepConnection.set(shouldBeMaster)" in account
+assert "shouldKeepConnection.set" not in observer, "Diagnostic must not override transport permissions"
+assert "goldgramRefreshPriorityDiscussions(" in app, "Keep existing bounded discussion poll"
+assert 'DispatchQueue.main.asyncAfter(deadline: .now() + 24.0)' in app, "Do not extend background lifetime"
+
 peers = core.split("private struct GoldgramPrioritySelection", 1)[1].split(
     "// Account-local, bounded list", 1)[0]
 for reason in ("rejectedPeer", "rejectedLink", "rejectedGroup", "rejectedAccess"):
@@ -49,8 +73,12 @@ assert '"await_postbox"' in refresh and '"postbox_entered"' in refresh
 assert 'GoldgramBackgroundRefreshTrace.selection(diagnosticToken,' in refresh
 assert 'GoldgramBackgroundRefreshTrace.targets(diagnosticToken,' in refresh
 assert '.prefix(3)' in refresh and 'standalonePollChannelOnce(' in refresh
-assert "account.network.connectionStatus.start" in refresh
-assert "statusDisposable.dispose()" in refresh, "Network observer must be released on finish/cancel"
+assert "account.network.connectionStatus.start" not in refresh, "Only one token-scoped observer before Postbox"
+assert "goldgramObserveBackgroundConnectionReadiness(" in app
+assert "readinessDisposable.dispose()" in app, "Observers must stop on BG completion or cancellation"
+assert "GoldgramBackgroundRefreshTrace.leaseActivated(token)" in app
+assert "let postboxMaster: Bool?" in ui and "let networkAllowed: Bool?" in ui
+assert "Шлюзы сети №114" in ui and "до лимита приложения" in ui
 
 bg = app.split("private func goldgramRunRefresh(", 1)[1].split(
     "private var clearNotificationsManager", 1)[0]
@@ -109,4 +137,4 @@ assert 'ignoreDisabled: true' not in refresh, "No unsafe blanket Postbox bypass"
 assert 'Trim Bazel cache to 6 GiB' in workflow and 'cap = 6 * (1024 ** 3)' in workflow
 assert 'actions/cache/save@v4' in workflow and 'actions/cache/restore@v4' in workflow
 
-print("Goldgram #113: BG RPC telemetry, scoped lease, replay phases and 6 GiB cache OK")
+print("Goldgram #114: bounded BG gate readiness trace, existing RPC/replay, lease and cache OK")

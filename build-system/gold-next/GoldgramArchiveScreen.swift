@@ -38,6 +38,20 @@ private struct GoldgramBackgroundRunReport: Decodable {
     let rpcFinal: Bool?
     let rpcPts: Int32?
     let rpcTimeout: Int32?
+    // #114 optional fields; older stored BG entries still decode.
+    let leaseActivatedAt: Double?
+    let serviceMasterMode: String?
+    let serviceMasterAt: Double?
+    let serviceMasterTransitions: Int?
+    let postboxMaster: Bool?
+    let postboxMasterAt: Double?
+    let postboxMasterTransitions: Int?
+    let networkAllowed: Bool?
+    let networkAllowedAt: Double?
+    let networkAllowedTransitions: Int?
+    let firstConnectingAt: Double?
+    let rpcEnqueuedAt: Double?
+    let rpcBudgetRemaining: Double?
 }
 
 @objc(GoldgramArchiveScreen)
@@ -302,6 +316,21 @@ public final class GoldgramArchiveScreen: UITableViewController {
                     }
                     report += "\nВыбрано обсуждений: \(item.targets)"
                     report += "\nЦепочек опроса начато/завершено: \(item.requests)/\(item.completed)"
+                    if item.leaseActivatedAt != nil || item.serviceMasterMode != nil {
+                        let elapsed: (Double?) -> String = { time in
+                            guard let time else { return "не достигнуто" }
+                            return String(format: "%.1f с", max(0, time - item.startedAt))
+                        }
+                        let postboxMaster = item.postboxMaster.map { $0 ? "да" : "нет" } ?? "нет данных"
+                        let networkAllowed = item.networkAllowed.map { $0 ? "да" : "нет" } ?? "нет данных"
+                        report += "\nШлюзы сети №114 (от запуска iOS):"
+                        report += "\nLease менеджера: +\(elapsed(item.leaseActivatedAt))"
+                        report += "\nРежим сервиса: \(item.serviceMasterMode ?? "не получен"), активен +\(elapsed(item.serviceMasterAt)), наблюдений \(item.serviceMasterTransitions ?? 0)"
+                        report += "\nPostbox master: \(postboxMaster), впервые да +\(elapsed(item.postboxMasterAt)), наблюдений \(item.postboxMasterTransitions ?? 0)"
+                        report += "\nСеть разрешена: \(networkAllowed), впервые да +\(elapsed(item.networkAllowedAt)), наблюдений \(item.networkAllowedTransitions ?? 0)"
+                        report += "\nMTProto connecting впервые: +\(elapsed(item.firstConnectingAt))"
+                        report += "\nRPC-подписка: +\(elapsed(item.rpcEnqueuedAt)), до лимита приложения ~\(item.rpcBudgetRemaining.map { String(format: "%.1f с", $0) } ?? "нет данных")"
+                    }
                     if let status = item.networkStatus {
                         report += "\nMTProto: \(status), смен состояний \(item.networkTransitions ?? 0)"
                     }

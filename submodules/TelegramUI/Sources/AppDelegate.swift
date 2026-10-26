@@ -420,6 +420,7 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
             if self.goldgramRefreshActiveToken == token {
                 self.goldgramRefreshLease = applicationContext.wakeupManager.acquireGoldgramRefreshLease(token: token)
                 GoldgramBackgroundRefreshTrace.phase(token, "wakeup_lease_active")
+                GoldgramBackgroundRefreshTrace.leaseActivated(token)
             }
             GoldgramBackgroundRefreshTrace.phase(token, "await_account")
             return applicationContext.sharedContext.activeAccountContexts
@@ -432,8 +433,24 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
                 }
                 GoldgramBackgroundRefreshTrace.phase(token, "account_ready",
                     accountId: account.peerId.id._internalGetInt64Value())
-                return goldgramRefreshPriorityDiscussions(
-                    account: account, diagnosticToken: token)
+                // Observe *effective* service-master/MTProto gates as soon as the
+                // BG account becomes available, before its Postbox/RPC work.
+                // The observer is disposed for success, deadline and OS expiry
+                // together with the existing background-work subscription.
+                return Signal { subscriber in
+                    let readinessDisposable = goldgramObserveBackgroundConnectionReadiness(
+                        account: account, diagnosticToken: token)
+                    let pollDisposable = goldgramRefreshPriorityDiscussions(
+                        account: account, diagnosticToken: token
+                    ).start(completed: {
+                        readinessDisposable.dispose()
+                        subscriber.putCompletion()
+                    })
+                    return ActionDisposable {
+                        pollDisposable.dispose()
+                        readinessDisposable.dispose()
+                    }
+                }
             }
         }
         |> deliverOnMainQueue).start(completed: {
