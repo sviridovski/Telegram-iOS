@@ -1147,6 +1147,179 @@ public enum NetworkSpeedLimitedEvent {
     case download(DownloadSubject)
 }
 
+// #117: bounded foreground transport recovery. The network remains owned by
+// Telegram's account lifecycle; no new background task or connection lease.
+// Only the MTProtoKit public reset/transaction APIs are used.
+private final class GoldgramForegroundConnectionRecovery {
+    private let queue: Queue
+    private let network: Network
+    private let accountPeerId: PeerId
+    private var timer: SwiftSignalKit.Timer?
+    private var stalledSince: Double?
+    private var stage: Int = 0
+    private var hardResetTimes: [Double] = []
+    private var cooldownLogged = false
+    private var active = false
+    private var master = false
+    private var managerUpdating = false
+    private var status: ConnectionStatus = .waitingForNetwork
+    private var flags: Int32 = 0
+
+    init(queue: Queue, network: Network, accountPeerId: PeerId) {
+        self.queue = queue
+        self.network = network
+        self.accountPeerId = accountPeerId
+    }
+
+    deinit {
+        self.timer?.invalidate()
+    }
+
+    func update(appActive: Bool, connectionMaster: Bool, managerUpdating: Bool,
+                status: ConnectionStatus, flags: Int32) {
+        assert(self.queue.isCurrent())
+        self.active = appActive
+        self.master = connectionMaster
+        self.managerUpdating = managerUpdating
+        self.status = status
+        self.flags = flags
+
+        if !self.canRecover {
+            if self.stalledSince != nil && self.stage >= 2 && appActive {
+                if case .online = status, !managerUpdating {
+                    self.record("recovery_online_after_reset")
+                } else {
+                    self.record("recovery_cancelled_state_changed")
+                }
+            }
+            self.timer?.invalidate()
+            self.timer = nil
+            self.stalledSince = nil
+            self.stage = 0
+            self.cooldownLogged = false
+            return
+        }
+
+        if self.stalledSince == nil {
+            self.stalledSince = ProcessInfo.processInfo.systemUptime
+            self.stage = 0
+            self.cooldownLogged = false
+            self.record("recovery_watch_started")
+            self.schedule(after: 20.0)
+        }
+    }
+
+    // MTProto "updating" without context bit 4 can be legitimate service work.
+    // "connecting" requires an OS-available network; a true offline state is excluded.
+    private var canRecover: Bool {
+        guard self.active, self.master, !self.managerUpdating,
+              UserDefaults.standard.bool(forKey: "GoldgramForegroundActiveV1") else {
+            return false
+        }
+        switch self.status {
+        case .updating:
+            return (self.flags & 4) != 0
+        case .connecting:
+            return (self.flags & 1) != 0
+        case .waitingForNetwork, .online:
+            return false
+        }
+    }
+
+    private func record(_ stage: String) {
+        GoldgramForegroundSyncTrace.poll(accountPeerId: self.accountPeerId, stage: stage)
+    }
+
+    private func schedule(after delay: Double) {
+        self.timer?.invalidate()
+        let timer = SwiftSignalKit.Timer(
+            timeout: max(0.1, delay),
+            repeat: false,
+            completion: { [weak self] in self?.advance() },
+            queue: self.queue)
+        self.timer = timer
+        timer.start()
+    }
+
+    private func resetIfBudgetAllows(now: Double, nextStage: Int) -> Bool {
+        // At most two transport resets per rolling 15 minutes, including
+        // across separate short foreground episodes in this Account object.
+        self.hardResetTimes.removeAll(where: { $0 <= now - 900.0 })
+        guard self.hardResetTimes.count < 2 else {
+            if !self.cooldownLogged {
+                self.record("recovery_rate_limited_15m")
+                self.cooldownLogged = true
+            }
+            let delay = max(1.0, (self.hardResetTimes.first ?? now) + 900.0 - now)
+            self.schedule(after: delay)
+            return false
+        }
+        self.hardResetTimes.append(now)
+        self.cooldownLogged = false
+        self.stage = nextStage
+        self.record(nextStage == 2 ? "recovery_transport_reset_1" : "recovery_transport_reset_2")
+        self.network.goldgramRequestTransportRecovery(resetTransport: true)
+        return true
+    }
+
+    private func advance() {
+        assert(self.queue.isCurrent())
+        guard self.canRecover, let startedAt = self.stalledSince else {
+            self.timer?.invalidate()
+            self.timer = nil
+            return
+        }
+        let now = ProcessInfo.processInfo.systemUptime
+        let elapsed = now - startedAt
+        switch self.stage {
+        case 0:
+            if elapsed < 20.0 {
+                self.schedule(after: 20.0 - elapsed)
+                return
+            }
+            self.stage = 1
+            self.record("recovery_transaction_nudge")
+            self.network.goldgramRequestTransportRecovery(resetTransport: false)
+            self.schedule(after: max(0.1, 60.0 - elapsed))
+        case 1:
+            if elapsed < 60.0 {
+                self.schedule(after: 60.0 - elapsed)
+                return
+            }
+            if self.resetIfBudgetAllows(now: now, nextStage: 2) {
+                self.schedule(after: max(0.1, 150.0 - elapsed))
+            }
+        case 2:
+            if elapsed < 150.0 {
+                self.schedule(after: 150.0 - elapsed)
+                return
+            }
+            if self.resetIfBudgetAllows(now: now, nextStage: 3) {
+                self.schedule(after: max(0.1, 180.0 - elapsed))
+            }
+        case 3:
+            if elapsed < 180.0 {
+                self.schedule(after: 180.0 - elapsed)
+                return
+            }
+            self.stage = 4
+            self.record("recovery_still_stalled_after_two_resets")
+            // Long VPN outages get another bounded opportunity later, without
+            // frequent timers or a storm of transport resets.
+            self.hardResetTimes.removeAll(where: { $0 <= now - 900.0 })
+            let retryAt = (self.hardResetTimes.first ?? now) + 900.0
+            self.schedule(after: max(60.0, retryAt - now))
+        case 4:
+            self.record("recovery_long_stall_retry")
+            self.stalledSince = now
+            self.stage = 0
+            self.schedule(after: 20.0)
+        default:
+            break
+        }
+    }
+}
+
 public class Account {
     static let sharedQueue = Queue(name: "Account-Shared")
     
@@ -1185,6 +1358,7 @@ public class Account {
     fileprivate let managedContactsDisposable = MetaDisposable()
     fileprivate let managedStickerPacksDisposable = MetaDisposable()
     private let becomeMasterDisposable = MetaDisposable()
+    private let goldgramConnectionRecoveryDisposable = MetaDisposable()
     private let managedServiceViewsDisposable = MetaDisposable()
     private let managedServiceViewsActionDisposable = MetaDisposable()
     private let managedOperationsDisposable = DisposableSet()
@@ -1401,6 +1575,25 @@ public class Account {
         |> distinctUntilChanged
         
         self.network.shouldKeepConnection.set(shouldBeMaster)
+        // #117: a separate account-scoped subscription keeps the watchdog alive
+        // even when the UI is not observing networkState. It never holds a lease.
+        if !supplementary {
+            let recovery = GoldgramForegroundConnectionRecovery(
+                queue: networkStateQueue, network: network, accountPeerId: peerId)
+            let transportInputs = combineLatest(
+                queue: networkStateQueue,
+                self.stateManager.isUpdating, network.connectionStatus, network.mtprotoDiagnosticFlags)
+            let activityInputs = combineLatest(
+                queue: networkStateQueue,
+                GoldgramForegroundSyncTrace.foregroundActive, shouldBeMaster)
+            let recoveryInputs = combineLatest(queue: networkStateQueue, transportInputs, activityInputs)
+            self.goldgramConnectionRecoveryDisposable.set(recoveryInputs.start(next: { [recovery] transport, activity in
+                recovery.update(appActive: activity.0, connectionMaster: activity.1,
+                                managerUpdating: transport.0, status: transport.1,
+                                flags: transport.2)
+            }))
+        }
+
         self.network.shouldExplicitelyKeepWorkerConnections.set(self.shouldExplicitelyKeepWorkerConnections.get())
         self.network.shouldKeepBackgroundDownloadConnections.set(self.shouldKeepBackgroundDownloadConnections.get())
         
@@ -1564,6 +1757,7 @@ public class Account {
     }
     
     deinit {
+        self.goldgramConnectionRecoveryDisposable.dispose()
         self.managedContactsDisposable.dispose()
         self.managedStickerPacksDisposable.dispose()
         self.managedServiceViewsDisposable.dispose()

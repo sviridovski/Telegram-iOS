@@ -332,12 +332,17 @@ public enum GoldgramForegroundSyncTrace {
     private static let keyPrefix = "GoldgramForegroundSyncEventsV1."
     private static let enabledKey = "GoldgramDiagnosticEnabledV1"
     private static let foregroundKey = "GoldgramForegroundActiveV1"
+    private static let foregroundSignal = ValuePromise<Bool>(false, ignoreRepeated: true)
+    public static var foregroundActive: Signal<Bool, NoError> {
+        return foregroundSignal.get()
+    }
     public static let lastActivatedKey = "GoldgramForegroundLastActivatedV1"
     public static let lastDeactivatedKey = "GoldgramForegroundLastDeactivatedV1"
 
     public static func lifecycle(active: Bool) {
         let defaults = UserDefaults.standard
         defaults.set(active, forKey: foregroundKey)
+        foregroundSignal.set(active)
         if defaults.bool(forKey: enabledKey) {
             defaults.set(Date().timeIntervalSince1970,
                          forKey: active ? lastActivatedKey : lastDeactivatedKey)

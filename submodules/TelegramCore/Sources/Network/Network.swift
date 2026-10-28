@@ -852,6 +852,16 @@ public final class Network: NSObject, MTRequestMessageServiceDelegate {
     private let networkSpeedLimitedEventPipe = ValuePipe<NetworkSpeedLimitedEvent>()
     private let networkSpeedLimitedEventState = Atomic<NetworkSpeedLimitedEventState>(value: NetworkSpeedLimitedEventState())
     
+    // #117: bounded recovery after an observed foreground MTProto stall.
+    // Transport reset is the same public operation used by MTRequestMessageService
+    // for unacknowledged requests; do not reset auth/session state or force resume.
+    func goldgramRequestTransportRecovery(resetTransport: Bool) {
+        if resetTransport {
+            self.mtProto.requestSecureTransportReset()
+        }
+        self.mtProto.requestTransportTransaction()
+    }
+
     public func dropConnectionStatus() {
         _connectionStatus.set(.single(.waitingForNetwork))
     }

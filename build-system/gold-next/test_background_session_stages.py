@@ -180,3 +180,39 @@ assert 'if (flags & 4) != 0' in ui and 'if (flags & 8) != 0' in ui
 assert 'Сохрани' not in foreground, "Only UI should describe the test"
 print("Goldgram #115: foreground MTProto/state/retry trace guarded, bounded, UI and stock updates intact")
 
+
+
+# #117: a bounded, account-owned foreground watchdog is the only recovery
+# controller. It must not alter Telegram's update manager, session keys,
+# master lease or background expiration contract.
+account = (root / "submodules/TelegramCore/Sources/Account/Account.swift").read_text()
+net = (root / "submodules/TelegramCore/Sources/Network/Network.swift").read_text()
+foreground = core.split("// #115: bounded, opt-in foreground sync trace.", 1)[1].split(
+    "// #97:", 1)[0]
+watchdog = account.split("private final class GoldgramForegroundConnectionRecovery", 1)[1].split(
+    "public class Account {", 1)[0]
+assert "GoldgramForegroundSyncTrace.foregroundActive" in account
+assert "goldgramConnectionRecoveryDisposable.set(" in account
+assert "goldgramConnectionRecoveryDisposable.dispose()" in account
+assert "if !supplementary {" in account
+assert 'ValuePromise<Bool>(false, ignoreRepeated: true)' in foreground
+assert "foregroundSignal.set(active)" in foreground
+assert "self.active, self.master, !self.managerUpdating" in watchdog
+assert 'UserDefaults.standard.bool(forKey: "GoldgramForegroundActiveV1")' in watchdog
+assert '(self.flags & 4) != 0' in watchdog
+assert '(self.flags & 1) != 0' in watchdog
+assert "self.schedule(after: 20.0)" in watchdog
+assert "60.0 - elapsed" in watchdog and "150.0 - elapsed" in watchdog
+assert "self.hardResetTimes.count < 2" in watchdog
+assert "now - 900.0" in watchdog
+assert "recovery_online_after_reset" in watchdog
+assert "recovery_still_stalled_after_two_resets" in watchdog
+assert "recovery_long_stall_retry" in watchdog
+assert 'self.network.goldgramRequestTransportRecovery(resetTransport: false)' in watchdog
+assert 'self.network.goldgramRequestTransportRecovery(resetTransport: true)' in watchdog
+assert "self.mtProto.requestSecureTransportReset()" in net
+assert "self.mtProto.requestTransportTransaction()" in net
+for forbidden in ("resetSessionInfo", ".pause()", ".resume()", "shouldKeepConnection.set",
+                  "requestApiInitialization", "ignoreDisabled: true"):
+    assert forbidden not in watchdog, forbidden
+print("Goldgram #117: foreground-only recovery, MTProto public reset, cooldown and cancellation OK")
