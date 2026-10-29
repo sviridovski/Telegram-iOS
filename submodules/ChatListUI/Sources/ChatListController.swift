@@ -6833,6 +6833,104 @@ private final class ChatListLocationContext {
     private var didShowProxyUnavailableTooltipController = false
     
     private var titleDisposable: Disposable?
+
+    // #118: observe the authoritative Account and MTProto streams separately
+    // from the reactive title pipeline. Foreground-only, one 10s timer for
+    // the active root list; never resets an already healthy transport.
+    private var goldgramStatusDisposable: Disposable?
+    private var goldgramStatusTimer: SwiftSignalKit.Timer?
+    private var goldgramStatusInputs: (raw: String, account: AccountNetworkState, updating: Bool, flags: Int32, active: Bool)?
+    private var goldgramTitleInput: AccountNetworkState?
+    private var goldgramExpectedUpdatingText: String = ""
+    private var goldgramRefreshOnlineTitle: ((AccountNetworkState) -> Void)?
+    private var goldgramStableOnlineSince: Double?
+    private var goldgramLastHeaderRepairAt: Double = -10000.0
+
+    private static func goldgramStateName(_ state: AccountNetworkState) -> String {
+        switch state {
+        case .waitingForNetwork: return "waiting"
+        case .connecting: return "connecting"
+        case .updating: return "updating"
+        case .online: return "online"
+        }
+    }
+
+    private func goldgramForegroundTick() {
+        guard let inputs = self.goldgramStatusInputs, inputs.active,
+              let parent = self.parentController, parent.effectiveContext === self else {
+            self.goldgramStableOnlineSince = nil
+            return
+        }
+        let accountName = Self.goldgramStateName(inputs.account)
+        let titleName = self.goldgramTitleInput.map(Self.goldgramStateName) ?? "not_received"
+        let isUpdatingTitle = self.chatListTitle?.text == self.goldgramExpectedUpdatingText
+            && !self.goldgramExpectedUpdatingText.isEmpty
+        GoldgramForegroundSyncTrace.uiSample(
+            accountPeerId: self.context.account.peerId, rawNetwork: inputs.raw,
+            accountNetwork: accountName, updating: inputs.updating,
+            flags: inputs.flags, titleInputNetwork: titleName,
+            titleActivity: self.chatListTitle?.activity ?? false,
+            titleUpdating: isUpdatingTitle)
+
+        // UI-only resync if BOTH independent network observations agree
+        // on healthy online for 30s while the list is still showing Updating.
+        // Never fake "online" if MTProto, the account mapper, or the update
+        // manager currently disagrees. Bounded to once per two minutes.
+        guard inputs.raw == "online", accountName == "online", !inputs.updating,
+              isUpdatingTitle, self.goldgramRefreshOnlineTitle != nil else {
+            self.goldgramStableOnlineSince = nil
+            return
+        }
+        let now = ProcessInfo.processInfo.systemUptime
+        if self.goldgramStableOnlineSince == nil {
+            self.goldgramStableOnlineSince = now
+            return
+        }
+        guard now - (self.goldgramStableOnlineSince ?? now) >= 30.0,
+              now - self.goldgramLastHeaderRepairAt >= 120.0 else { return }
+        self.goldgramLastHeaderRepairAt = now
+        self.goldgramStableOnlineSince = nil
+        GoldgramForegroundSyncTrace.poll(
+            accountPeerId: self.context.account.peerId, stage: "ui_header_refresh_healthy_online")
+        self.goldgramRefreshOnlineTitle?(inputs.account)
+    }
+
+    private func goldgramWatchForegroundStatus() {
+        guard case .chatList(.root) = self.location else { return }
+        let inputs = combineLatest(queue: .mainQueue(),
+            self.context.account.networkState,
+            self.context.account.network.connectionStatus,
+            self.context.account.stateManager.isUpdating,
+            self.context.account.network.mtprotoDiagnosticFlags,
+            GoldgramForegroundSyncTrace.foregroundActive)
+        self.goldgramStatusDisposable = inputs.start(next: { [weak self] mapped, raw, updating, flags, active in
+            guard let self else { return }
+            let rawName: String
+            switch raw {
+            case .waitingForNetwork: rawName = "waiting"
+            case .connecting: rawName = "connecting"
+            case .updating: rawName = "updating"
+            case .online: rawName = "online"
+            }
+            self.goldgramStatusInputs = (
+                raw: rawName, account: mapped, updating: updating,
+                flags: flags, active: active)
+            if active {
+                if self.goldgramStatusTimer == nil {
+                    let timer = SwiftSignalKit.Timer(timeout: 10.0, repeat: true,
+                        completion: { [weak self] in self?.goldgramForegroundTick() },
+                        queue: .mainQueue())
+                    self.goldgramStatusTimer = timer
+                    timer.start()
+                }
+                self.goldgramForegroundTick()
+            } else {
+                self.goldgramStatusTimer?.invalidate()
+                self.goldgramStatusTimer = nil
+                self.goldgramStableOnlineSince = nil
+            }
+        })
+    }
     
     private(set) var title: String = ""
     private(set) var chatTitleComponent: ChatTitleComponent?
@@ -6992,6 +7090,9 @@ private final class ChatListLocationContext {
                         storyPostingAvailable: storyPostingAvailable
                     )
                 })
+                // Independent subscription; changing tabs does not destroy the
+                // ChatListLocationContext or recreate the title subscription.
+                self.goldgramWatchForegroundStatus()
             } else {
                 self.didSetReady = true
                 self.ready.set(.single(true))
@@ -7206,6 +7307,8 @@ private final class ChatListLocationContext {
     }
                                 
     deinit {
+        self.goldgramStatusTimer?.invalidate()
+        self.goldgramStatusDisposable?.dispose()
         self.titleDisposable?.dispose()
         self.stateDisposable?.dispose()
     }
@@ -7221,6 +7324,21 @@ private final class ChatListLocationContext {
         presentationData: PresentationData,
         storyPostingAvailable: Bool
     ) {
+        // Keep the last complete title input for a guarded UI-only replay.
+        // This does not change Telegram update processing or MTProto state.
+        if case .chatList(.root) = self.location {
+            self.goldgramTitleInput = networkState
+            self.goldgramExpectedUpdatingText = presentationData.strings.State_Updating
+            self.goldgramRefreshOnlineTitle = { [weak self] freshOnline in
+                self?.updateChatList(
+                    hideStories: hideStories, networkState: freshOnline,
+                    proxy: proxy, passcode: passcode,
+                    stateAndFilterId: stateAndFilterId,
+                    isReorderingTabs: isReorderingTabs, peerStatus: peerStatus,
+                    presentationData: presentationData,
+                    storyPostingAvailable: storyPostingAvailable)
+            }
+        }
         let defaultTitle: String
         switch location {
         case let .chatList(groupId):

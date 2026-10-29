@@ -173,7 +173,7 @@ for point in ("pollDifference_begin", "getDifference_rpc_subscribed", "getDiffer
 assert 'let request = Signal<Api.updates.Difference, MTRpcError>' in manager
 assert '|> retryRequest' in manager, "Do not alter stock retry policy"
 assert 'GoldgramForegroundSyncTrace.poll(accountPeerId:' in manager
-assert 'GoldgramForegroundSyncRow' in ui and 'Синхронизация №115:' in ui
+assert 'GoldgramForegroundSyncRow' in ui and 'Синхронизация №115/118:' in ui
 assert 'GoldgramForegroundLastActivatedV1' in ui
 assert 'Self.foregroundTracePrefix + String(account)' in ui
 assert 'if (flags & 4) != 0' in ui and 'if (flags & 8) != 0' in ui
@@ -216,3 +216,37 @@ for forbidden in ("resetSessionInfo", ".pause()", ".resume()", "shouldKeepConnec
                   "requestApiInitialization", "ignoreDisabled: true"):
     assert forbidden not in watchdog, forbidden
 print("Goldgram #117: foreground-only recovery, MTProto public reset, cooldown and cancellation OK")
+
+
+# #118: verify the status heading is separately sampled, its age is visible,
+# and safe UI repair cannot reset transport or rewrite the account mapper.
+chatlist = (root / "submodules/ChatListUI/Sources/ChatListController.swift").read_text()
+ui_snapshot = core.split("public struct GoldgramForegroundUISnapshot: Codable", 1)[1].split(
+    "// #97:", 1)[0]
+foreground_ui = chatlist.split("// #118: observe the authoritative Account", 1)[1].split(
+    "private(set) var title: String", 1)[0]
+assert 'GoldgramForegroundUISnapshotV1.' in ui_snapshot
+for field in ("rawNetwork", "accountNetwork", "stateManagerUpdating", "mtprotoFlags",
+              "titleInputNetwork", "titleActivity", "titleUpdating", "at"):
+    assert "public let " + field + ":" in ui_snapshot, field
+assert 'defaults.bool(forKey: "GoldgramDiagnosticEnabledV1")' in ui_snapshot
+assert 'defaults.bool(forKey: "GoldgramForegroundActiveV1")' in ui_snapshot
+assert 'GoldgramForegroundUISample: Decodable' in ui
+assert 'Срез UI №118:' in ui and 'УСТАРЕЛ' in ui and 'age <= 25' in ui
+assert 'Self.foregroundUISamplePrefix + String(account)' in ui
+for gate in ('inputs.raw == "online"', 'accountName == "online"',
+             '!inputs.updating', 'isUpdatingTitle',
+             'now - self.goldgramLastHeaderRepairAt >= 120.0',
+             'self.goldgramStableOnlineSince', 'self.goldgramRefreshOnlineTitle?'):
+    assert gate in foreground_ui, gate
+assert 'GoldgramForegroundSyncTrace.uiSample(' in foreground_ui
+assert 'GoldgramForegroundSyncTrace.foregroundActive' in foreground_ui
+assert 'self.goldgramStatusDisposable?.dispose()' in chatlist
+assert 'self.goldgramStatusTimer?.invalidate()' in chatlist
+assert 'self.goldgramWatchForegroundStatus()' in chatlist
+assert 'self.goldgramTitleInput = networkState' in chatlist
+assert 'ui_header_refresh_healthy_online' in foreground_ui
+for forbidden in ('goldgramRequestTransportRecovery', 'requestSecureTransportReset',
+                  'resetSessionInfo', '.pause()', '.resume()'):
+    assert forbidden not in foreground_ui, forbidden
+print("Goldgram #118: independent live UI sampling, 30s online-only title repair, 120s cooldown OK")

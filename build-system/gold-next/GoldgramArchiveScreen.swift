@@ -14,6 +14,18 @@ private struct GoldgramForegroundSyncRow: Decodable {
     let mtprotoFlags: Int32?
 }
 
+// #118: separate 10-second live samples from "last transition" history.
+private struct GoldgramForegroundUISample: Decodable {
+    let at: Double
+    let rawNetwork: String
+    let accountNetwork: String
+    let stateManagerUpdating: Bool
+    let mtprotoFlags: Int32
+    let titleInputNetwork: String
+    let titleActivity: Bool
+    let titleUpdating: Bool
+}
+
 private struct GoldgramBackgroundRunReport: Decodable {
     let startedAt: Double
     let accountId: Int64?
@@ -100,6 +112,7 @@ public final class GoldgramArchiveScreen: UITableViewController {
 
     private static let diagnosticCountPrefix = "GoldgramDiagnosticCountsV1."
     private static let foregroundTracePrefix = "GoldgramForegroundSyncEventsV1."
+    private static let foregroundUISamplePrefix = "GoldgramForegroundUISnapshotV1."
     private static let diagnosticSincePrefix = "GoldgramDiagnosticSinceV1."
     private static let tracePrefix = "GoldgramDiagnosticTraceRowsV2."
     private static let traceScopePrefix = "GoldgramDiagnosticTraceScopeV2."
@@ -124,6 +137,7 @@ public final class GoldgramArchiveScreen: UITableViewController {
             defaults.set([String: Int](), forKey: Self.diagnosticCountPrefix + String(account))
             // #115 reset only diagnostic breadcrumbs, never the SQLite archive.
             defaults.removeObject(forKey: Self.foregroundTracePrefix + String(account))
+            defaults.removeObject(forKey: Self.foregroundUISamplePrefix + String(account))
             defaults.set([[String: Any]](), forKey: Self.tracePrefix + String(account))
             let scoped = (self.sources ?? []).compactMap(Self.tracePeer)
             defaults.set(scoped, forKey: Self.traceScopePrefix + String(account))
@@ -154,6 +168,8 @@ public final class GoldgramArchiveScreen: UITableViewController {
             menu.addAction(UIAlertAction(title: "Остановить и удалить диагностику", style: .destructive) { _ in
                 defaults.removeObject(forKey: sinceKey)
                 defaults.removeObject(forKey: Self.diagnosticCountPrefix + String(account))
+                defaults.removeObject(forKey: Self.foregroundTracePrefix + String(account))
+                defaults.removeObject(forKey: Self.foregroundUISamplePrefix + String(account))
                 defaults.removeObject(forKey: Self.tracePrefix + String(account))
                 defaults.removeObject(forKey: Self.traceScopePrefix + String(account))
                 defaults.removeObject(forKey: Self.traceActivePrefix + String(account))
@@ -258,9 +274,28 @@ public final class GoldgramArchiveScreen: UITableViewController {
             report += "\nЗапуск зависит от iOS, а завершение не гарантирует получение оригиналов."
             // #115: examine a stuck foreground Updating BEFORE force-quitting.
             // These breadcrumbs contain no message texts, peer IDs or credentials.
-            report += "\n\nСинхронизация №115:"
+            report += "\n\nСинхронизация №115/118:"
             report += "\nПоследний возврат: \(refreshDate("GoldgramForegroundLastActivatedV1"))"
             report += "\nПоследнее сворачивание: \(refreshDate("GoldgramForegroundLastDeactivatedV1"))"
+
+            // #118: the UI sample is independent of transition events. A
+            // timestamp reveals stale data instead of calling it "current".
+            if let snapshotData = defaults.data(forKey: Self.foregroundUISamplePrefix + String(account)),
+               let live = try? PropertyListDecoder().decode(GoldgramForegroundUISample.self, from: snapshotData) {
+                let age = max(0, Int(Date().timeIntervalSince1970 - live.at))
+                let freshness = age <= 25 ? "свежий" : "УСТАРЕЛ"
+                report += "\n\nСрез UI №118: \(self.dateFormatter.string(from: Date(timeIntervalSince1970: live.at))), \(age) с назад (\(freshness))"
+                report += "\nMTProto: \(live.rawNetwork), флаги \(live.mtprotoFlags)"
+                report += "\nAccount: \(live.accountNetwork), менеджер \(live.stateManagerUpdating ? "1" : "0")"
+                report += "\nВход заголовка: \(live.titleInputNetwork)"
+                report += "\nЗаголовок: \(live.titleUpdating ? "Обновление" : "не Обновление"), активность \(live.titleActivity ? "1" : "0")"
+                if live.rawNetwork == "online" && live.accountNetwork == "online" &&
+                   !live.stateManagerUpdating && live.titleUpdating {
+                    report += "\nПодтверждён разнобой: сеть и аккаунт online, заголовок всё ещё Updating."
+                }
+            } else {
+                report += "\n\nСрез UI №118: нет. Оставь открытым список чатов на 10 секунд с включённой диагностикой."
+            }
             let syncRows: [GoldgramForegroundSyncRow]
             if let data = defaults.data(forKey: Self.foregroundTracePrefix + String(account)),
                let decoded = try? PropertyListDecoder().decode([GoldgramForegroundSyncRow].self, from: data) {
@@ -291,7 +326,7 @@ public final class GoldgramArchiveScreen: UITableViewController {
                     } else {
                         cause = "нет подтверждённого зависшего Updating"
                     }
-                    report += "\nПоследний статус: сеть \(raw), менеджер \(updating ? "да" : "нет")"
+                    report += "\nПоследний зарегистрированный переход: сеть \(raw), менеджер \(updating ? "да" : "нет")"
                     report += "\nMTProto флаги: \(flags) (connected \((flags & 2) != 0 ? "да" : "нет"), context \((flags & 4) != 0 ? "да" : "нет"), service \((flags & 8) != 0 ? "да" : "нет"))"
                     report += "\nИсточник надписи: \(cause)"
                 }

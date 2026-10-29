@@ -390,6 +390,41 @@ public enum GoldgramForegroundSyncTrace {
     }
 }
 
+// #118: newest independently sampled foreground state from the actual chat-list
+// owner. Unlike the last transition, this has a sampling time and can reveal
+// a stale visible title while transport and the account are already online.
+// No message, chat, account ID, proxy endpoint, token or session content.
+public struct GoldgramForegroundUISnapshot: Codable {
+    public let at: Double
+    public let rawNetwork: String
+    public let accountNetwork: String
+    public let stateManagerUpdating: Bool
+    public let mtprotoFlags: Int32
+    public let titleInputNetwork: String
+    public let titleActivity: Bool
+    public let titleUpdating: Bool
+}
+
+public extension GoldgramForegroundSyncTrace {
+    static func uiSample(accountPeerId: PeerId, rawNetwork: String,
+                         accountNetwork: String, updating: Bool, flags: Int32,
+                         titleInputNetwork: String, titleActivity: Bool,
+                         titleUpdating: Bool) {
+        let defaults = UserDefaults.standard
+        guard defaults.bool(forKey: "GoldgramDiagnosticEnabledV1"),
+              defaults.bool(forKey: "GoldgramForegroundActiveV1") else { return }
+        let key = "GoldgramForegroundUISnapshotV1." + String(accountPeerId.id._internalGetInt64Value())
+        let snapshot = GoldgramForegroundUISnapshot(
+            at: Date().timeIntervalSince1970, rawNetwork: rawNetwork,
+            accountNetwork: accountNetwork, stateManagerUpdating: updating,
+            mtprotoFlags: flags, titleInputNetwork: titleInputNetwork,
+            titleActivity: titleActivity, titleUpdating: titleUpdating)
+        if let data = try? PropertyListEncoder().encode(snapshot) {
+            defaults.set(data, forKey: key)
+        }
+    }
+}
+
 // #97: opt-in, account-scoped stage counts. No message contents, IDs,
 // peer names or message hashes are recorded. Disabled outside explicit test.
 private enum GoldgramCaptureDiagnostics {
