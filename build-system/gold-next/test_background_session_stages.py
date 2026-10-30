@@ -118,20 +118,26 @@ assert "|> retryRequest" in poll, "Keep stock Telegram retry for this diagnostic
 # Postbox transaction with ignoreDisabled=True leaves MTProto inactive.
 wakeup = (root / "submodules/TelegramUI/Sources/SharedWakeupManager.swift").read_text()
 workflow = (root / ".github/workflows/build.yml").read_text()
-lease = wakeup.split("func acquireGoldgramRefreshLease(token: String)", 1)[1].split(
+lease = wakeup.split("func acquireGoldgramRefreshLease(token: String, accountId: AccountRecordId)", 1)[1].split(
     "public init(", 1)[0]
 assert 'self.goldgramRefreshLeaseToken = token' in lease
+assert 'self.goldgramRefreshLeaseAccountId = accountId' in lease
 assert 'self.goldgramRefreshLeaseToken = nil' in lease
+assert 'self.goldgramRefreshLeaseAccountId = nil' in lease
 assert 'self.checkTasks()' in lease
 assert 'self.goldgramRefreshLeaseToken == token' in lease
 assert 'ActionDisposable' in lease and 'Queue.mainQueue().isCurrent()' in lease
 assert 'self.goldgramRefreshLeaseToken != nil || self.silenceAudioRenderer != nil' in wakeup
-assert '(self.goldgramRefreshLeaseToken != nil && primary)' in wakeup
+assert '(self.goldgramRefreshLeaseToken != nil && self.goldgramRefreshLeaseAccountId == account.id)' in wakeup
+assert '(self.goldgramRefreshLeaseToken != nil && primary)' not in wakeup, "BG lease must not depend on a stale primary snapshot"
 assert 'account.shouldExplicitelyKeepWorkerConnections.set' in wakeup
 assert 'account.postbox.setCanBeginTransactions(true)' in wakeup
 assert 'self.goldgramRefreshLease?.dispose()' in bg
 assert 'self.goldgramRefreshLease = nil' in bg
-assert 'applicationContext.wakeupManager.acquireGoldgramRefreshLease(token: token)' in bg
+assert 'applicationContext.wakeupManager.acquireGoldgramRefreshLease(' in bg
+assert 'token: token, accountId: account.id)' in bg, "Lease must follow the selected BG poll account"
+assert bg.index('guard let account = primary?.account') < bg.index('wakeupManager.acquireGoldgramRefreshLease(')
+assert 'activeAccountContexts\n            |> take(1)\n            |> deliverOnMainQueue' in bg
 assert '"wakeup_lease_active"' in bg and 'менеджеру Telegram разрешена фоновая работа' in ui
 assert 'ignoreDisabled: true' not in refresh, "No unsafe blanket Postbox bypass"
 assert 'Trim Bazel cache to 6 GiB' in workflow and 'cap = 6 * (1024 ** 3)' in workflow

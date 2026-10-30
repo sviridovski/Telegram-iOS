@@ -92,16 +92,20 @@ public final class SharedWakeupManager {
     private var keepIdleDisposable: Disposable?
     private var silenceAudioRenderer: MediaPlayerAudioRenderer?
     private var goldgramRefreshLeaseToken: String?
+    private var goldgramRefreshLeaseAccountId: AccountRecordId?
 
     // #111: Only BGAppRefreshTask's actual system-granted execution may hold
     // this scoped lease. It does not schedule or extend background runtime.
     // The same wakeup manager that pauses Postbox now permits its own
     // transactions and foreground-independent service master for this window.
-    func acquireGoldgramRefreshLease(token: String) -> Disposable {
+    func acquireGoldgramRefreshLease(token: String, accountId: AccountRecordId) -> Disposable {
         assert(Queue.mainQueue().isCurrent())
         guard self.goldgramRefreshLeaseToken == nil else {
             return EmptyDisposable
         }
+        // #119: The OS-granted task must enable the account it actually polls,
+        // even if the wakeup manager's primary snapshot is momentarily stale.
+        self.goldgramRefreshLeaseAccountId = accountId
         self.goldgramRefreshLeaseToken = token
         self.checkTasks()
         return ActionDisposable { [weak self] in
@@ -110,6 +114,7 @@ public final class SharedWakeupManager {
                     return
                 }
                 self.goldgramRefreshLeaseToken = nil
+                self.goldgramRefreshLeaseAccountId = nil
                 self.checkTasks()
             }
             if Queue.mainQueue().isCurrent() {
@@ -1176,12 +1181,12 @@ public final class SharedWakeupManager {
             for (account, primary, tasks) in self.accountsAndTasks {
                 account.postbox.setCanBeginTransactions(true)
                 
-                if (self.inForeground && primary) || !tasks.isEmpty || (self.activeExplicitExtensionTimer != nil && primary) || (self.goldgramRefreshLeaseToken != nil && primary) {
+                if (self.inForeground && primary) || !tasks.isEmpty || (self.activeExplicitExtensionTimer != nil && primary) || (self.goldgramRefreshLeaseToken != nil && self.goldgramRefreshLeaseAccountId == account.id) {
                     account.shouldBeServiceTaskMaster.set(.single(.always))
                 } else {
                     account.shouldBeServiceTaskMaster.set(.single(.never))
                 }
-                account.shouldExplicitelyKeepWorkerConnections.set(.single(tasks.backgroundAudio || tasks.backgroundLocation || tasks.importantTasks.pendingStoryCount != 0 || tasks.importantTasks.pendingMessageCount != 0 || (self.goldgramRefreshLeaseToken != nil && primary)))
+                account.shouldExplicitelyKeepWorkerConnections.set(.single(tasks.backgroundAudio || tasks.backgroundLocation || tasks.importantTasks.pendingStoryCount != 0 || tasks.importantTasks.pendingMessageCount != 0 || (self.goldgramRefreshLeaseToken != nil && self.goldgramRefreshLeaseAccountId == account.id)))
                 account.shouldKeepOnlinePresence.set(.single(primary && self.inForeground))
                 account.shouldKeepBackgroundDownloadConnections.set(.single(tasks.backgroundDownloads))
             }

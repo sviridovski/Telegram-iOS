@@ -414,23 +414,28 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         |> deliverOnMainQueue
         |> mapToSignal { applicationContext -> Signal<Never, NoError> in
             GoldgramBackgroundRefreshTrace.phase(token, "context_ready")
-            // The OS has ALREADY launched our task: integrate that finite
-            // allowance with Telegram's own Postbox/service-master gate.
-            // This lease is never acquired on ordinary app backgrounding.
-            if self.goldgramRefreshActiveToken == token {
-                self.goldgramRefreshLease = applicationContext.wakeupManager.acquireGoldgramRefreshLease(token: token)
-                GoldgramBackgroundRefreshTrace.phase(token, "wakeup_lease_active")
-                GoldgramBackgroundRefreshTrace.leaseActivated(token)
-            }
+            // #119: Wait for the actual account before requesting a scoped
+            // Postbox/service-master lease. A provisional "primary" snapshot
+            // can differ from the account selected for this background poll.
             GoldgramBackgroundRefreshTrace.phase(token, "await_account")
             return applicationContext.sharedContext.activeAccountContexts
             |> take(1)
+            |> deliverOnMainQueue
             |> mapToSignal { primary, _, _ -> Signal<Never, NoError> in
                 guard let account = primary?.account else {
                     GoldgramBackgroundRefreshTrace.phase(token, "no_account")
                     complete("no_account", false)
                     return .complete()
                 }
+                // Only a still-live BG task may activate the network for
+                // its selected account; completion always disposes this lease.
+                guard self.goldgramRefreshActiveToken == token else {
+                    return .complete()
+                }
+                self.goldgramRefreshLease = applicationContext.wakeupManager.acquireGoldgramRefreshLease(
+                    token: token, accountId: account.id)
+                GoldgramBackgroundRefreshTrace.phase(token, "wakeup_lease_active")
+                GoldgramBackgroundRefreshTrace.leaseActivated(token)
                 GoldgramBackgroundRefreshTrace.phase(token, "account_ready",
                     accountId: account.peerId.id._internalGetInt64Value())
                 // Observe *effective* service-master/MTProto gates as soon as the
