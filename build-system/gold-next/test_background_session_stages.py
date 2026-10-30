@@ -256,3 +256,36 @@ for forbidden in ('goldgramRequestTransportRecovery', 'requestSecureTransportRes
                   'resetSessionInfo', '.pause()', '.resume()'):
     assert forbidden not in foreground_ui, forbidden
 print("Goldgram #118: independent live UI sampling, 30s online-only title repair, 120s cooldown OK")
+
+
+# #120: tooLong is a snapshot, not a replay of every earlier revision.
+# Only a verified same-peer, unedited StoreMessage may enter the EXISTING
+# baseline-only writer; already-edited snapshots must never become originals.
+utils = (root / "submodules/TelegramCore/Sources/State/AccountStateManagementUtils.swift").read_text()
+too_long = utils.split("case let .channelDifferenceTooLong(channelDifferenceTooLongData):", 1)[1].split(
+    "private func verifyTransaction(", 1)[0]
+for expected in (
+    "snapshotWithEditMarker", "snapshotWithoutEditMarker",
+    "snapshotOriginalsQueued", "id.peerId == peer.id",
+    "message.attributes.contains(where: { $0 is EditedMessageAttribute })",
+    "goldgramVerifiedPublicKind(", "goldgramNativeHistoryEnabled()",
+    "goldgramCaptureServerOriginal(", "GoldgramBackgroundRefreshTrace.tooLongSnapshot(",
+    "messages: messages.count", "updatedState.addMessages([message], location: location)"
+):
+    assert expected in too_long, expected
+assert too_long.index("goldgramCaptureServerOriginal(") < too_long.index(
+    "updatedState.addMessages([message], location: location)"), "Capture before Postbox replay"
+assert "snapshotWithEditMarker += 1" in too_long.split("else {", 1)[0] or (
+    "snapshotWithEditMarker += 1" in too_long and "snapshotWithoutEditMarker += 1" in too_long
+)
+for field in ("tooLongSnapshotMessages", "tooLongWithEditMarker",
+              "tooLongWithoutEditMarker", "tooLongOriginalsQueued"):
+    assert f"public var {field}: Int?" in model, field
+    assert f"self.{field} = nil" in model, field
+    assert f"let {field}: Int?" in ui, field
+assert "public static func tooLongSnapshot(" in trace
+assert "row.originalsQueued += originalsQueued" in trace
+assert "Снимок tooLong №120:" in ui and "уже изменённые снимки не считаем оригиналами" in ui
+assert 'GoldgramBackgroundRefreshRunsV1' in trace
+assert "return (trackedRequest" in utils and "|> retryRequest" in utils
+print("Goldgram #120: tooLong same-peer original guard, bounded counters, old trace decode OK")

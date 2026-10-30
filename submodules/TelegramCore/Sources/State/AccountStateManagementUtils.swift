@@ -4070,8 +4070,35 @@ private func pollChannel(accountPeerId: PeerId, postbox: Postbox, network: Netwo
                     updatedState.setNeedsHoleFromPreviousState(peerId: peer.peerId, namespace: Namespaces.Message.Cloud, validateChannelPts: pts)
                     resetForumTopics.insert(peer.peerId)
                     
+                    // #120: a tooLong response is a CURRENT history snapshot,
+                    // not an update log. Never treat an already-edited message
+                    // as the original. Only a verified message in this group
+                    // without EditedMessageAttribute can supply baseline evidence.
+                    // The existing baseline-only writer never replaces newer text.
+                    var snapshotWithEditMarker = 0
+                    var snapshotWithoutEditMarker = 0
+                    var snapshotOriginalsQueued = 0
                     for apiMessage in messages {
                         if var message = StoreMessage(apiMessage: apiMessage, accountPeerId: accountPeerId, peerIsForum: peerIsForum) {
+                            if case let .Id(id) = message.id, id.peerId == peer.id {
+                                if message.attributes.contains(where: { $0 is EditedMessageAttribute }) {
+                                    snapshotWithEditMarker += 1
+                                } else {
+                                    snapshotWithoutEditMarker += 1
+                                    if goldgramNativeHistoryEnabled(),
+                                       let kind = goldgramVerifiedPublicKind(
+                                        peerId: id.peerId,
+                                        peer: updatedState.peers[id.peerId] ?? peer
+                                       ),
+                                       goldgramCaptureServerOriginal(
+                                        accountPeerId: accountPeerId,
+                                        message: message,
+                                        peerKind: kind
+                                       ) {
+                                        snapshotOriginalsQueued += 1
+                                    }
+                                }
+                            }
                             var attributes = message.attributes
                             attributes.append(ChannelMessageStateVersionAttribute(pts: pts))
                             message = message.withUpdatedAttributes(attributes)
@@ -4096,6 +4123,13 @@ private func pollChannel(accountPeerId: PeerId, postbox: Postbox, network: Netwo
                             }
                             updatedState.addMessages([message], location: location)
                         }
+                    }
+                    if let diagnosticToken {
+                        GoldgramBackgroundRefreshTrace.tooLongSnapshot(
+                            diagnosticToken, messages: messages.count,
+                            withEditMarker: snapshotWithEditMarker,
+                            withoutEditMarker: snapshotWithoutEditMarker,
+                            originalsQueued: snapshotOriginalsQueued)
                     }
                     
                     updatedState.resetReadState(peer.peerId, namespace: Namespaces.Message.Cloud, maxIncomingReadId: readInboxMaxId, maxOutgoingReadId: readOutboxMaxId, maxKnownId: topMessage, count: unreadCount, markedUnread: nil)

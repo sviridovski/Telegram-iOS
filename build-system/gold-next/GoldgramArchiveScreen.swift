@@ -40,6 +40,11 @@ private struct GoldgramBackgroundRunReport: Decodable {
     let returnedNew: Int
     let returnedEdits: Int
     let originalsQueued: Int
+    // #120: optional typed tooLong snapshot counters; earlier records decode.
+    let tooLongSnapshotMessages: Int?
+    let tooLongWithEditMarker: Int?
+    let tooLongWithoutEditMarker: Int?
+    let tooLongOriginalsQueued: Int?
     // Optional fields decode #108-109 snapshots with no stage information.
     let phase: String?
     let phaseAt: Double?
@@ -465,6 +470,13 @@ public final class GoldgramArchiveScreen: UITableViewController {
                     }
                     report += "\nОтветы API: обычных \(item.difference), пустых \(item.empty), слишком длинных \(item.tooLong), недоступных \(item.unavailable)"
                     report += "\nВ ответах API: новых \(item.returnedNew), редакций \(item.returnedEdits)"
+                    if let total = item.tooLongSnapshotMessages {
+                        let withEdit = item.tooLongWithEditMarker ?? 0
+                        let withoutEdit = item.tooLongWithoutEditMarker ?? 0
+                        report += "\nСнимок tooLong №120: сообщений \(total), с меткой редакции \(withEdit), без метки \(withoutEdit), прочих/нераспознанных \(max(0, total - withEdit - withoutEdit))"
+                        report += "\nИз снимка в очередь оригиналов: \(item.tooLongOriginalsQueued ?? 0)"
+                        report += "\nБез метки редакции ≠ доказательство прежней истории; уже изменённые снимки не считаем оригиналами."
+                    }
                     report += "\nОригиналов поставлено в очередь SQLite: \(item.originalsQueued)"
                 }
             }

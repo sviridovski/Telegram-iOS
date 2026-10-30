@@ -23,6 +23,12 @@ public struct GoldgramBackgroundRefreshRun: Codable {
     public var returnedNew: Int
     public var returnedEdits: Int
     public var originalsQueued: Int
+    // #120: typed tooLong snapshot evidence, optional for every old stored run.
+    // Counters only. A missing edit marker is not independent proof of provenance.
+    public var tooLongSnapshotMessages: Int?
+    public var tooLongWithEditMarker: Int?
+    public var tooLongWithoutEditMarker: Int?
+    public var tooLongOriginalsQueued: Int?
     // Optional to decode #108/#109 persisted runs without dropping history.
     public var phase: String?
     public var phaseAt: Double?
@@ -74,6 +80,10 @@ public struct GoldgramBackgroundRefreshRun: Codable {
         self.returnedNew = 0
         self.returnedEdits = 0
         self.originalsQueued = 0
+        self.tooLongSnapshotMessages = nil
+        self.tooLongWithEditMarker = nil
+        self.tooLongWithoutEditMarker = nil
+        self.tooLongOriginalsQueued = nil
         self.phase = "task_invoked"
         self.phaseAt = self.startedAt
         self.storedPinned = nil
@@ -290,6 +300,20 @@ public enum GoldgramBackgroundRefreshTrace {
             row.returnedEdits += edits
             row.phase = "api_answered"
             row.phaseAt = Date().timeIntervalSince1970
+        }
+    }
+
+    // #120: count snapshot contents and accepted baseline-only writes together.
+    // A full tooLong snapshot is NOT a stream of unedited newMessages.
+    public static func tooLongSnapshot(_ token: String, messages: Int,
+                                       withEditMarker: Int, withoutEditMarker: Int,
+                                       originalsQueued: Int) {
+        change(token) { row in
+            row.tooLongSnapshotMessages = (row.tooLongSnapshotMessages ?? 0) + messages
+            row.tooLongWithEditMarker = (row.tooLongWithEditMarker ?? 0) + withEditMarker
+            row.tooLongWithoutEditMarker = (row.tooLongWithoutEditMarker ?? 0) + withoutEditMarker
+            row.tooLongOriginalsQueued = (row.tooLongOriginalsQueued ?? 0) + originalsQueued
+            row.originalsQueued += originalsQueued
         }
     }
 
