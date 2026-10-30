@@ -3797,7 +3797,9 @@ private func pollChannel(accountPeerId: PeerId, postbox: Postbox, network: Netwo
             trackedRequest = request
         }
         return (trackedRequest
-        |> map(Optional.init)
+        |> map { (difference: Api.updates.ChannelDifference) -> Api.updates.ChannelDifference? in
+            return difference
+        }
         |> `catch` { error -> Signal<Api.updates.ChannelDifference?, MTRpcError> in
             if let diagnosticToken {
                 let category: String

@@ -288,4 +288,10 @@ assert "row.originalsQueued += originalsQueued" in trace
 assert "Снимок tooLong №120:" in ui and "уже изменённые снимки не считаем оригиналами" in ui
 assert 'GoldgramBackgroundRefreshRunsV1' in trace
 assert "return (trackedRequest" in utils and "|> retryRequest" in utils
+# #121: Swift 6/Xcode 26.2 overload-resolution regression in #120's larger
+# tooLong closure. Optional.init inferred a throwing Decodable initializer.
+# Explicitly type the channel-difference map before the existing retryRequest.
+assert ("|> map { (difference: Api.updates.ChannelDifference) -> Api.updates.ChannelDifference? in"
+        in utils), "Keep the typed optional map needed by production Swift compiler"
+assert "return (trackedRequest\n        |> map(Optional.init)" not in utils
 print("Goldgram #120: tooLong same-peer original guard, bounded counters, old trace decode OK")
