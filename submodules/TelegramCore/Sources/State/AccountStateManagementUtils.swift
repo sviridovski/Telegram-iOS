@@ -4055,6 +4055,10 @@ private func pollChannel(accountPeerId: PeerId, postbox: Postbox, network: Netwo
                 
                 var resetForumTopics = Set<PeerId>()
                 
+                // #122: the dialog tuple below shadows the outer Telegram Peer
+                // with Api.Peer, which has peerId but no id. Retain the verified
+                // Telegram peer for the native archive type and identity checks.
+                let polledPeer = peer
                 var peerIsForum = peer.isForum
                 if updatedState.isPeerForum(peerId: peer.id) {
                     peerIsForum = true
@@ -4082,7 +4086,7 @@ private func pollChannel(accountPeerId: PeerId, postbox: Postbox, network: Netwo
                     var snapshotOriginalsQueued = 0
                     for apiMessage in messages {
                         if var message = StoreMessage(apiMessage: apiMessage, accountPeerId: accountPeerId, peerIsForum: peerIsForum) {
-                            if case let .Id(id) = message.id, id.peerId == peer.id {
+                            if case let .Id(id) = message.id, id.peerId == polledPeer.id {
                                 if message.attributes.contains(where: { $0 is EditedMessageAttribute }) {
                                     snapshotWithEditMarker += 1
                                 } else {
@@ -4090,7 +4094,7 @@ private func pollChannel(accountPeerId: PeerId, postbox: Postbox, network: Netwo
                                     if goldgramNativeHistoryEnabled(),
                                        let kind = goldgramVerifiedPublicKind(
                                         peerId: id.peerId,
-                                        peer: updatedState.peers[id.peerId] ?? peer
+                                        peer: updatedState.peers[id.peerId] ?? polledPeer
                                        ),
                                        goldgramCaptureServerOriginal(
                                         accountPeerId: accountPeerId,

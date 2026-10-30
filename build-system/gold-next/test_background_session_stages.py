@@ -266,7 +266,7 @@ too_long = utils.split("case let .channelDifferenceTooLong(channelDifferenceTooL
     "private func verifyTransaction(", 1)[0]
 for expected in (
     "snapshotWithEditMarker", "snapshotWithoutEditMarker",
-    "snapshotOriginalsQueued", "id.peerId == peer.id",
+    "snapshotOriginalsQueued", "id.peerId == polledPeer.id",
     "message.attributes.contains(where: { $0 is EditedMessageAttribute })",
     "goldgramVerifiedPublicKind(", "goldgramNativeHistoryEnabled()",
     "goldgramCaptureServerOriginal(", "GoldgramBackgroundRefreshTrace.tooLongSnapshot(",
@@ -288,6 +288,15 @@ assert "row.originalsQueued += originalsQueued" in trace
 assert "Снимок tooLong №120:" in ui and "уже изменённые снимки не считаем оригиналами" in ui
 assert 'GoldgramBackgroundRefreshRunsV1' in trace
 assert "return (trackedRequest" in utils and "|> retryRequest" in utils
+# #122: #121 exposes the next Swift compile error: the tooLong dialog tuple
+# shadows a Telegram Peer with Api.Peer. Ensure both uses of the target
+# group remain bound to the original, typed Telegram Peer.
+assert "let polledPeer = peer" in too_long
+assert "id.peerId == polledPeer.id" in too_long
+assert "peer: updatedState.peers[id.peerId] ?? polledPeer" in too_long
+assert "id.peerId == peer.id" not in too_long
+assert "peer: updatedState.peers[id.peerId] ?? peer" not in too_long
+
 # #121: Swift 6/Xcode 26.2 overload-resolution regression in #120's larger
 # tooLong closure. Optional.init inferred a throwing Decodable initializer.
 # Explicitly type the channel-difference map before the existing retryRequest.
