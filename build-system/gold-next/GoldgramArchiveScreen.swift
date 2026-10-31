@@ -28,6 +28,7 @@ private struct GoldgramForegroundUISample: Decodable {
 
 private struct GoldgramBackgroundRunReport: Decodable {
     let startedAt: Double
+    let endedAt: Double?
     let accountId: Int64?
     let outcome: String
     let targets: Int
@@ -78,6 +79,10 @@ private struct GoldgramBackgroundRunReport: Decodable {
     let firstConnectingAt: Double?
     let rpcEnqueuedAt: Double?
     let rpcBudgetRemaining: Double?
+    // #123: recorded callback time is not guaranteed active BG duration.
+    let leaseReleasedAt: Double?
+    let reconciledAt: Double?
+    let lateEventsIgnored: Int?
 }
 
 @objc(GoldgramArchiveScreen)
@@ -380,7 +385,13 @@ public final class GoldgramArchiveScreen: UITableViewController {
                 for (index, item) in sessions.enumerated() {
                     let reason: String
                     switch item.outcome {
-                    case "running": reason = "выполняется / нет отметки завершения"
+                    case "running":
+                        if Date().timeIntervalSince1970 - item.startedAt > 60.0 {
+                            reason = "нет подтверждения завершения (устаревшая запись)"
+                        } else {
+                            reason = "выполняется / нет отметки завершения"
+                        }
+                    case "completion_unobserved": reason = "нет подтверждения завершения предыдущего запуска"
                     case "completed": reason = "завершён"
                     case "ios_expiration": reason = "остановлен iOS"
                     case "goldgram_deadline": reason = "лимит Goldgram 24 секунды"
@@ -396,6 +407,22 @@ public final class GoldgramArchiveScreen: UITableViewController {
                     }
                     report += "\n\n\(index + 1). \(self.dateFormatter.string(from: Date(timeIntervalSince1970: item.startedAt)))"
                     report += "\nИтог: \(reason)"
+                    if let endedAt = item.endedAt {
+                        let delay = max(0, endedAt - item.startedAt)
+                        report += "\nЗавершение записано: +\(String(format: "%.1f", delay)) с календарного времени"
+                        if delay > 24.0 { report += " (ПОСЛЕ 24с, не время работы iOS)" }
+                    } else {
+                        report += "\nФактическое окончание: не установлено"
+                    }
+                    if let reconciledAt = item.reconciledAt {
+                        report += "\nСтарая запись отмечена при следующем запуске: \(self.dateFormatter.string(from: Date(timeIntervalSince1970: reconciledAt)))"
+                    }
+                    if let released = item.leaseReleasedAt {
+                        report += "\nСетевое разрешение освобождено: +\(String(format: "%.1f", max(0, released - item.startedAt))) с (после фиксации состояния)"
+                    }
+                    if let ignored = item.lateEventsIgnored, ignored > 0 {
+                        report += "\nПоздних событий отброшено №123: \(ignored) (за пределами 24с)"
+                    }
                     let stageLabels: [String: String] = [
                         "task_invoked": "iOS вызвала обработчик",
                         "await_context": "ожидание контекста Telegram",
@@ -438,13 +465,15 @@ public final class GoldgramArchiveScreen: UITableViewController {
                     if item.leaseActivatedAt != nil || item.serviceMasterMode != nil {
                         let elapsed: (Double?) -> String = { time in
                             guard let time else { return "не достигнуто" }
-                            return String(format: "%.1f с", max(0, time - item.startedAt))
+                            let seconds = max(0, time - item.startedAt)
+                            let value = String(format: "%.1f с", seconds)
+                            return seconds > 24.0 ? value + " (ВНЕ окна 24с, ненадёжно)" : value
                         }
                         let postboxMaster = item.postboxMaster.map { $0 ? "да" : "нет" } ?? "нет данных"
                         let networkAllowed = item.networkAllowed.map { $0 ? "да" : "нет" } ?? "нет данных"
                         report += "\nШлюзы сети №114 (от запуска iOS):"
                         report += "\nLease менеджера: +\(elapsed(item.leaseActivatedAt))"
-                        report += "\nРежим сервиса: \(item.serviceMasterMode ?? "не получен"), активен +\(elapsed(item.serviceMasterAt)), наблюдений \(item.serviceMasterTransitions ?? 0)"
+                        report += "\nРежим сервиса ДО освобождения: \(item.serviceMasterMode ?? "не получен"), впервые активен +\(elapsed(item.serviceMasterAt)), наблюдений \(item.serviceMasterTransitions ?? 0)"
                         report += "\nPostbox master: \(postboxMaster), впервые да +\(elapsed(item.postboxMasterAt)), наблюдений \(item.postboxMasterTransitions ?? 0)"
                         report += "\nСеть разрешена: \(networkAllowed), впервые да +\(elapsed(item.networkAllowedAt)), наблюдений \(item.networkAllowedTransitions ?? 0)"
                         report += "\nMTProto connecting впервые: +\(elapsed(item.firstConnectingAt))"
@@ -454,7 +483,9 @@ public final class GoldgramArchiveScreen: UITableViewController {
                         report += "\nMTProto: \(status), смен состояний \(item.networkTransitions ?? 0)"
                     }
                     if let firstOnlineAt = item.firstOnlineAt {
-                        report += "\nПервый online: через \(Int(max(0, firstOnlineAt - item.startedAt))) с"
+                        let seconds = max(0, firstOnlineAt - item.startedAt)
+                        report += "\nПервый online: через \(Int(seconds)) с"
+                        if seconds > 24.0 { report += " (ВНЕ окна 24с, ненадёжно)" }
                     }
                     if let attempts = item.rpcAttempts {
                         report += "\nRPC-подписок: \(attempts), ошибок \(item.rpcErrors ?? 0)"
@@ -463,7 +494,9 @@ public final class GoldgramArchiveScreen: UITableViewController {
                         report += "\nПоследняя ошибка RPC: \(rpcError)"
                     }
                     if let responseAt = item.rpcResponseAt {
-                        report += "\nПоследний ответ RPC: через \(Int(max(0, responseAt - item.startedAt))) с"
+                        let seconds = max(0, responseAt - item.startedAt)
+                        report += "\nПоследний ответ RPC: через \(Int(seconds)) с"
+                        if seconds > 24.0 { report += " (ВНЕ окна 24с, ненадёжно)" }
                         report += ", final \(item.rpcFinal.map { $0 ? "да" : "нет" } ?? "неизвестно")"
                         if let pts = item.rpcPts { report += ", PTS \(pts)" }
                         if let timeout = item.rpcTimeout { report += ", timeout \(timeout) с" }

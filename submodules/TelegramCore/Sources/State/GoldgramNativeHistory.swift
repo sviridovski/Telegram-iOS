@@ -63,6 +63,11 @@ public struct GoldgramBackgroundRefreshRun: Codable {
     public var firstConnectingAt: Double?
     public var rpcEnqueuedAt: Double?
     public var rpcBudgetRemaining: Double?
+    // #123: content-free lifecycle evidence. Optional for historic records.
+    // recorded completion/reconciliation is NOT CPU time granted by iOS.
+    public var leaseReleasedAt: Double?
+    public var reconciledAt: Double?
+    public var lateEventsIgnored: Int?
 
     public init(token: String) {
         self.token = token
@@ -114,12 +119,18 @@ public struct GoldgramBackgroundRefreshRun: Codable {
         self.firstConnectingAt = nil
         self.rpcEnqueuedAt = nil
         self.rpcBudgetRemaining = nil
+        self.leaseReleasedAt = nil
+        self.reconciledAt = nil
+        self.lateEventsIgnored = nil
     }
 }
 
 public enum GoldgramBackgroundRefreshTrace {
     private static let lock = NSLock()
     private static let storage = "GoldgramBackgroundRefreshRunsV1"
+    // The app schedules its own 24s completion timer. A callback delivered
+    // after this wall-clock budget does not establish continued BG execution.
+    private static let traceWindow: Double = 24.0
 
     private static func read() -> [GoldgramBackgroundRefreshRun] {
         guard let data = UserDefaults.standard.data(forKey: storage),
@@ -135,11 +146,23 @@ public enum GoldgramBackgroundRefreshTrace {
         }
     }
 
-    public static func begin() -> String {
+    public static func begin(excludingActiveToken: String? = nil) -> String {
         let token = UUID().uuidString
         lock.lock()
         defer { lock.unlock() }
         var rows = read()
+        let now = Date().timeIntervalSince1970
+        // On the next system launch, reconcile entries left "running" by
+        // iOS suspension/termination. Do not fabricate an actual end time.
+        // Never close the one task still owned by this AppDelegate instance.
+        for index in rows.indices {
+            if rows[index].outcome == "running",
+               rows[index].token != excludingActiveToken,
+               now - rows[index].startedAt > 60.0 {
+                rows[index].outcome = "completion_unobserved"
+                rows[index].reconciledAt = now
+            }
+        }
         rows.append(GoldgramBackgroundRefreshRun(token: token))
         write(rows)
         return token
@@ -151,6 +174,14 @@ public enum GoldgramBackgroundRefreshTrace {
         var rows = read()
         guard let index = rows.firstIndex(where: { $0.token == token }),
               rows[index].outcome == "running" else { return }
+        // A suspended process may deliver pending callbacks many minutes
+        // later. Preserve the within-window evidence rather than recording
+        // those callbacks as BG MTProto activity.
+        if Date().timeIntervalSince1970 - rows[index].startedAt > traceWindow {
+            rows[index].lateEventsIgnored = min(32, (rows[index].lateEventsIgnored ?? 0) + 1)
+            write(rows)
+            return
+        }
         body(&rows[index])
         write(rows)
     }
@@ -322,10 +353,27 @@ public enum GoldgramBackgroundRefreshTrace {
     }
 
     public static func finish(_ token: String, reason: String) {
-        change(token) { row in
-            row.endedAt = Date().timeIntervalSince1970
-            row.outcome = reason
-        }
+        lock.lock()
+        defer { lock.unlock() }
+        var rows = read()
+        guard let index = rows.firstIndex(where: { $0.token == token }),
+              rows[index].outcome == "running" else { return }
+        // Completion may be observed long after iOS suspended us; this is
+        // only the callback recording time, not the real BG execution span.
+        rows[index].endedAt = Date().timeIntervalSince1970
+        rows[index].outcome = reason
+        write(rows)
+    }
+
+    public static func leaseReleased(_ token: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        var rows = read()
+        guard let index = rows.firstIndex(where: { $0.token == token }),
+              rows[index].endedAt != nil,
+              rows[index].leaseReleasedAt == nil else { return }
+        rows[index].leaseReleasedAt = Date().timeIntervalSince1970
+        write(rows)
     }
 
     public static func find(_ token: String) -> GoldgramBackgroundRefreshRun? {

@@ -304,3 +304,44 @@ assert ("|> map { (difference: Api.updates.ChannelDifference) -> Api.updates.Cha
         in utils), "Keep the typed optional map needed by production Swift compiler"
 assert "return (trackedRequest\n        |> map(Optional.init)" not in utils
 print("Goldgram #120: tooLong same-peer original guard, bounded counters, old trace decode OK")
+
+
+# #123: content-free bounded BG diagnostics: historical Codable compatibility,
+# no late MTProto state attributed to an iOS BG task, and record freeze before
+# lease cleanup. Tests are structural; production Swift compiler validates types.
+for field, type_name in (("leaseReleasedAt", "Double"),
+                         ("reconciledAt", "Double"),
+                         ("lateEventsIgnored", "Int")):
+    assert f"public var {field}: {type_name}?" in model
+    assert f"self.{field} = nil" in model
+    assert f"let {field}: {type_name}?" in ui
+assert 'GoldgramBackgroundRefreshRunsV1' in trace
+assert "func begin(excludingActiveToken: String? = nil)" in trace
+assert 'rows[index].outcome = "completion_unobserved"' in trace
+assert "rows[index].token != excludingActiveToken" in trace
+assert "rows[index].reconciledAt = now" in trace
+assert 'row.endedAt = Date().timeIntervalSince1970' not in trace
+assert 'rows[index].endedAt = Date().timeIntervalSince1970' in trace
+assert "Date().timeIntervalSince1970 - rows[index].startedAt > traceWindow" in trace
+assert "rows[index].lateEventsIgnored = min(32," in trace
+assert "private static let traceWindow: Double = 24.0" in trace
+assert "public static func leaseReleased(_ token: String)" in trace
+assert "rows[index].leaseReleasedAt = Date().timeIntervalSince1970" in trace
+
+assert "excludingActiveToken: self.goldgramRefreshActiveToken" in bg
+finish_block = bg.split("let complete: (String, Bool) -> Void", 1)[1].split(
+    "self.goldgramRefreshFinish = complete", 1)[0]
+assert finish_block.index("self.goldgramRefreshWork.set(nil)") < finish_block.index(
+    "GoldgramBackgroundRefreshTrace.finish(token, reason: reason)") < finish_block.index(
+    "self.goldgramRefreshLease?.dispose()"), "Snapshot must precede lease release"
+assert "GoldgramBackgroundRefreshTrace.leaseReleased(token)" in finish_block
+assert 'GoldgramBackgroundRefreshTrace.finish(token, reason: reason)' in finish_block
+assert 'GoldgramBackgroundRefreshTrace.phase(token, "wakeup_lease_active")' in bg
+assert 'DispatchQueue.main.asyncAfter(deadline: .now() + 24.0)' in bg
+assert 'нет подтверждения завершения предыдущего запуска' in ui
+assert 'Режим сервиса ДО освобождения:' in ui
+assert 'Поздних событий отброшено №123:' in ui
+assert 'ВНЕ окна 24с, ненадёжно' in ui
+assert 'Фактическое окончание: не установлено' in ui
+assert 'Завершение записано:' in ui
+print("Goldgram #123: freeze-before-release, stale reconciliation, bounded trace, UI clarity OK")

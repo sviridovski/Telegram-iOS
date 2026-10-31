@@ -349,7 +349,8 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     @available(iOS 13.0, *)
     private func goldgramRunRefresh(_ task: BGAppRefreshTask) {
         // The entry record exists even if Telegram's account context never loads.
-        let token = GoldgramBackgroundRefreshTrace.begin()
+        let token = GoldgramBackgroundRefreshTrace.begin(
+            excludingActiveToken: self.goldgramRefreshActiveToken)
         self.goldgramScheduleRefresh()
 
         // On a suspended/resumed process a deadline callback can itself have
@@ -379,17 +380,24 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
                 finished = true
                 // A delayed callback from an old task MUST NOT cancel a newer one.
                 if self.goldgramRefreshActiveToken == token {
-                    // Release the manager-owned Postbox/network allowance before
-                    // reporting the OS task complete, even on expiration.
+                    // #123: stop the account observers FIRST, then preserve
+                    // the last in-window service/network state BEFORE releasing
+                    // the lease. Cleanup's natural .never is not a BG failure.
+                    self.goldgramRefreshWork.set(nil)
+                    GoldgramBackgroundRefreshTrace.finish(token, reason: reason)
+                    let hadLease = self.goldgramRefreshLease != nil
                     self.goldgramRefreshLease?.dispose()
                     self.goldgramRefreshLease = nil
-                    self.goldgramRefreshWork.set(nil)
+                    if hadLease {
+                        GoldgramBackgroundRefreshTrace.leaseReleased(token)
+                    }
                     self.goldgramRefreshActive = false
                     self.goldgramRefreshActiveToken = nil
                     self.goldgramRefreshActiveSince = nil
                     self.goldgramRefreshFinish = nil
+                } else {
+                    GoldgramBackgroundRefreshTrace.finish(token, reason: reason)
                 }
-                GoldgramBackgroundRefreshTrace.finish(token, reason: reason)
                 UserDefaults.standard.set(Date().timeIntervalSince1970,
                     forKey: success ? "GoldgramLastRefreshFinishedV1" : "GoldgramLastRefreshExpiredV1")
                 task?.setTaskCompleted(success: success)
