@@ -444,6 +444,204 @@ public enum GoldgramBackgroundRefreshTrace {
     }
 }
 
+// #129: proof-oriented telemetry ONLY for a user-initiated geo-lab session.
+// Does not contain coordinates, peers, message bodies, authors, or credentials.
+// Counts of writer acceptance are NOT proof of a durable SQLite flush.
+public struct GoldgramLocationLabAttempt: Codable {
+    public let token: String
+    public let at: Double
+    public let source: String
+    public let appState: String
+    public var decision: String
+    public var stage: String
+    public var finalReason: String?
+    public var endedAt: Double?
+    public var accountReady: Bool
+    public var targets: Int
+    public var rpcStarted: Int
+    public var rpcCompleted: Int
+    public var rpcServiceAdded: Int
+    public var rpcAcknowledged: Int
+    public var apiDifference: Int
+    public var apiEmpty: Int
+    public var apiTooLong: Int
+    public var apiUnavailable: Int
+    public var apiErrors: Int
+    public var newMessages: Int
+    public var edits: Int
+    public var originalsQueued: Int
+    public var historyStarted: Int
+    public var historyResponses: Int
+    public var historyMessages: Int
+    public var historyFailed: Int
+    public var historyQueued: Int
+    public var lateCallbacksIgnored: Int
+
+    public init(token: String, source: String, appState: String) {
+        self.token = token
+        self.at = Date().timeIntervalSince1970
+        self.source = source
+        self.appState = appState
+        self.decision = "pending"
+        self.stage = "callback"
+        self.finalReason = nil
+        self.endedAt = nil
+        self.accountReady = false
+        self.targets = 0
+        self.rpcStarted = 0
+        self.rpcCompleted = 0
+        self.rpcServiceAdded = 0
+        self.rpcAcknowledged = 0
+        self.apiDifference = 0
+        self.apiEmpty = 0
+        self.apiTooLong = 0
+        self.apiUnavailable = 0
+        self.apiErrors = 0
+        self.newMessages = 0
+        self.edits = 0
+        self.originalsQueued = 0
+        self.historyStarted = 0
+        self.historyResponses = 0
+        self.historyMessages = 0
+        self.historyFailed = 0
+        self.historyQueued = 0
+        self.lateCallbacksIgnored = 0
+    }
+}
+
+public enum GoldgramLocationLabTrace {
+    private static let lock = NSLock()
+    private static let storage = "GoldgramLocationLabAttemptsV1"
+    // Never credit callbacks delayed beyond our independent 18-second batch.
+    private static let window: Double = 18.0
+
+    private static func read() -> [GoldgramLocationLabAttempt] {
+        guard let data = UserDefaults.standard.data(forKey: storage),
+              let rows = try? PropertyListDecoder().decode([GoldgramLocationLabAttempt].self, from: data) else {
+            return []
+        }
+        return rows
+    }
+    private static func write(_ rows: [GoldgramLocationLabAttempt]) {
+        if let data = try? PropertyListEncoder().encode(Array(rows.suffix(24))) {
+            UserDefaults.standard.set(data, forKey: storage)
+        }
+    }
+    public static func reset() {
+        lock.lock()
+        defer { lock.unlock() }
+        UserDefaults.standard.removeObject(forKey: storage)
+    }
+    public static func recent() -> [GoldgramLocationLabAttempt] {
+        lock.lock()
+        defer { lock.unlock() }
+        return Array(read().suffix(12).reversed())
+    }
+    public static func begin(source: String, appState: String) -> String {
+        let token = UUID().uuidString
+        lock.lock()
+        defer { lock.unlock() }
+        var rows = read()
+        rows.append(GoldgramLocationLabAttempt(token: token, source: source, appState: appState))
+        write(rows)
+        return token
+    }
+    private static func change(_ token: String, _ update: (inout GoldgramLocationLabAttempt) -> Void) {
+        lock.lock()
+        defer { lock.unlock() }
+        var rows = read()
+        guard let index = rows.firstIndex(where: { $0.token == token }),
+              rows[index].finalReason == nil else { return }
+        if Date().timeIntervalSince1970 - rows[index].at > window {
+            rows[index].lateCallbacksIgnored = min(32, rows[index].lateCallbacksIgnored + 1)
+            write(rows)
+            return
+        }
+        update(&rows[index])
+        write(rows)
+    }
+    public static func stage(_ token: String, _ value: String) {
+        change(token) { $0.stage = value }
+    }
+    public static func accepted(_ token: String) {
+        change(token) {
+            $0.decision = "accepted"
+            $0.stage = "await_context"
+        }
+    }
+    public static func account(_ token: String) {
+        change(token) {
+            $0.accountReady = true
+            $0.stage = "account_ready"
+        }
+    }
+    public static func targets(_ token: String, count: Int) {
+        change(token) {
+            $0.targets = count
+            $0.stage = "targets_checked"
+        }
+    }
+    public static func rpcStart(_ token: String) {
+        change(token) {
+            $0.rpcStarted += 1
+            $0.stage = "rpc_subscribed"
+        }
+    }
+    public static func rpcComplete(_ token: String) {
+        change(token) { $0.rpcCompleted += 1 }
+    }
+    public static func transport(_ token: String, event: String) {
+        change(token) { row in
+            switch event {
+            case "service_added": row.rpcServiceAdded += 1
+            case "acknowledged": row.rpcAcknowledged += 1
+            default: break
+            }
+        }
+    }
+    public static func api(_ token: String, kind: String, new: Int = 0, edits: Int = 0) {
+        change(token) { row in
+            switch kind {
+            case "difference": row.apiDifference += 1
+            case "empty": row.apiEmpty += 1
+            case "tooLong": row.apiTooLong += 1
+            case "unavailable": row.apiUnavailable += 1
+            case "error": row.apiErrors += 1
+            default: break
+            }
+            row.newMessages += new
+            row.edits += edits
+            row.stage = "api_" + kind
+        }
+    }
+    public static func originalQueued(_ token: String) {
+        change(token) { $0.originalsQueued += 1 }
+    }
+    public static func historyStarted(_ token: String) {
+        change(token) { $0.historyStarted += 1 }
+    }
+    public static func historyResponse(_ token: String, messages: Int) {
+        change(token) {
+            $0.historyResponses += 1
+            $0.historyMessages += messages
+        }
+    }
+    public static func historyFailed(_ token: String) {
+        change(token) { $0.historyFailed += 1 }
+    }
+    public static func historyQueued(_ token: String, count: Int) {
+        change(token) { $0.historyQueued += count }
+    }
+    public static func finish(_ token: String, reason: String) {
+        change(token) {
+            $0.finalReason = reason
+            $0.endedAt = Date().timeIntervalSince1970
+            $0.stage = reason
+            if $0.decision == "pending" { $0.decision = "skipped" }
+        }
+    }
+}
+
 // #115: bounded, opt-in foreground sync trace. It is diagnostic only:
 // no message data, peer IDs, auth/session material or transport control.
 public struct GoldgramForegroundSyncEvent: Codable {
@@ -1373,7 +1571,7 @@ func goldgramRememberDiscussion(transaction: Transaction, peerId: PeerId, explic
 
 // Seed only the latest 100 accessible messages, once per active subscription.
 // This neither marks history read nor joins a group, and downloads no media.
-private func goldgramSeedDiscussion(account: Account, peerId: PeerId, labOnly: Bool = false) -> Signal<Never, NoError> {
+private func goldgramSeedDiscussion(account: Account, peerId: PeerId, labOnly: Bool = false, locationTraceToken: String? = nil) -> Signal<Never, NoError> {
     return account.postbox.transaction { transaction -> (Peer, Api.InputPeer)? in
         guard goldgramNativeHistoryEnabled(), let peer = transaction.getPeer(peerId),
               goldgramKind(peerId, peer) != nil, let input = apiInputPeer(peer) else { return nil }
@@ -1381,9 +1579,13 @@ private func goldgramSeedDiscussion(account: Account, peerId: PeerId, labOnly: B
     }
     |> mapToSignal { value -> Signal<Never, NoError> in
         guard let (peer, input) = value else { return .complete() }
+        if let locationTraceToken { GoldgramLocationLabTrace.historyStarted(locationTraceToken) }
         return account.network.request(Api.functions.messages.getHistory(peer: input, offsetId: 0, offsetDate: 0, addOffset: 0, limit: 100, maxId: 0, minId: 0, hash: 0))
         |> map(Optional.init)
-        |> `catch` { _ -> Signal<Api.messages.Messages?, NoError> in .single(nil) }
+        |> `catch` { _ -> Signal<Api.messages.Messages?, NoError> in
+            if let locationTraceToken { GoldgramLocationLabTrace.historyFailed(locationTraceToken) }
+            return .single(nil)
+        }
         |> mapToSignal { response -> Signal<Never, NoError> in
             guard let response else { return .complete() }
             return account.postbox.transaction { transaction -> Void in
@@ -1397,6 +1599,9 @@ private func goldgramSeedDiscussion(account: Account, peerId: PeerId, labOnly: B
                 case let .channelMessages(data): messages = data.messages; chats = data.chats; users = data.users
                 case .messagesNotModified: return
                 }
+                if let locationTraceToken {
+                    GoldgramLocationLabTrace.historyResponse(locationTraceToken, messages: messages.count)
+                }
                 updatePeers(transaction: transaction, accountPeerId: account.peerId,
                     peers: AccumulatedPeers(transaction: transaction, chats: chats, users: users))
                 let stored = messages.compactMap { StoreMessage(apiMessage: $0, accountPeerId: account.peerId, peerIsForum: (peer as? TelegramChannel)?.isForumOrMonoForum ?? false) }
@@ -1405,10 +1610,16 @@ private func goldgramSeedDiscussion(account: Account, peerId: PeerId, labOnly: B
                     // Only positively received unedited bodies are baseline-only
                     // native writes. Edited snapshots are rejected by the writer.
                     guard let kind = goldgramKind(peerId, peer) else { return }
+                    var accepted = 0
                     for message in stored {
                         guard case let .Id(id) = message.id, id.peerId == peerId else { continue }
-                        let _ = goldgramCaptureServerOriginal(
-                            accountPeerId: account.peerId, message: message, peerKind: kind)
+                        if goldgramCaptureServerOriginal(
+                            accountPeerId: account.peerId, message: message, peerKind: kind) {
+                            accepted += 1
+                        }
+                    }
+                    if let locationTraceToken {
+                        GoldgramLocationLabTrace.historyQueued(locationTraceToken, count: accepted)
                     }
                 } else {
                     let _ = transaction.addMessages(stored, location: .Random)
@@ -1635,7 +1846,7 @@ public func goldgramRefreshPriorityDiscussions(
 // #128: actual background-location execution only, bounded by app and iOS.
 // Reuse verified pinned linked discussions and existing PTS replay. A current
 // edited snapshot is never accepted as an unedited original.
-public func goldgramLocationLabPoll(account: Account) -> Signal<Never, NoError> {
+public func goldgramLocationLabPoll(account: Account, traceToken: String) -> Signal<Never, NoError> {
     return account.postbox.transaction { transaction -> [PeerId] in
         goldgramDrainPending(accountPeerId: account.peerId, transaction: transaction)
         guard goldgramNativeHistoryEnabled() else { return [] }
@@ -1643,14 +1854,17 @@ public func goldgramLocationLabPoll(account: Account) -> Signal<Never, NoError> 
             accountPeerId: account.peerId).peers.prefix(3))
     }
     |> mapToSignal { ids -> Signal<Never, NoError> in
+        GoldgramLocationLabTrace.targets(traceToken, count: ids.count)
         guard !ids.isEmpty else { return .complete() }
         let polls: [Signal<Bool, NoError>] = ids.map { id in
             return Signal { subscriber in
                 let disposable = standalonePollChannelOnce(
                     accountPeerId: account.peerId, postbox: account.postbox,
                     network: account.network, peerId: id,
-                    stateManager: account.stateManager
+                    stateManager: account.stateManager,
+                    locationTraceToken: traceToken
                 ).start(completed: {
+                    GoldgramLocationLabTrace.rpcComplete(traceToken)
                     subscriber.putNext(true)
                     subscriber.putCompletion()
                 })
@@ -1660,7 +1874,7 @@ public func goldgramLocationLabPoll(account: Account) -> Signal<Never, NoError> 
         let snapshots: [Signal<Bool, NoError>] = ids.prefix(2).map { id in
             return Signal { subscriber in
                 let disposable = goldgramSeedDiscussion(account: account, peerId: id,
-                    labOnly: true).start(completed: {
+                    labOnly: true, locationTraceToken: traceToken).start(completed: {
                         subscriber.putNext(true)
                         subscriber.putCompletion()
                     })

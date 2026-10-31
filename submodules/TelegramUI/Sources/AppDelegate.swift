@@ -422,17 +422,22 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
     private let goldgramLocationWork = MetaDisposable()
     private var goldgramLocationPollBusy = false
     private var goldgramLocationLastPoll = Date.distantPast
+    private var goldgramLocationActiveToken: String?
 
     @objc private func goldgramLocationLabChanged(_ notification: Notification) {
         guard UserDefaults.standard.double(forKey: "GoldgramLocationLabUntilV1") > Date().timeIntervalSince1970 else {
             self.goldgramLocationLab?.stop()
+            if let token = self.goldgramLocationActiveToken {
+                GoldgramLocationLabTrace.finish(token, reason: "session_stopped")
+            }
+            self.goldgramLocationActiveToken = nil
             self.goldgramLocationWork.set(nil)
             self.goldgramLocationPollBusy = false
             return
         }
         if self.goldgramLocationLab == nil {
             self.goldgramLocationLab = GoldgramBackgroundLocationLab(onTick: { [weak self] in
-                self?.goldgramLocationPoll()
+                self?.goldgramLocationPoll(source: "sensor")
             })
         }
         self.goldgramLocationLab?.start()
@@ -444,26 +449,59 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
         }
     }
 
-    private func goldgramLocationPoll() {
-        guard UIApplication.shared.applicationState == .background,
-              !self.goldgramRefreshActive, !self.goldgramLocationPollBusy,
-              UserDefaults.standard.double(forKey: "GoldgramLocationLabUntilV1") > Date().timeIntervalSince1970,
-              Date().timeIntervalSince(self.goldgramLocationLastPoll) >= 20.0 else { return }
+    private func goldgramLocationPoll(source: String) {
+        // #129 distinct sensor versus minimize attempt. These are only stage
+        // counters: no coordinates, message IDs, authors or raw Telegram data.
+        let appState = UIApplication.shared.applicationState == .background ? "background" : "foreground"
+        let token = GoldgramLocationLabTrace.begin(source: source, appState: appState)
+        guard UIApplication.shared.applicationState == .background else {
+            GoldgramLocationLabTrace.finish(token, reason: "not_background")
+            return
+        }
+        guard UserDefaults.standard.double(forKey: "GoldgramLocationLabUntilV1") > Date().timeIntervalSince1970 else {
+            GoldgramLocationLabTrace.finish(token, reason: "session_expired")
+            return
+        }
+        guard !self.goldgramRefreshActive else {
+            GoldgramLocationLabTrace.finish(token, reason: "os_refresh_active")
+            return
+        }
+        guard !self.goldgramLocationPollBusy else {
+            GoldgramLocationLabTrace.finish(token, reason: "previous_poll_busy")
+            return
+        }
+        guard Date().timeIntervalSince(self.goldgramLocationLastPoll) >= 20.0 else {
+            GoldgramLocationLabTrace.finish(token, reason: "throttled_20s")
+            return
+        }
         self.goldgramLocationPollBusy = true
         self.goldgramLocationLastPoll = Date()
+        self.goldgramLocationActiveToken = token
+        GoldgramLocationLabTrace.accepted(token)
         let work = self.sharedContextPromise.get()
         |> take(1)
         |> deliverOnMainQueue
         |> mapToSignal { shared -> Signal<Never, NoError> in
+            GoldgramLocationLabTrace.stage(token, "context_ready")
             return shared.sharedContext.activeAccountContexts
             |> take(1)
             |> deliverOnMainQueue
             |> mapToSignal { primary, _, _ -> Signal<Never, NoError> in
-                guard let account = primary?.account, goldgramNativeHistoryEnabled() else { return .complete() }
+                guard let account = primary?.account else {
+                    GoldgramLocationLabTrace.stage(token, "no_account")
+                    return .complete()
+                }
+                guard goldgramNativeHistoryEnabled() else {
+                    GoldgramLocationLabTrace.stage(token, "capture_disabled")
+                    return .complete()
+                }
+                GoldgramLocationLabTrace.account(token)
                 return Signal { subscriber in
+                    // Requesting the lease is not transport readiness.
                     let lease = shared.wakeupManager.acquireGoldgramRefreshLease(
                         token: "goldgram-location-lab-128", accountId: account.id)
-                    let poll = goldgramLocationLabPoll(account: account).start(completed: {
+                    GoldgramLocationLabTrace.stage(token, "lease_requested")
+                    let poll = goldgramLocationLabPoll(account: account, traceToken: token).start(completed: {
                         subscriber.putCompletion()
                     })
                     return ActionDisposable {
@@ -474,12 +512,17 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
             }
         }
         let disposable = work.start(completed: { [weak self] in
-            self?.goldgramLocationPollBusy = false
+            guard let self, self.goldgramLocationActiveToken == token else { return }
+            GoldgramLocationLabTrace.finish(token, reason: "poll_chain_completed")
+            self.goldgramLocationPollBusy = false
+            self.goldgramLocationActiveToken = nil
         })
         self.goldgramLocationWork.set(disposable)
-        // Bound each opportunistic batch; never hold a lease indefinitely.
         DispatchQueue.main.asyncAfter(deadline: .now() + 18.0) { [weak self] in
-            guard let self, self.goldgramLocationPollBusy else { return }
+            guard let self, self.goldgramLocationActiveToken == token else { return }
+            // No extrapolation from deferred wall-clock callbacks to CPU time.
+            GoldgramLocationLabTrace.finish(token, reason: "own_18s_limit")
+            self.goldgramLocationActiveToken = nil
             self.goldgramLocationWork.set(nil)
             self.goldgramLocationPollBusy = false
         }
@@ -2336,7 +2379,7 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
     func applicationDidEnterBackground(_ application: UIApplication) {
         self.goldgramScheduleRefresh()
         if UserDefaults.standard.double(forKey: "GoldgramLocationLabUntilV1") > Date().timeIntervalSince1970 {
-            DispatchQueue.main.async { [weak self] in self?.goldgramLocationPoll() }
+            DispatchQueue.main.async { [weak self] in self?.goldgramLocationPoll(source: "minimized") }
         }
         let _ = (self.sharedContextPromise.get()
         |> take(1)
@@ -2385,6 +2428,10 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
     }
 
     func applicationWillEnterForeground(_ application: UIApplication) {
+        if let token = self.goldgramLocationActiveToken {
+            GoldgramLocationLabTrace.finish(token, reason: "foreground_return")
+        }
+        self.goldgramLocationActiveToken = nil
         self.goldgramLocationWork.set(nil)
         self.goldgramLocationPollBusy = false
         if UserDefaults.standard.double(forKey: "GoldgramLocationLabUntilV1") <= Date().timeIntervalSince1970 {

@@ -426,7 +426,7 @@ for phrase in ("import CoreLocation", "class GoldgramBackgroundLocationLab:",
                "stopUpdatingLocation()", "allowsBackgroundLocationUpdates = true",
                "allowsBackgroundLocationUpdates = false", "showsBackgroundLocationIndicator = true",
                "GoldgramLocationLabUntilV1", "didUpdateLocations locations: [CLLocation]",
-               "GoldgramLocationLabChanged", "goldgramLocationLabPoll(account: account)",
+               "GoldgramLocationLabChanged", "goldgramLocationLabPoll(account: account, traceToken: token)",
                "self.goldgramLocationWork.set(nil)",
                "Date().timeIntervalSince(self.goldgramLocationLastPoll) >= 20.0",
                "deadline: .now() + 18.0"):
@@ -435,7 +435,7 @@ location_class = app.split("private final class GoldgramBackgroundLocationLab:",
     "@objc(AppDelegate) class AppDelegate",1)[0]
 assert ".coordinate" not in location_class
 assert "locations[0]" not in location_class
-poll_location = core.split("public func goldgramLocationLabPoll(account: Account)",1)[1].split(
+poll_location = core.split("public func goldgramLocationLabPoll(account: Account, traceToken: String)",1)[1].split(
     "// The UI owns this subscription",1)[0]
 for phrase in ("goldgramPrioritySelection(transaction:", "standalonePollChannelOnce(",
                "labOnly: true", "combineLatest(polls + snapshots) |> ignoreValues"):
@@ -445,3 +445,50 @@ assert "Остановить гео-эксперимент №128" in ui
 assert "Гео-эксперимент №128 (координаты не записываются)" in ui
 assert 'DispatchQueue.main.asyncAfter(deadline: .now() + 24.0)' in app
 print("Goldgram #128: explicit, bounded background CoreLocation and real capture path OK")
+
+
+# #129 cross-process-free local telemetry; different execution sources,
+# real API response and a read-only SQLite timestamp window.
+sql = (root / "build-system/gold-next/GoldgramHistoryStore.swift").read_text()
+location = core.split("public struct GoldgramLocationLabAttempt: Codable",1)[1].split(
+    "// #115: bounded, opt-in foreground sync trace.",1)[0]
+for marker in ("source: String", "appState: String", "finalReason: String?",
+               "rpcStarted: Int", "rpcAcknowledged: Int", "apiDifference: Int",
+               "newMessages: Int", "edits: Int", "originalsQueued: Int",
+               "historyQueued: Int", "lateCallbacksIgnored: Int"):
+    assert marker in location, marker
+for forbidden in ("message.text", "messageId", "senderId", "peerId",
+                  ".coordinate", "CLLocation", "authKey", "accessHash"):
+    assert forbidden not in location, "location lab should not collect sensitive content"
+assert '"GoldgramLocationLabAttemptsV1"' in core
+assert "rows.suffix(24)" in location
+assert "Date().timeIntervalSince1970 - rows[index].at > window" in location
+assert "public static func begin(source: String, appState: String)" in location
+assert "GoldgramLocationLabTrace.begin(source: source, appState: appState)" in app
+assert 'goldgramLocationPoll(source: "sensor")' in app
+assert 'goldgramLocationPoll(source: "minimized")' in app
+for reason in ("not_background", "session_expired", "os_refresh_active",
+               "previous_poll_busy", "throttled_20s", "no_account",
+               "capture_disabled", "poll_chain_completed", "own_18s_limit"):
+    assert reason in app, reason
+assert "self.goldgramLocationActiveToken == token" in app
+assert 'GoldgramLocationLabTrace.finish(token, reason: "foreground_return")' in app
+assert "locationTraceToken: traceToken" in poll_location
+assert "locationTraceToken: traceToken" in core
+assert "locationTraceToken: String? = nil" in core
+assert "GoldgramLocationLabTrace.historyResponse(locationTraceToken," in core
+assert "GoldgramLocationLabTrace.historyQueued(locationTraceToken," in core
+assert "GoldgramLocationLabReportRow: Decodable" in ui
+assert "SQLite за окно гео-сессии №129" in ui
+assert "Отдельный журнал фоновых попыток №129" in ui
+assert "GoldgramLocationLabStartedAtV1" in ui
+assert "GoldgramLocationLabWindowEndV1" in ui
+assert "geoSince" in ui and "geoUntil" in ui
+assert "geoSince" in sql and "geoUntil" in sql
+assert "sqlite3_bind_int64(stmt, 2, until)" in sql
+assert 'result["geoKnown"] = window["known"]' in sql
+assert "first_seen_at >= ? AND m.first_seen_at < ?" in sql
+assert "DELETE FROM messages" not in sql.split('if mode == "diagnostics" {', 1)[1].split(
+    'var sql = mode == "totals"', 1)[0]
+assert 'goldgramLocationLabPoll(account: account, traceToken: token)' in app
+print("Goldgram #129: source-labelled geo attempts, bounded SQLite interval, prior capture intact OK")

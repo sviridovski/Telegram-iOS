@@ -94,6 +94,38 @@ private struct GoldgramBackgroundRunReport: Decodable {
     let rpcServiceRemovedAt: Double?
 }
 
+// #129: local plist mirror (archive UI is not linked into TelegramCore).
+// Strictly content-free: no coordinates, peer IDs, message texts or tokens.
+private struct GoldgramLocationLabReportRow: Decodable {
+    let at: Double
+    let source: String
+    let appState: String
+    let decision: String
+    let stage: String
+    let finalReason: String?
+    let endedAt: Double?
+    let accountReady: Bool
+    let targets: Int
+    let rpcStarted: Int
+    let rpcCompleted: Int
+    let rpcServiceAdded: Int
+    let rpcAcknowledged: Int
+    let apiDifference: Int
+    let apiEmpty: Int
+    let apiTooLong: Int
+    let apiUnavailable: Int
+    let apiErrors: Int
+    let newMessages: Int
+    let edits: Int
+    let originalsQueued: Int
+    let historyStarted: Int
+    let historyResponses: Int
+    let historyMessages: Int
+    let historyFailed: Int
+    let historyQueued: Int
+    let lateCallbacksIgnored: Int
+}
+
 @objc(GoldgramArchiveScreen)
 public final class GoldgramArchiveScreen: UITableViewController {
     private let category: Int
@@ -169,6 +201,8 @@ public final class GoldgramArchiveScreen: UITableViewController {
             }
             defaults.set(Int64(Date().timeIntervalSince1970 * 1000), forKey: sinceKey)
             defaults.set(true, forKey: "GoldgramDiagnosticEnabledV1")
+            // Reset new content-free trace; never clear old SQLite history.
+            defaults.removeObject(forKey: "GoldgramLocationLabAttemptsV1")
             let alert = UIAlertController(title: "Диагностика включена",
                 message: self.sources == nil
                     ? "Для адресной диагностики выбери обсуждение в архиве и запусти «Тест» внутри. Второй аккаунт не нужен."
@@ -222,11 +256,17 @@ public final class GoldgramArchiveScreen: UITableViewController {
             title: locationActive ? "Остановить гео-эксперимент №128" : "Гео-эксперимент №128: 30 минут",
             style: locationActive ? .destructive : .default
         ) { _ in
-            defaults.set(locationActive ? 0.0 : Date().timeIntervalSince1970 + 1800.0,
+            let now = Date().timeIntervalSince1970
+            defaults.set(locationActive ? 0.0 : now + 1800.0,
                          forKey: "GoldgramLocationLabUntilV1")
             if !locationActive {
+                defaults.set(now, forKey: "GoldgramLocationLabStartedAtV1")
+                defaults.set(now + 1800.0, forKey: "GoldgramLocationLabWindowEndV1")
+                defaults.removeObject(forKey: "GoldgramLocationLabAttemptsV1")
                 defaults.set(0, forKey: "GoldgramLocationLabTicksV1")
                 defaults.set("starting", forKey: "GoldgramLocationLabStateV1")
+            } else {
+                defaults.set(now, forKey: "GoldgramLocationLabWindowEndV1")
             }
             NotificationCenter.default.post(
                 name: Notification.Name("GoldgramLocationLabChanged"), object: nil)
@@ -288,9 +328,14 @@ public final class GoldgramArchiveScreen: UITableViewController {
     }
 
     private func showCaptureDiagnosticReport(account: Int64, since: NSNumber?) {
+        let defaults = UserDefaults.standard
+        let geoStarted = defaults.double(forKey: "GoldgramLocationLabStartedAtV1")
+        let geoEnd = defaults.double(forKey: "GoldgramLocationLabWindowEndV1")
         let request: NSDictionary = [
             "accountId": NSNumber(value: account), "category": 3,
-            "mode": "diagnostics", "since": since ?? NSNumber(value: 0)
+            "mode": "diagnostics", "since": since ?? NSNumber(value: 0),
+            "geoSince": NSNumber(value: Int64(max(0.0, geoStarted) * 1000.0)),
+            "geoUntil": NSNumber(value: Int64(max(0.0, geoEnd) * 1000.0))
         ]
         GoldgramArchiveReader.query(request) { [weak self] answer in
             guard let self else { return }
@@ -335,6 +380,39 @@ public final class GoldgramArchiveScreen: UITableViewController {
             report += "\nСобытий CoreLocation: \(defaults.integer(forKey: "GoldgramLocationLabTicksV1"))"
             report += "\nПоследнее обновление: \(refreshDate("GoldgramLocationLabLastTickV1"))"
             report += "\nСобытие датчика не доказывает сохранение оригинала."
+            // #129: SQLite window counts reflect disk contents at report time,
+            // not attribution to CoreLocation or the original capture timestamp.
+            if let geoObserved = answer["geoObserved"] {
+                report += "\n\nSQLite за окно гео-сессии №129:"
+                report += "\nВпервые увиденных сообщений: \(geoObserved)"
+                report += "\nС оригиналом в SQLite: \(answer["geoKnown"] ?? 0)"
+                report += "\nИзменённых: \(answer["geoEdited"] ?? 0)"
+                report += "\nИзменённых без оригинала: \(answer["geoMissingEdited"] ?? 0)"
+                report += "\nЭто first_seen_at внутри окна, не доказательство получения из гео-пробуждения."
+            }
+            if let data = defaults.data(forKey: "GoldgramLocationLabAttemptsV1"),
+               let rows = try? PropertyListDecoder().decode([GoldgramLocationLabReportRow].self, from: data) {
+                report += "\n\nОтдельный журнал фоновых попыток №129:"
+                for (i, row) in rows.suffix(12).reversed().enumerated() {
+                    report += "\n\n\(i + 1). \(self.dateFormatter.string(from: Date(timeIntervalSince1970: row.at))) · \(row.source) · \(row.appState)"
+                    let reason = row.finalReason ?? (Date().timeIntervalSince1970 - row.at > 18.0
+                        ? "нет завершения (вероятно отложено системой)" : "выполняется")
+                    report += "\nРешение: \(row.decision); итог: \(reason); этап: \(row.stage)"
+                    report += "\nАккаунт готов \(row.accountReady ? "да" : "нет"), обсуждений \(row.targets)"
+                    report += "\nMTProto подписок/завершено \(row.rpcStarted)/\(row.rpcCompleted)"
+                    report += "\nСервис принял \(row.rpcServiceAdded), ACK \(row.rpcAcknowledged) (не ответы API)"
+                    report += "\nAPI difference/empty/tooLong/unavailable/error: \(row.apiDifference)/\(row.apiEmpty)/\(row.apiTooLong)/\(row.apiUnavailable)/\(row.apiErrors)"
+                    report += "\nИз ответов API: новых \(row.newMessages), редакций \(row.edits)"
+                    report += "\nВ очередь оригиналов из difference \(row.originalsQueued)"
+                    report += "\nИстория: запущено \(row.historyStarted), ответов \(row.historyResponses), сообщений \(row.historyMessages), ошибок \(row.historyFailed), в очередь \(row.historyQueued)"
+                    if row.lateCallbacksIgnored > 0 {
+                        report += "\nОтложенные callbacks вне окна 18с: \(row.lateCallbacksIgnored)"
+                    }
+                }
+                report += "\nСчётчики очереди не доказывают сохранение оригиналов на диске."
+            } else {
+                report += "\n\nОтдельный журнал №129: событий пока нет."
+            }
             // #115: examine a stuck foreground Updating BEFORE force-quitting.
             // These breadcrumbs contain no message texts, peer IDs or credentials.
             report += "\n\nСинхронизация №115/118:"

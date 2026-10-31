@@ -60,7 +60,7 @@ assert '"storedPinned"' not in func, "Only serializable sanitized counts belong 
 standalone = state.split("public func standalonePollChannelOnce(", 1)[1].split(
     "\nfunc keepPollingChannel(", 1)[0]
 assert "diagnosticToken: String? = nil" in standalone
-assert "diagnosticToken: diagnosticToken)" in standalone
+assert "diagnosticToken: diagnosticToken, locationTraceToken: locationTraceToken)" in standalone
 poll = state.split("private func pollChannel(", 1)[1]
 assert "diagnosticToken: String? = nil" in poll
 for kind in ('"difference"', '"empty"', '"tooLong"', '"unavailable"'):
@@ -76,3 +76,17 @@ assert "func goldgramCaptureServerOriginal(" in core and "-> Bool" in core, (
 assert "GoldgramBackgroundRefreshRunsV1" in ui and "PropertyListDecoder()" in ui
 assert "в очередь SQLite" in ui and "не подтверждение сохранения" in ui
 print("Goldgram #108: per-launch refresh evidence and interruption reasons verified")
+
+
+# #129: separate user-consented location attempt token must never pollute the
+# OS BGAppRefresh ledger or falsely imply socket/SQLite success.
+assert "locationTraceToken: String? = nil" in standalone
+assert "locationTraceToken: String? = nil" in poll
+assert "GoldgramLocationLabTrace.rpcStart(locationTraceToken)" in poll
+assert "GoldgramLocationLabTrace.transport(locationTraceToken, event: event)" in poll
+for stage in ('"difference"', '"empty"', '"tooLong"', '"error"'):
+    assert 'GoldgramLocationLabTrace.api(locationTraceToken, kind: ' + stage in poll or (
+        stage == '"difference"' and 'kind: "difference", new: newMessages.count, edits: edits' in poll), stage
+assert "GoldgramLocationLabTrace.originalQueued(locationTraceToken)" in poll
+assert 'GoldgramLocationLabTrace' not in bg, "Keep OS task and geo-source telemetry separate"
+print("Goldgram #129: location-specific MTProto transport, API response and original queue telemetry OK")

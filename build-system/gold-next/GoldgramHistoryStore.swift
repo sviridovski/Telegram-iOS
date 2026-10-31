@@ -885,11 +885,16 @@ public final class GoldgramArchiveReader: NSObject {
             return
         }
         let diagnosticSince = max(Int64(0), (request["since"] as? NSNumber)?.int64Value ?? 0)
+        // #129 bounded geolocation window: SQL reads DISK contents, not a
+        // claimed attribution to a specific CoreLocation callback.
+        let geoSince = max(Int64(0), (request["geoSince"] as? NSNumber)?.int64Value ?? 0)
+        let geoUntil = max(Int64(0), (request["geoUntil"] as? NSNumber)?.int64Value ?? 0)
         GoldgramHistoryStore.storageQueue.async {
             let response = self.read(
                 accountId: accountId, mode: mode,
                 kinds: kinds, peerId: peerId, peerKind: scopedPeerKind, sources: sources, deletedOnly: category == 3,
-                offset: Int32(offset), limit: Int32(limit), diagnosticSince: diagnosticSince
+                offset: Int32(offset), limit: Int32(limit), diagnosticSince: diagnosticSince,
+                geoSince: geoSince, geoUntil: geoUntil
             )
             DispatchQueue.main.async {
                 completion(self.isSelected(accountId) ? response as NSDictionary : ["status": "account_changed", "items": []])
@@ -916,7 +921,8 @@ public final class GoldgramArchiveReader: NSObject {
     private static func read(
         accountId: Int64, mode: String, kinds: [Int32],
         peerId: Int64, peerKind: Int32, sources: [(kind: Int32, id: Int64)], deletedOnly: Bool,
-        offset: Int32, limit: Int32, diagnosticSince: Int64
+        offset: Int32, limit: Int32, diagnosticSince: Int64,
+        geoSince: Int64, geoUntil: Int64
     ) -> [String: Any] {
         // Opening a missing DB in READONLY mode must never create one.
         let support = FileManager.default.urls(
@@ -956,7 +962,9 @@ public final class GoldgramArchiveReader: NSObject {
         }
 
         if mode == "diagnostics" {
-            // Only aggregate local metadata. Never return dialog IDs or text.
+            // Read-only, parameter-bound aggregates of actual persisted rows.
+            // This is an observational first_seen_at window, NOT evidence that
+            // CoreLocation caused or durably flushed an original in that window.
             let diagnosticSQL = """
             SELECT COUNT(*),
                    COALESCE(SUM(CASE WHEN m.original_observed=1 AND m.original_text IS NOT NULL THEN 1 ELSE 0 END), 0),
@@ -966,26 +974,42 @@ public final class GoldgramArchiveReader: NSObject {
                    COALESCE(SUM(CASE WHEN EXISTS
                      (SELECT 1 FROM events e WHERE e.peer_kind=m.peer_kind AND e.peer_id=m.peer_id
                         AND e.message_id=m.message_id AND e.event_kind=1) THEN 1 ELSE 0 END), 0)
-            FROM messages m WHERE m.first_seen_at >= ?;
+            FROM messages m WHERE m.first_seen_at >= ? AND m.first_seen_at < ?;
             """
-            var pointer: OpaquePointer?
-            guard sqlite3_prepare_v2(db, diagnosticSQL, -1, &pointer, nil) == SQLITE_OK,
-                  let stmt = pointer else {
-                if let pointer { sqlite3_finalize(pointer) }
+            func readCounters(since: Int64, until: Int64) -> [String: Any]? {
+                var pointer: OpaquePointer?
+                guard sqlite3_prepare_v2(db, diagnosticSQL, -1, &pointer, nil) == SQLITE_OK,
+                      let stmt = pointer else {
+                    if let pointer { sqlite3_finalize(pointer) }
+                    return nil
+                }
+                defer { sqlite3_finalize(stmt) }
+                guard sqlite3_bind_int64(stmt, 1, since) == SQLITE_OK,
+                      sqlite3_bind_int64(stmt, 2, until) == SQLITE_OK,
+                      sqlite3_step(stmt) == SQLITE_ROW else {
+                    return nil
+                }
+                return [
+                    "observed": NSNumber(value: sqlite3_column_int64(stmt, 0)),
+                    "known": NSNumber(value: sqlite3_column_int64(stmt, 1)),
+                    "missingEdited": NSNumber(value: sqlite3_column_int64(stmt, 2)),
+                    "edited": NSNumber(value: sqlite3_column_int64(stmt, 3))
+                ]
+            }
+            guard var result = readCounters(since: diagnosticSince, until: Int64.max) else {
                 return ["status": "unavailable", "items": []]
             }
-            defer { sqlite3_finalize(stmt) }
-            guard sqlite3_bind_int64(stmt, 1, diagnosticSince) == SQLITE_OK,
-                  sqlite3_step(stmt) == SQLITE_ROW else {
-                return ["status": "unavailable", "items": []]
+            result["status"] = "ok"
+            // 30-minute experiment plus small latitude for manual-stop tests.
+            if geoSince > 0, geoUntil > geoSince,
+               geoUntil - geoSince <= 2 * 60 * 60 * 1000,
+               let window = readCounters(since: geoSince, until: geoUntil) {
+                result["geoObserved"] = window["observed"]
+                result["geoKnown"] = window["known"]
+                result["geoMissingEdited"] = window["missingEdited"]
+                result["geoEdited"] = window["edited"]
             }
-            return [
-                "status": "ok",
-                "observed": NSNumber(value: sqlite3_column_int64(stmt, 0)),
-                "known": NSNumber(value: sqlite3_column_int64(stmt, 1)),
-                "missingEdited": NSNumber(value: sqlite3_column_int64(stmt, 2)),
-                "edited": NSNumber(value: sqlite3_column_int64(stmt, 3))
-            ]
+            return result
         }
 
         var sql = mode == "totals" ? countsSQL : mode == "dialogs" ? dialogsSQL : messagesSQL

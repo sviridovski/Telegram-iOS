@@ -3471,7 +3471,7 @@ func pollChannelOnce(accountPeerId: PeerId, postbox: Postbox, network: Network, 
     |> switchToLatest
 }
 
-public func standalonePollChannelOnce(accountPeerId: PeerId, postbox: Postbox, network: Network, peerId: PeerId, stateManager: AccountStateManager, diagnosticToken: String? = nil) -> Signal<Never, NoError> {
+public func standalonePollChannelOnce(accountPeerId: PeerId, postbox: Postbox, network: Network, peerId: PeerId, stateManager: AccountStateManager, diagnosticToken: String? = nil, locationTraceToken: String? = nil) -> Signal<Never, NoError> {
     return postbox.transaction { transaction -> Signal<Never, NoError> in
         if let diagnosticToken {
             GoldgramBackgroundRefreshTrace.phase(diagnosticToken, "inner_postbox_entered")
@@ -3480,6 +3480,7 @@ public func standalonePollChannelOnce(accountPeerId: PeerId, postbox: Postbox, n
             if let diagnosticToken {
                 GoldgramBackgroundRefreshTrace.response(diagnosticToken, kind: "unavailable")
             }
+            if let locationTraceToken { GoldgramLocationLabTrace.api(locationTraceToken, kind: "unavailable") }
             return .complete()
         }
 
@@ -3506,7 +3507,7 @@ public func standalonePollChannelOnce(accountPeerId: PeerId, postbox: Postbox, n
         if let diagnosticToken {
             GoldgramBackgroundRefreshTrace.phase(diagnosticToken, "channel_state_ready")
         }
-        return pollChannel(accountPeerId: accountPeerId, postbox: postbox, network: network, peer: peer, state: initialState, diagnosticToken: diagnosticToken)
+        return pollChannel(accountPeerId: accountPeerId, postbox: postbox, network: network, peer: peer, state: initialState, diagnosticToken: diagnosticToken, locationTraceToken: locationTraceToken)
         |> mapToSignal { (finalState, _, timeout) -> Signal<Never, NoError> in
             if let diagnosticToken {
                 GoldgramBackgroundRefreshTrace.phase(diagnosticToken, "resolve_messages")
@@ -3751,7 +3752,7 @@ func resetChannels(accountPeerId: PeerId, postbox: Postbox, network: Network, pe
     }
 }
 
-private func pollChannel(accountPeerId: PeerId, postbox: Postbox, network: Network, peer: Peer, state: AccountMutableState, diagnosticToken: String? = nil) -> Signal<(AccountMutableState, Bool, Int32?), NoError> {
+private func pollChannel(accountPeerId: PeerId, postbox: Postbox, network: Network, peer: Peer, state: AccountMutableState, diagnosticToken: String? = nil, locationTraceToken: String? = nil) -> Signal<(AccountMutableState, Bool, Int32?), NoError> {
     if let inputChannel = apiInputChannel(peer) {
         let limit: Int32
         #if DEBUG
@@ -3766,11 +3767,24 @@ private func pollChannel(accountPeerId: PeerId, postbox: Postbox, network: Netwo
         } else {
             pollPts = 1
         }
+        // #129: either the OS BGAppRefresh tracer or the separate CoreLocation
+        // experiment may observe MTRequestMessageService/ACK. Neither milestone
+        // means a packet was sent or that the API replied.
+        let transportEvent: ((String) -> Void)?
+        if let diagnosticToken {
+            transportEvent = { event in
+                GoldgramBackgroundRefreshTrace.rpcTransport(diagnosticToken, event: event)
+            }
+        } else if let locationTraceToken {
+            transportEvent = { event in
+                GoldgramLocationLabTrace.transport(locationTraceToken, event: event)
+            }
+        } else {
+            transportEvent = nil
+        }
         let request: Signal<Api.updates.ChannelDifference, MTRpcError> =
             network.request(Api.functions.updates.getChannelDifference(flags: 0, channel: inputChannel, filter: .channelMessagesFilterEmpty, pts: max(pollPts, 1), limit: limit),
-                diagnosticTransportEvent: diagnosticToken.map { token in
-                    { event in GoldgramBackgroundRefreshTrace.rpcTransport(token, event: event) }
-                })
+                diagnosticTransportEvent: transportEvent)
         let trackedRequest: Signal<Api.updates.ChannelDifference, MTRpcError>
         if let diagnosticToken {
             // The request enters MTRequestMessageService here; it does not prove
@@ -3796,6 +3810,17 @@ private func pollChannel(accountPeerId: PeerId, postbox: Postbox, network: Netwo
                     subscriber.putCompletion()
                 })
             }
+        } else if let locationTraceToken {
+            trackedRequest = Signal { subscriber in
+                GoldgramLocationLabTrace.rpcStart(locationTraceToken)
+                return request.start(next: { difference in
+                    subscriber.putNext(difference)
+                }, error: { error in
+                    subscriber.putError(error)
+                }, completed: {
+                    subscriber.putCompletion()
+                })
+            }
         } else {
             trackedRequest = request
         }
@@ -3804,6 +3829,9 @@ private func pollChannel(accountPeerId: PeerId, postbox: Postbox, network: Netwo
             return difference
         }
         |> `catch` { error -> Signal<Api.updates.ChannelDifference?, MTRpcError> in
+            if let locationTraceToken {
+                GoldgramLocationLabTrace.api(locationTraceToken, kind: "error")
+            }
             if let diagnosticToken {
                 let category: String
                 switch error.errorDescription {
@@ -3830,19 +3858,28 @@ private func pollChannel(accountPeerId: PeerId, postbox: Postbox, network: Netwo
                 if let diagnosticToken {
                     GoldgramBackgroundRefreshTrace.response(diagnosticToken, kind: "unavailable")
                 }
+                if let locationTraceToken {
+                    GoldgramLocationLabTrace.api(locationTraceToken, kind: "unavailable")
+                }
                 return .single((state, false, nil))
             }
             
             switch difference {
             case let .channelDifference(channelDifferenceData):
                 let (_, pts, timeout, newMessages, otherUpdates, chats, users) = (channelDifferenceData.flags, channelDifferenceData.pts, channelDifferenceData.timeout, channelDifferenceData.newMessages, channelDifferenceData.otherUpdates, channelDifferenceData.chats, channelDifferenceData.users)
-                if let diagnosticToken {
+                if diagnosticToken != nil || locationTraceToken != nil {
                     let edits = otherUpdates.reduce(0) { count, update -> Int in
                         if case .updateEditChannelMessage = update { return count + 1 }
                         return count
                     }
-                    GoldgramBackgroundRefreshTrace.response(diagnosticToken,
-                        kind: "difference", new: newMessages.count, edits: edits)
+                    if let diagnosticToken {
+                        GoldgramBackgroundRefreshTrace.response(diagnosticToken,
+                            kind: "difference", new: newMessages.count, edits: edits)
+                    }
+                    if let locationTraceToken {
+                        GoldgramLocationLabTrace.api(locationTraceToken,
+                            kind: "difference", new: newMessages.count, edits: edits)
+                    }
                 }
                 var updatedState = state
                 var apiTimeout: Int32?
@@ -3886,8 +3923,13 @@ private func pollChannel(accountPeerId: PeerId, postbox: Postbox, network: Netwo
                                 accountPeerId: accountPeerId,
                                 message: message,
                                 peerKind: kind
-                            ), let diagnosticToken {
-                                GoldgramBackgroundRefreshTrace.originalQueued(diagnosticToken)
+                            ) {
+                                if let diagnosticToken {
+                                    GoldgramBackgroundRefreshTrace.originalQueued(diagnosticToken)
+                                }
+                                if let locationTraceToken {
+                                    GoldgramLocationLabTrace.originalQueued(locationTraceToken)
+                                }
                             }
                         }
 
@@ -4017,6 +4059,9 @@ private func pollChannel(accountPeerId: PeerId, postbox: Postbox, network: Netwo
                 if let diagnosticToken {
                     GoldgramBackgroundRefreshTrace.response(diagnosticToken, kind: "empty")
                 }
+                if let locationTraceToken {
+                    GoldgramLocationLabTrace.api(locationTraceToken, kind: "empty")
+                }
                 let (_, pts, timeout) = (channelDifferenceEmptyData.flags, channelDifferenceEmptyData.pts, channelDifferenceEmptyData.timeout)
                 var updatedState = state
                 var apiTimeout: Int32?
@@ -4035,6 +4080,9 @@ private func pollChannel(accountPeerId: PeerId, postbox: Postbox, network: Netwo
             case let .channelDifferenceTooLong(channelDifferenceTooLongData):
                 if let diagnosticToken {
                     GoldgramBackgroundRefreshTrace.response(diagnosticToken, kind: "tooLong")
+                }
+                if let locationTraceToken {
+                    GoldgramLocationLabTrace.api(locationTraceToken, kind: "tooLong")
                 }
                 let (_, timeout, dialog, messages, chats, users) = (channelDifferenceTooLongData.flags, channelDifferenceTooLongData.timeout, channelDifferenceTooLongData.dialog, channelDifferenceTooLongData.messages, channelDifferenceTooLongData.chats, channelDifferenceTooLongData.users)
                 var updatedState = state
@@ -4139,6 +4187,10 @@ private func pollChannel(accountPeerId: PeerId, postbox: Postbox, network: Netwo
                             withEditMarker: snapshotWithEditMarker,
                             withoutEditMarker: snapshotWithoutEditMarker,
                             originalsQueued: snapshotOriginalsQueued)
+                    }
+                    if let locationTraceToken {
+                        GoldgramLocationLabTrace.historyQueued(
+                            locationTraceToken, count: snapshotOriginalsQueued)
                     }
                     
                     updatedState.resetReadState(peer.peerId, namespace: Namespaces.Message.Cloud, maxIncomingReadId: readInboxMaxId, maxOutgoingReadId: readOutboxMaxId, maxKnownId: topMessage, count: unreadCount, markedUnread: nil)
