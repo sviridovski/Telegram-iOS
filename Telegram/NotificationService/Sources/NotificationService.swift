@@ -2032,6 +2032,24 @@ private final class NotificationServiceHandler {
                                                 transaction: transaction, accountPeerId: stateManager.accountPeerId,
                                                 id: messageId, stage: "extensionPushPolled"
                                             )
+                                            // #128: preserve the REAL materialized Postbox
+                                            // original before waiting for a network delta.
+                                            // Never trust a preview or an already edited body.
+                                            if let early = transaction.getMessage(messageId) {
+                                                if !early.containsSecretMedia,
+                                                   !early.attributes.contains(where: { $0 is MediaSpoilerMessageAttribute }) {
+                                                    goldgramNoteNotificationTrace(transaction: transaction,
+                                                        accountPeerId: stateManager.accountPeerId,
+                                                        id: messageId, stage: "extensionEarlyPostboxFound")
+                                                    goldgramCaptureNotificationOriginal(
+                                                        accountPeerId: stateManager.accountPeerId,
+                                                        transaction: transaction, message: early)
+                                                }
+                                            } else {
+                                                goldgramNoteNotificationTrace(transaction: transaction,
+                                                    accountPeerId: stateManager.accountPeerId,
+                                                    id: messageId, stage: "extensionEarlyPostboxMissing")
+                                            }
                                             if let readState = transaction.getCombinedPeerReadState(messageId.peerId) {
                                                 for (namespace, state) in readState.states {
                                                     if namespace == messageId.namespace {

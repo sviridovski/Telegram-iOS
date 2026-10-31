@@ -44,6 +44,7 @@ import CoreSpotlight
 import TelegramAudio
 import DebugSettingsUI
 import BackgroundTasks
+import CoreLocation
 import UIKitRuntimeUtils
 import StoreKit
 import PhoneNumberFormat
@@ -227,6 +228,91 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     )
 }
 
+// #128: Explicit 30-minute *actual sensor* location activity; no coordinates
+// are read, stored or transmitted. This is not fabricated GPS and does not
+// confer unrestricted background execution on iOS.
+private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDelegate {
+    private let manager = CLLocationManager()
+    private let onTick: () -> Void
+    private var isRunning = false
+
+    init(onTick: @escaping () -> Void) {
+        self.onTick = onTick
+        super.init()
+        self.manager.delegate = self
+        self.manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+        self.manager.distanceFilter = kCLDistanceFilterNone
+        self.manager.pausesLocationUpdatesAutomatically = false
+    }
+
+    private func status() -> CLAuthorizationStatus {
+        if #available(iOS 14.0, *) { return self.manager.authorizationStatus }
+        return CLLocationManager.authorizationStatus()
+    }
+
+    func start() {
+        let settings = UserDefaults.standard
+        guard settings.double(forKey: "GoldgramLocationLabUntilV1") > Date().timeIntervalSince1970 else {
+            self.stop()
+            return
+        }
+        guard CLLocationManager.locationServicesEnabled(),
+              (Bundle.main.object(forInfoDictionaryKey: "UIBackgroundModes") as? [String])?.contains("location") == true else {
+            settings.set("unavailable", forKey: "GoldgramLocationLabStateV1")
+            return
+        }
+        switch self.status() {
+        case .authorizedAlways, .authorizedWhenInUse:
+            guard !self.isRunning else { return }
+            self.isRunning = true
+            self.manager.allowsBackgroundLocationUpdates = true
+            self.manager.showsBackgroundLocationIndicator = true
+            self.manager.startUpdatingLocation()
+            settings.set("running", forKey: "GoldgramLocationLabStateV1")
+        case .notDetermined:
+            settings.set("authorization_pending", forKey: "GoldgramLocationLabStateV1")
+            self.manager.requestWhenInUseAuthorization()
+        default:
+            settings.set("permission_denied", forKey: "GoldgramLocationLabStateV1")
+        }
+    }
+
+    func stop() {
+        self.isRunning = false
+        self.manager.stopUpdatingLocation()
+        self.manager.allowsBackgroundLocationUpdates = false
+        UserDefaults.standard.set("stopped", forKey: "GoldgramLocationLabStateV1")
+    }
+
+    @available(iOS 14.0, *)
+    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) { self.start() }
+
+    func locationManager(_ manager: CLLocationManager, didChangeAuthorization status: CLAuthorizationStatus) {
+        if status == .authorizedWhenInUse || status == .authorizedAlways { self.start() }
+    }
+
+    func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        guard self.isRunning, !locations.isEmpty else { return }
+        let settings = UserDefaults.standard
+        if settings.double(forKey: "GoldgramLocationLabUntilV1") <= Date().timeIntervalSince1970 {
+            self.stop()
+            return
+        }
+        settings.set(min(100000, settings.integer(forKey: "GoldgramLocationLabTicksV1") + 1),
+                     forKey: "GoldgramLocationLabTicksV1")
+        settings.set(Date().timeIntervalSince1970, forKey: "GoldgramLocationLabLastTickV1")
+        self.onTick() // Intentionally never read a CLLocation value.
+    }
+
+    func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        UserDefaults.standard.set("sensor_error", forKey: "GoldgramLocationLabStateV1")
+    }
+
+    func locationManagerDidPauseLocationUpdates(_ manager: CLLocationManager) {
+        UserDefaults.standard.set("sensor_paused", forKey: "GoldgramLocationLabStateV1")
+    }
+}
+
 @objc(AppDelegate) class AppDelegate: UIResponder, UIApplicationDelegate, PKPushRegistryDelegate, UNUserNotificationCenterDelegate, URLSessionDelegate, URLSessionTaskDelegate {
     @objc var window: UIWindow?
     var nativeWindow: (UIWindow & WindowHost)?
@@ -332,6 +418,72 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     private var goldgramRefreshActiveSince: Date?
     private var goldgramRefreshFinish: ((String, Bool) -> Void)?
     private var goldgramRefreshLease: Disposable?
+    private var goldgramLocationLab: GoldgramBackgroundLocationLab?
+    private let goldgramLocationWork = MetaDisposable()
+    private var goldgramLocationPollBusy = false
+    private var goldgramLocationLastPoll = Date.distantPast
+
+    @objc private func goldgramLocationLabChanged(_ notification: Notification) {
+        guard UserDefaults.standard.double(forKey: "GoldgramLocationLabUntilV1") > Date().timeIntervalSince1970 else {
+            self.goldgramLocationLab?.stop()
+            self.goldgramLocationWork.set(nil)
+            self.goldgramLocationPollBusy = false
+            return
+        }
+        if self.goldgramLocationLab == nil {
+            self.goldgramLocationLab = GoldgramBackgroundLocationLab(onTick: { [weak self] in
+                self?.goldgramLocationPoll()
+            })
+        }
+        self.goldgramLocationLab?.start()
+        // An explicit session must expire even with no further location events,
+        // provided iOS executes this timer. Check expiry again on any callback.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1800.0) { [weak self] in
+            guard let self, UserDefaults.standard.double(forKey: "GoldgramLocationLabUntilV1") <= Date().timeIntervalSince1970 else { return }
+            self.goldgramLocationLabChanged(Notification(name: Notification.Name("GoldgramLocationLabChanged")))
+        }
+    }
+
+    private func goldgramLocationPoll() {
+        guard UIApplication.shared.applicationState == .background,
+              !self.goldgramRefreshActive, !self.goldgramLocationPollBusy,
+              UserDefaults.standard.double(forKey: "GoldgramLocationLabUntilV1") > Date().timeIntervalSince1970,
+              Date().timeIntervalSince(self.goldgramLocationLastPoll) >= 20.0 else { return }
+        self.goldgramLocationPollBusy = true
+        self.goldgramLocationLastPoll = Date()
+        let work = self.sharedContextPromise.get()
+        |> take(1)
+        |> deliverOnMainQueue
+        |> mapToSignal { shared -> Signal<Never, NoError> in
+            return shared.sharedContext.activeAccountContexts
+            |> take(1)
+            |> deliverOnMainQueue
+            |> mapToSignal { primary, _, _ -> Signal<Never, NoError> in
+                guard let account = primary?.account, goldgramNativeHistoryEnabled() else { return .complete() }
+                return Signal { subscriber in
+                    let lease = shared.wakeupManager.acquireGoldgramRefreshLease(
+                        token: "goldgram-location-lab-128", accountId: account.id)
+                    let poll = goldgramLocationLabPoll(account: account).start(completed: {
+                        subscriber.putCompletion()
+                    })
+                    return ActionDisposable {
+                        poll.dispose()
+                        lease.dispose()
+                    }
+                }
+            }
+        }
+        let disposable = work.start(completed: { [weak self] in
+            self?.goldgramLocationPollBusy = false
+        })
+        self.goldgramLocationWork.set(disposable)
+        // Bound each opportunistic batch; never hold a lease indefinitely.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 18.0) { [weak self] in
+            guard let self, self.goldgramLocationPollBusy else { return }
+            self.goldgramLocationWork.set(nil)
+            self.goldgramLocationPollBusy = false
+        }
+    }
 
     private func goldgramScheduleRefresh() {
         guard #available(iOS 13.0, *), goldgramNativeHistoryEnabled() else { return }
@@ -1784,6 +1936,11 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         }
         #endif
         
+        // #128: enable location activity only on an explicit UI action.
+        NotificationCenter.default.addObserver(self,
+            selector: #selector(goldgramLocationLabChanged(_:)),
+            name: Notification.Name("GoldgramLocationLabChanged"), object: nil)
+
         // #107: register while the app launches. Telegram Bazel's
         // Info.plist already permits <bundle>.refresh and background fetch.
         if #available(iOS 13.0, *) {
@@ -2178,6 +2335,9 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
 
     func applicationDidEnterBackground(_ application: UIApplication) {
         self.goldgramScheduleRefresh()
+        if UserDefaults.standard.double(forKey: "GoldgramLocationLabUntilV1") > Date().timeIntervalSince1970 {
+            DispatchQueue.main.async { [weak self] in self?.goldgramLocationPoll() }
+        }
         let _ = (self.sharedContextPromise.get()
         |> take(1)
         |> deliverOnMainQueue).start(next: { sharedApplicationContext in
@@ -2225,6 +2385,11 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     }
 
     func applicationWillEnterForeground(_ application: UIApplication) {
+        self.goldgramLocationWork.set(nil)
+        self.goldgramLocationPollBusy = false
+        if UserDefaults.standard.double(forKey: "GoldgramLocationLabUntilV1") <= Date().timeIntervalSince1970 {
+            self.goldgramLocationLab?.stop()
+        }
         // Start trace before the resumed connection changes state.
         GoldgramForegroundSyncTrace.lifecycle(active: true)
         if self.isActiveValue {

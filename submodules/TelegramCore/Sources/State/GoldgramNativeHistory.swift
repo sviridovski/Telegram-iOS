@@ -1632,6 +1632,45 @@ public func goldgramRefreshPriorityDiscussions(
     }
 }
 
+// #128: actual background-location execution only, bounded by app and iOS.
+// Reuse verified pinned linked discussions and existing PTS replay. A current
+// edited snapshot is never accepted as an unedited original.
+public func goldgramLocationLabPoll(account: Account) -> Signal<Never, NoError> {
+    return account.postbox.transaction { transaction -> [PeerId] in
+        goldgramDrainPending(accountPeerId: account.peerId, transaction: transaction)
+        guard goldgramNativeHistoryEnabled() else { return [] }
+        return Array(goldgramPrioritySelection(transaction: transaction,
+            accountPeerId: account.peerId).peers.prefix(3))
+    }
+    |> mapToSignal { ids -> Signal<Never, NoError> in
+        guard !ids.isEmpty else { return .complete() }
+        let polls: [Signal<Bool, NoError>] = ids.map { id in
+            return Signal { subscriber in
+                let disposable = standalonePollChannelOnce(
+                    accountPeerId: account.peerId, postbox: account.postbox,
+                    network: account.network, peerId: id,
+                    stateManager: account.stateManager
+                ).start(completed: {
+                    subscriber.putNext(true)
+                    subscriber.putCompletion()
+                })
+                return ActionDisposable { disposable.dispose() }
+            }
+        }
+        let snapshots: [Signal<Bool, NoError>] = ids.prefix(2).map { id in
+            return Signal { subscriber in
+                let disposable = goldgramSeedDiscussion(account: account, peerId: id,
+                    labOnly: true).start(completed: {
+                        subscriber.putNext(true)
+                        subscriber.putCompletion()
+                    })
+                return ActionDisposable { disposable.dispose() }
+            }
+        }
+        return combineLatest(polls + snapshots) |> ignoreValues
+    }
+}
+
 // The UI owns this subscription while the selected account is the active
 // service master, including native background execution / push wake windows.
 // Stop polling when iOS execution time ends or the account switches.

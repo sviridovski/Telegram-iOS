@@ -418,3 +418,30 @@ assert 'DispatchQueue.main.asyncAfter(deadline: .now() + 24.0)' in app
 assert 'requestSecureTransportReset()' not in refresh_lab
 assert 'CLLocationManager' not in refresh_lab and 'AVAudioSession' not in refresh_lab
 print("Goldgram #127: reversible lab, bounded foreground bursts, concurrent BG, safe original provenance OK")
+
+
+# #128 consented location activity, network lease, actual BG-only work.
+for phrase in ("import CoreLocation", "class GoldgramBackgroundLocationLab:",
+               "CLLocationManagerDelegate", "startUpdatingLocation()",
+               "stopUpdatingLocation()", "allowsBackgroundLocationUpdates = true",
+               "allowsBackgroundLocationUpdates = false", "showsBackgroundLocationIndicator = true",
+               "GoldgramLocationLabUntilV1", "didUpdateLocations locations: [CLLocation]",
+               "GoldgramLocationLabChanged", "goldgramLocationLabPoll(account: account)",
+               "self.goldgramLocationWork.set(nil)",
+               "Date().timeIntervalSince(self.goldgramLocationLastPoll) >= 20.0",
+               "deadline: .now() + 18.0"):
+    assert phrase in app, phrase
+location_class = app.split("private final class GoldgramBackgroundLocationLab:",1)[1].split(
+    "@objc(AppDelegate) class AppDelegate",1)[0]
+assert ".coordinate" not in location_class
+assert "locations[0]" not in location_class
+poll_location = core.split("public func goldgramLocationLabPoll(account: Account)",1)[1].split(
+    "// The UI owns this subscription",1)[0]
+for phrase in ("goldgramPrioritySelection(transaction:", "standalonePollChannelOnce(",
+               "labOnly: true", "combineLatest(polls + snapshots) |> ignoreValues"):
+    assert phrase in poll_location, phrase
+assert "Гео-эксперимент №128: 30 минут" in ui
+assert "Остановить гео-эксперимент №128" in ui
+assert "Гео-эксперимент №128 (координаты не записываются)" in ui
+assert 'DispatchQueue.main.asyncAfter(deadline: .now() + 24.0)' in app
+print("Goldgram #128: explicit, bounded background CoreLocation and real capture path OK")

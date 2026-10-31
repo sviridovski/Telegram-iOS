@@ -215,6 +215,29 @@ public final class GoldgramArchiveScreen: UITableViewController {
             alert.addAction(UIAlertAction(title: "Понятно", style: .default))
             self.present(alert, animated: true)
         })
+        // #128: explicit 30-minute location activity, actual sensor but NEVER
+        // store/send coordinates. Independent of Full Capture Lab #127.
+        let locationActive = defaults.double(forKey: "GoldgramLocationLabUntilV1") > Date().timeIntervalSince1970
+        menu.addAction(UIAlertAction(
+            title: locationActive ? "Остановить гео-эксперимент №128" : "Гео-эксперимент №128: 30 минут",
+            style: locationActive ? .destructive : .default
+        ) { _ in
+            defaults.set(locationActive ? 0.0 : Date().timeIntervalSince1970 + 1800.0,
+                         forKey: "GoldgramLocationLabUntilV1")
+            if !locationActive {
+                defaults.set(0, forKey: "GoldgramLocationLabTicksV1")
+                defaults.set("starting", forKey: "GoldgramLocationLabStateV1")
+            }
+            NotificationCenter.default.post(
+                name: Notification.Name("GoldgramLocationLabChanged"), object: nil)
+            let message = locationActive
+                ? "Сессия остановлена, SQLite не изменена."
+                : "Включаются НАСТОЯЩИЕ обновления CoreLocation, но координаты НЕ записываются и НЕ отправляются в Telegram. iOS может запросить разрешение и покажет индикатор геолокации. В доступном фоновом времени до 3 проверенных обсуждений опрашиваются через MTProto. Возможен большой расход батареи. Сессия автоматически истекает через 30 минут. Для теста включи слежение за нужным каналом. Можно остановить вручную."
+            let alert = UIAlertController(title: "Гео-эксперимент №128",
+                message: message, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "Понятно", style: .default))
+            self.present(alert, animated: true)
+        })
         // #104: explicit monitoring preference, independent of the one-off test.
         // Channel folders include a verified broadcast source when available.
         if category == 2, let source = sources?.first(where: {
@@ -307,6 +330,11 @@ public final class GoldgramArchiveScreen: UITableViewController {
             report += "\nЗавершено: \(refreshDate("GoldgramLastRefreshFinishedV1"))"
             report += "\nПрервано: \(refreshDate("GoldgramLastRefreshExpiredV1"))"
             report += "\nЗапуск зависит от iOS, а завершение не гарантирует получение оригиналов."
+            report += "\n\nГео-эксперимент №128 (координаты не записываются):"
+            report += "\nСостояние: \(defaults.string(forKey: "GoldgramLocationLabStateV1") ?? "не запускался")"
+            report += "\nСобытий CoreLocation: \(defaults.integer(forKey: "GoldgramLocationLabTicksV1"))"
+            report += "\nПоследнее обновление: \(refreshDate("GoldgramLocationLabLastTickV1"))"
+            report += "\nСобытие датчика не доказывает сохранение оригинала."
             // #115: examine a stuck foreground Updating BEFORE force-quitting.
             // These breadcrumbs contain no message texts, peer IDs or credentials.
             report += "\n\nСинхронизация №115/118:"

@@ -70,3 +70,12 @@ with tempfile.TemporaryDirectory(prefix='goldgram-push-') as tmp:
  p=Path(tmp);(p/'main.swift').write_text(source)
  subprocess.run(['swiftc',str(p/'main.swift'),'-o',str(p/'test')],check=True)
  subprocess.run([str(p/'test')],check=True)
+
+# #128: production source, not the fixture stored in 'source' above.
+nse_swift = (root/'Telegram/NotificationService/Sources/NotificationService.swift').read_text()
+assert 'extensionEarlyPostboxFound' in nse_swift
+assert 'extensionEarlyPostboxMissing' in nse_swift
+assert nse_swift.index('extensionEarlyPostboxFound') < nse_swift.index('goldgramCaptureNotificationOriginal(')
+assert 'transaction.getMessage(messageId)' in nse_swift
+assert 'if !early.containsSecretMedia' in nse_swift
+print("Goldgram #128: production early Postbox NSE original before RPC OK")
