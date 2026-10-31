@@ -82,7 +82,8 @@ assert "Шлюзы сети №114" in ui and "до лимита приложе�
 
 bg = app.split("private func goldgramRunRefresh(", 1)[1].split(
     "private var clearNotificationsManager", 1)[0]
-assert 'GoldgramBackgroundRefreshTrace.begin()' in bg
+assert 'GoldgramBackgroundRefreshTrace.begin(' in bg
+assert 'excludingActiveToken: self.goldgramRefreshActiveToken' in bg
 assert '"await_context"' in bg and '"context_ready"' in bg
 assert '"await_account"' in bg and '"account_ready"' in bg
 assert '"postbox_unreached"' in bg, "Unknown target count != an empty pinned list"

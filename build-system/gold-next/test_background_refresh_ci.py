@@ -18,7 +18,8 @@ assert 'guard let self, !finished else { return }' in app
 assert 'self.goldgramRefreshWork.set(nil)' in app
 assert 'goldgramRefreshPriorityDiscussions(' in app
 assert 'account: account, diagnosticToken: token' in app
-assert 'GoldgramBackgroundRefreshTrace.begin()' in app
+assert 'GoldgramBackgroundRefreshTrace.begin(' in app
+assert 'excludingActiveToken: self.goldgramRefreshActiveToken' in app
 assert 'GoldgramLastRefreshStartedV1' in app
 assert 'Фоновые проверки iOS:' in ui
 assert 'BGTaskSchedulerPermittedIdentifiers' in bazel
