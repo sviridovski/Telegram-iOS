@@ -83,6 +83,12 @@ private struct GoldgramBackgroundRunReport: Decodable {
     let leaseReleasedAt: Double?
     let reconciledAt: Double?
     let lateEventsIgnored: Int?
+    // #126: optional in-window transport checkpoints.
+    let transportFlags: Int32?
+    let firstTransportConnectedAt: Double?
+    let rpcServiceAddedAt: Double?
+    let rpcAcknowledgedAt: Double?
+    let rpcServiceRemovedAt: Double?
 }
 
 @objc(GoldgramArchiveScreen)
@@ -478,6 +484,13 @@ public final class GoldgramArchiveScreen: UITableViewController {
                         report += "\nСеть разрешена: \(networkAllowed), впервые да +\(elapsed(item.networkAllowedAt)), наблюдений \(item.networkAllowedTransitions ?? 0)"
                         report += "\nMTProto connecting впервые: +\(elapsed(item.firstConnectingAt))"
                         report += "\nRPC-подписка: +\(elapsed(item.rpcEnqueuedAt)), до лимита приложения ~\(item.rpcBudgetRemaining.map { String(format: "%.1f с", $0) } ?? "нет данных")"
+                        if item.transportFlags != nil || item.rpcServiceAddedAt != nil {
+                            report += "\nТранспорт №126: MTProto флаги \(item.transportFlags.map(String.init) ?? "нет данных")"
+                            report += "\nMTProto Connected впервые: +\(elapsed(item.firstTransportConnectedAt))"
+                            report += "\nЗапрос принят MTRequestMessageService: +\(elapsed(item.rpcServiceAddedAt)) (не подтверждение отправки)"
+                            report += "\nMTProto ACK запроса: +\(elapsed(item.rpcAcknowledgedAt)) (не подтверждение ответа API)"
+                            report += "\nУдаление запроса из сервиса: +\(elapsed(item.rpcServiceRemovedAt))"
+                        }
                     }
                     if let status = item.networkStatus {
                         report += "\nMTProto: \(status), смен состояний \(item.networkTransitions ?? 0)"

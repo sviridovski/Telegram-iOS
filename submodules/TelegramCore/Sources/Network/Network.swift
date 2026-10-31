@@ -1179,7 +1179,7 @@ public final class Network: NSObject, MTRequestMessageServiceDelegate {
         }
     }
     
-    public func request<T>(_ data: (FunctionDescription, Buffer, DeserializeFunctionResponse<T>), tag: NetworkRequestDependencyTag? = nil, automaticFloodWait: Bool = true, onFloodWaitError: ((String) -> Void)? = nil) -> Signal<T, MTRpcError> {
+    public func request<T>(_ data: (FunctionDescription, Buffer, DeserializeFunctionResponse<T>), tag: NetworkRequestDependencyTag? = nil, automaticFloodWait: Bool = true, onFloodWaitError: ((String) -> Void)? = nil, diagnosticTransportEvent: ((String) -> Void)? = nil) -> Signal<T, MTRpcError> {
         let requestService = self.requestService
         return Signal { subscriber in
             let request = MTRequest()
@@ -1206,6 +1206,12 @@ public final class Network: NSObject, MTRequestMessageServiceDelegate {
                 return true
             }
             
+            if let diagnosticTransportEvent {
+                request.acknowledgementReceived = {
+                    diagnosticTransportEvent("acknowledged")
+                }
+            }
+
             request.completed = { (boxedResponse, timestamp, error) -> () in
                 if let error = error {
                     subscriber.putError(error)
@@ -1232,9 +1238,11 @@ public final class Network: NSObject, MTRequestMessageServiceDelegate {
             let internalId: Any! = request.internalId
             
             requestService.add(request)
-            
+            diagnosticTransportEvent?("service_added")
+
             return ActionDisposable { [weak requestService] in
                 requestService?.removeRequest(byInternalId: internalId)
+                diagnosticTransportEvent?("removed")
             }
         }
     }

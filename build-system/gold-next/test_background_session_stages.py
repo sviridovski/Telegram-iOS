@@ -346,3 +346,39 @@ assert 'ВНЕ окна 24с, ненадёжно' in ui
 assert 'Фактическое окончание: не установлено' in ui
 assert 'Завершение записано:' in ui
 print("Goldgram #123: freeze-before-release, stale reconciliation, bounded trace, UI clarity OK")
+
+
+# #126: diagnose the boundary between request signal, MTRequest service,
+# raw MTProto connection and server acknowledgement. Do not imply socket send.
+for field, type_name in (("transportFlags", "Int32"),
+                         ("firstTransportConnectedAt", "Double"),
+                         ("rpcServiceAddedAt", "Double"),
+                         ("rpcAcknowledgedAt", "Double"),
+                         ("rpcServiceRemovedAt", "Double")):
+    assert f"public var {field}: {type_name}?" in model
+    assert f"self.{field} = nil" in model
+    assert f"let {field}: {type_name}?" in ui
+assert "public static func transportFlags(" in trace
+assert "public static func rpcTransport(" in trace
+assert 'Date().timeIntervalSince1970 - rows[index].startedAt > traceWindow' in trace
+assert 'rows.suffix(8)' in trace
+assert 'account.network.mtprotoDiagnosticFlags.start(next:' in observer
+assert 'GoldgramBackgroundRefreshTrace.transportFlags(diagnosticToken, flags: flags)' in observer
+assert 'shouldKeepConnection.set' not in observer
+request_method = net.split("public func request<T>(", 1)[1].split(
+    "func updateNetworkSpeedLimitedEventNotifyInterval", 1)[0]
+assert 'diagnosticTransportEvent: ((String) -> Void)? = nil' in request_method
+assert 'request.acknowledgementReceived = {' in request_method
+assert 'diagnosticTransportEvent("acknowledged")' in request_method
+assert request_method.index('requestService.add(request)') < request_method.index(
+    'diagnosticTransportEvent?("service_added")')
+assert 'diagnosticTransportEvent?("removed")' in request_method
+assert 'diagnosticTransportEvent: diagnosticToken.map { token in' in poll
+assert 'GoldgramBackgroundRefreshTrace.rpcTransport(token, event: event)' in poll
+for label in ("Транспорт №126:", "MTProto Connected впервые:",
+              "Запрос принят MTRequestMessageService:", "MTProto ACK запроса:"):
+    assert label in ui
+assert "не подтверждение отправки" in ui and "не подтверждение ответа API" in ui
+assert 'DispatchQueue.main.asyncAfter(deadline: .now() + 24.0)' in app
+assert 'self.network.goldgramRequestTransportRecovery(' not in observer
+print("Goldgram #126: transport evidence scoped, optional, 24s, no reconnect or SQL changes")

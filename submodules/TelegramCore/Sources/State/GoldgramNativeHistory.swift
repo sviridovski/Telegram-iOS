@@ -68,6 +68,13 @@ public struct GoldgramBackgroundRefreshRun: Codable {
     public var leaseReleasedAt: Double?
     public var reconciledAt: Double?
     public var lateEventsIgnored: Int?
+    // #126: read-only MTProto transport and request-service evidence.
+    // No packet transmission is inferred from requestService.add().
+    public var transportFlags: Int32?
+    public var firstTransportConnectedAt: Double?
+    public var rpcServiceAddedAt: Double?
+    public var rpcAcknowledgedAt: Double?
+    public var rpcServiceRemovedAt: Double?
 
     public init(token: String) {
         self.token = token
@@ -122,6 +129,11 @@ public struct GoldgramBackgroundRefreshRun: Codable {
         self.leaseReleasedAt = nil
         self.reconciledAt = nil
         self.lateEventsIgnored = nil
+        self.transportFlags = nil
+        self.firstTransportConnectedAt = nil
+        self.rpcServiceAddedAt = nil
+        self.rpcAcknowledgedAt = nil
+        self.rpcServiceRemovedAt = nil
     }
 }
 
@@ -274,6 +286,34 @@ public enum GoldgramBackgroundRefreshTrace {
             }
             if status == "online" && row.firstOnlineAt == nil {
                 row.firstOnlineAt = Date().timeIntervalSince1970
+            }
+        }
+    }
+
+    // Raw MTProto flags: bit 2 means connected. Neither this bit nor
+    // request-service submission alone proves a channel RPC was sent.
+    public static func transportFlags(_ token: String, flags: Int32) {
+        change(token) { row in
+            row.transportFlags = flags
+            if (flags & 2) != 0 && row.firstTransportConnectedAt == nil {
+                row.firstTransportConnectedAt = Date().timeIntervalSince1970
+            }
+        }
+    }
+
+    // These callbacks are scoped to the one diagnostic getChannelDifference.
+    // Server ACK indicates MTProto acknowledgement, not a parsed API answer.
+    public static func rpcTransport(_ token: String, event: String) {
+        change(token) { row in
+            let now = Date().timeIntervalSince1970
+            switch event {
+            case "service_added":
+                if row.rpcServiceAddedAt == nil { row.rpcServiceAddedAt = now }
+            case "acknowledged":
+                if row.rpcAcknowledgedAt == nil { row.rpcAcknowledgedAt = now }
+            case "removed":
+                if row.rpcServiceRemovedAt == nil { row.rpcServiceRemovedAt = now }
+            default: break
             }
         }
     }
@@ -1419,6 +1459,9 @@ public func goldgramObserveBackgroundConnectionReadiness(
     }))
     observations.add(account.network.shouldKeepConnection.get().start(next: { enabled in
         GoldgramBackgroundRefreshTrace.networkPermission(diagnosticToken, value: enabled)
+    }))
+    observations.add(account.network.mtprotoDiagnosticFlags.start(next: { flags in
+        GoldgramBackgroundRefreshTrace.transportFlags(diagnosticToken, flags: flags)
     }))
     observations.add(account.network.connectionStatus.start(next: { status in
         let label: String

@@ -3767,7 +3767,10 @@ private func pollChannel(accountPeerId: PeerId, postbox: Postbox, network: Netwo
             pollPts = 1
         }
         let request: Signal<Api.updates.ChannelDifference, MTRpcError> =
-            network.request(Api.functions.updates.getChannelDifference(flags: 0, channel: inputChannel, filter: .channelMessagesFilterEmpty, pts: max(pollPts, 1), limit: limit))
+            network.request(Api.functions.updates.getChannelDifference(flags: 0, channel: inputChannel, filter: .channelMessagesFilterEmpty, pts: max(pollPts, 1), limit: limit),
+                diagnosticTransportEvent: diagnosticToken.map { token in
+                    { event in GoldgramBackgroundRefreshTrace.rpcTransport(token, event: event) }
+                })
         let trackedRequest: Signal<Api.updates.ChannelDifference, MTRpcError>
         if let diagnosticToken {
             // The request enters MTRequestMessageService here; it does not prove
