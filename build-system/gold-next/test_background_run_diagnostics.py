@@ -25,7 +25,17 @@ for sensitive in ("message.text", "messageId", "senderId", "peerId", "mediaKeys"
 
 bg = app.split("private func goldgramRunRefresh(", 1)[1].split(
     "private var clearNotificationsManager", 1)[0]
-assert "GoldgramBackgroundRefreshTrace.begin()" in bg, "OS invocation must create run"
+assert "GoldgramBackgroundRefreshTrace.begin(" in bg, "OS invocation must create run"
+assert "excludingActiveToken: self.goldgramRefreshActiveToken" in bg, (
+    "Current BG task must be excluded when reconciling old records"
+)
+# #125: protect against other stale structural tests still requiring the old
+# exact no-argument invocation. Scan all existing Goldgram Python checks.
+old_invocation = "GoldgramBackgroundRefreshTrace." + "begin()"
+for check_file in (root / "build-system/gold-next").glob("*.py"):
+    assert old_invocation not in check_file.read_text(), (
+        f"Update stale BG begin assertion in {check_file.name}"
+    )
 assert '"ios_expiration"' in bg and '"goldgram_deadline"' in bg, "OS expiration != app deadline"
 assert "GoldgramBackgroundRefreshTrace.finish(token, reason: reason)" in bg
 assert "guard let self, !finished else { return }" in bg, "BG completion must run once"
