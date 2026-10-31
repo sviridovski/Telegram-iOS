@@ -373,8 +373,12 @@ assert 'diagnosticTransportEvent("acknowledged")' in request_method
 assert request_method.index('requestService.add(request)') < request_method.index(
     'diagnosticTransportEvent?("service_added")')
 assert 'diagnosticTransportEvent?("removed")' in request_method
-assert 'diagnosticTransportEvent: diagnosticToken.map { token in' in poll
-assert 'GoldgramBackgroundRefreshTrace.rpcTransport(token, event: event)' in poll
+# #129: transport events are dispatched to the active scoped trace:
+# regular BGAppRefresh OR the CoreLocation experiment, never a fake send.
+assert 'diagnosticTransportEvent: transportEvent' in poll
+assert 'GoldgramBackgroundRefreshTrace.rpcTransport(diagnosticToken, event: event)' in poll
+assert 'GoldgramLocationLabTrace.transport(locationTraceToken, event: event)' in poll
+assert 'transportEvent = nil' in poll
 for label in ("Транспорт №126:", "MTProto Connected впервые:",
               "Запрос принят MTRequestMessageService:", "MTProto ACK запроса:"):
     assert label in ui
