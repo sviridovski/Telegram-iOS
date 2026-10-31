@@ -68,6 +68,9 @@ public struct GoldgramBackgroundRefreshRun: Codable {
     public var leaseReleasedAt: Double?
     public var reconciledAt: Double?
     public var lateEventsIgnored: Int?
+    // #127 optional experimental snapshot counters, not confirmed originals.
+    public var labHistoryStarted: Int?
+    public var labHistoryCompleted: Int?
     // #126: read-only MTProto transport and request-service evidence.
     // No packet transmission is inferred from requestService.add().
     public var transportFlags: Int32?
@@ -129,6 +132,8 @@ public struct GoldgramBackgroundRefreshRun: Codable {
         self.leaseReleasedAt = nil
         self.reconciledAt = nil
         self.lateEventsIgnored = nil
+        self.labHistoryStarted = nil
+        self.labHistoryCompleted = nil
         self.transportFlags = nil
         self.firstTransportConnectedAt = nil
         self.rpcServiceAddedAt = nil
@@ -314,6 +319,16 @@ public enum GoldgramBackgroundRefreshTrace {
             case "removed":
                 if row.rpcServiceRemovedAt == nil { row.rpcServiceRemovedAt = now }
             default: break
+            }
+        }
+    }
+
+    public static func labHistory(_ token: String, finished: Bool) {
+        change(token) { row in
+            if finished {
+                row.labHistoryCompleted = (row.labHistoryCompleted ?? 0) + 1
+            } else {
+                row.labHistoryStarted = (row.labHistoryStarted ?? 0) + 1
             }
         }
     }
@@ -1216,6 +1231,13 @@ public func goldgramClearRetainedMedia(accountId: Int64, completion: @escaping (
     }
 }
 
+// #127 opt-in laboratory mode: account-scoped, OFF by default. No GPS or
+// unsupported background entitlements, no change to ordinary MTProto policy.
+public func goldgramFullCaptureLabEnabled(accountPeerId: PeerId) -> Bool {
+    return goldgramNativeHistoryEnabled() && UserDefaults.standard.bool(
+        forKey: "GoldgramFullCaptureLabV1.\(accountPeerId.id._internalGetInt64Value())")
+}
+
 // #104: opt-in, account-local priority groups for linked channel discussions.
 // This does not join groups, request notifications or keep iOS alive.
 private struct GoldgramPriorityDiscussion: Codable {
@@ -1351,7 +1373,7 @@ func goldgramRememberDiscussion(transaction: Transaction, peerId: PeerId, explic
 
 // Seed only the latest 100 accessible messages, once per active subscription.
 // This neither marks history read nor joins a group, and downloads no media.
-private func goldgramSeedDiscussion(account: Account, peerId: PeerId) -> Signal<Never, NoError> {
+private func goldgramSeedDiscussion(account: Account, peerId: PeerId, labOnly: Bool = false) -> Signal<Never, NoError> {
     return account.postbox.transaction { transaction -> (Peer, Api.InputPeer)? in
         guard goldgramNativeHistoryEnabled(), let peer = transaction.getPeer(peerId),
               goldgramKind(peerId, peer) != nil, let input = apiInputPeer(peer) else { return nil }
@@ -1378,7 +1400,19 @@ private func goldgramSeedDiscussion(account: Account, peerId: PeerId) -> Signal<
                 updatePeers(transaction: transaction, accountPeerId: account.peerId,
                     peers: AccumulatedPeers(transaction: transaction, chats: chats, users: users))
                 let stored = messages.compactMap { StoreMessage(apiMessage: $0, accountPeerId: account.peerId, peerIsForum: (peer as? TelegramChannel)?.isForumOrMonoForum ?? false) }
-                let _ = transaction.addMessages(stored, location: .Random)
+                if labOnly {
+                    // Never overwrite a newer Postbox revision with a snapshot.
+                    // Only positively received unedited bodies are baseline-only
+                    // native writes. Edited snapshots are rejected by the writer.
+                    guard let kind = goldgramKind(peerId, peer) else { return }
+                    for message in stored {
+                        guard case let .Id(id) = message.id, id.peerId == peerId else { continue }
+                        let _ = goldgramCaptureServerOriginal(
+                            accountPeerId: account.peerId, message: message, peerKind: kind)
+                    }
+                } else {
+                    let _ = transaction.addMessages(stored, location: .Random)
+                }
             }
             |> ignoreValues
         }
@@ -1388,6 +1422,8 @@ private func goldgramSeedDiscussion(account: Account, peerId: PeerId) -> Signal<
 private final class GoldgramDiscussionMonitor {
     private let account: Account
     private let refresh = MetaDisposable()
+    private let labPulse = MetaDisposable()
+    private let labSeedWork = MetaDisposable()
     private var subscriptions: [PeerId: Disposable] = [:]
 
     init(account: Account, queue: Queue) {
@@ -1431,9 +1467,41 @@ private final class GoldgramDiscussionMonitor {
                 self.subscriptions[id] = disposable
             }
         }))
+        // #127 LAB: aggressively request genuine current unedited bodies for
+        // up to 3 verified pinned discussions while Swiftgram is foreground.
+        // No new request is kept when the client is backgrounded.
+        let labClock: Signal<Void, NoError> = .single(())
+        |> then(Signal<Void, NoError>.complete() |> delay(10.0, queue: queue))
+        |> restart
+        self.labPulse.set((labClock
+        |> mapToSignal { _ -> Signal<[PeerId], NoError> in
+            guard goldgramFullCaptureLabEnabled(accountPeerId: account.peerId),
+                  UserDefaults.standard.bool(forKey: "GoldgramForegroundActiveV1") else {
+                return .single([])
+            }
+            return account.postbox.transaction { transaction -> [PeerId] in
+                return Array(goldgramPriorityPeers(transaction: transaction,
+                    accountPeerId: account.peerId).prefix(3))
+            }
+        }
+        |> deliverOn(queue)).start(next: { [weak self] ids in
+            guard let self else { return }
+            if ids.isEmpty {
+                self.labSeedWork.set(nil)
+                return
+            }
+            let requests = DisposableSet()
+            for id in ids {
+                requests.add(goldgramSeedDiscussion(account: account, peerId: id, labOnly: true).start())
+            }
+            // Never allow accumulating outstanding laboratory requests.
+            self.labSeedWork.set(requests)
+        }))
     }
     func stop() {
         self.refresh.dispose()
+        self.labPulse.dispose()
+        self.labSeedWork.dispose()
         for disposable in self.subscriptions.values { disposable.dispose() }
         self.subscriptions.removeAll()
     }
@@ -1496,7 +1564,8 @@ public func goldgramRefreshPriorityDiscussions(
         goldgramDrainPending(accountPeerId: account.peerId, transaction: transaction)
         let selected = goldgramPrioritySelection(transaction: transaction,
             accountPeerId: account.peerId)
-        let ids = Array(selected.peers.prefix(3))
+        let ids = goldgramFullCaptureLabEnabled(accountPeerId: account.peerId)
+            ? Array(selected.peers.prefix(6)) : Array(selected.peers.prefix(3))
         GoldgramBackgroundRefreshTrace.targets(diagnosticToken,
             accountId: account.peerId.id._internalGetInt64Value(), count: ids.count)
         GoldgramBackgroundRefreshTrace.selection(diagnosticToken,
@@ -1508,6 +1577,40 @@ public func goldgramRefreshPriorityDiscussions(
         return ids
     }
     |> mapToSignal { ids -> Signal<Never, NoError> in
+        // #127 LAB: run pinned discussions in parallel so a stalled request
+        // cannot starve other targets during the scarce OS execution window.
+        if goldgramFullCaptureLabEnabled(accountPeerId: account.peerId), !ids.isEmpty {
+            let differences: [Signal<Bool, NoError>] = ids.map { id in
+                return Signal { subscriber in
+                    GoldgramBackgroundRefreshTrace.request(diagnosticToken)
+                    let disposable = standalonePollChannelOnce(
+                        accountPeerId: account.peerId, postbox: account.postbox,
+                        network: account.network, peerId: id,
+                        stateManager: account.stateManager,
+                        diagnosticToken: diagnosticToken
+                    ).start(completed: {
+                        GoldgramBackgroundRefreshTrace.completedRequest(diagnosticToken)
+                        subscriber.putNext(true)
+                        subscriber.putCompletion()
+                    })
+                    return ActionDisposable { disposable.dispose() }
+                }
+            }
+            let history: [Signal<Bool, NoError>] = ids.prefix(3).map { id in
+                return Signal { subscriber in
+                    GoldgramBackgroundRefreshTrace.labHistory(diagnosticToken, finished: false)
+                    let disposable = goldgramSeedDiscussion(
+                        account: account, peerId: id, labOnly: true).start(completed: {
+                            GoldgramBackgroundRefreshTrace.labHistory(diagnosticToken, finished: true)
+                            subscriber.putNext(true)
+                            subscriber.putCompletion()
+                        })
+                    return ActionDisposable { disposable.dispose() }
+                }
+            }
+            return combineLatest(differences + history) |> ignoreValues
+        }
+        // Original non-experimental sequential behavior unchanged.
         return ids.reduce(Signal<Never, NoError>.complete()) { previous, id in
             let polled: Signal<Never, NoError> = Signal { subscriber in
                 GoldgramBackgroundRefreshTrace.request(diagnosticToken)

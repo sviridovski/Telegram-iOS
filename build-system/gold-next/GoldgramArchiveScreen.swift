@@ -83,6 +83,9 @@ private struct GoldgramBackgroundRunReport: Decodable {
     let leaseReleasedAt: Double?
     let reconciledAt: Double?
     let lateEventsIgnored: Int?
+    // #127 optional experimental history counts for old plist compatibility.
+    let labHistoryStarted: Int?
+    let labHistoryCompleted: Int?
     // #126: optional in-window transport checkpoints.
     let transportFlags: Int32?
     let firstTransportConnectedAt: Double?
@@ -196,6 +199,22 @@ public final class GoldgramArchiveScreen: UITableViewController {
                 ]) { _ in }
             })
         }
+        // #127: reversible, account-local, OFF-by-default laboratory mode.
+        let labKey = "GoldgramFullCaptureLabV1." + String(account)
+        let labEnabled = defaults.bool(forKey: labKey)
+        menu.addAction(UIAlertAction(
+            title: labEnabled ? "Выключить Full Capture Lab №127" : "Включить Full Capture Lab №127",
+            style: labEnabled ? .destructive : .default
+        ) { _ in
+            defaults.set(!labEnabled, forKey: labKey)
+            let explanation = labEnabled
+                ? "Лабораторный режим выключен. Архив SQLite сохранён. Обычные функции не изменены."
+                : "Лабораторный режим включён: до 6 проверенных обсуждений в системном фоне опрашиваются одновременно, до 3 получают снимки текущей истории. Пока клиент открыт, каждые 10 секунд до 3 закреплённых обсуждений опрашиваются на свежие оригиналы. Повышенный расход батареи и трафика. При полной приостановке iOS код не выполняется. Оригинал, который не получен до изменения, не восстановить."
+            let alert = UIAlertController(title: "Full Capture Lab №127",
+                message: explanation, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "Понятно", style: .default))
+            self.present(alert, animated: true)
+        })
         // #104: explicit monitoring preference, independent of the one-off test.
         // Channel folders include a verified broadcast source when available.
         if category == 2, let source = sources?.first(where: {
@@ -522,6 +541,10 @@ public final class GoldgramArchiveScreen: UITableViewController {
                         report += "\nСнимок tooLong №120: сообщений \(total), с меткой редакции \(withEdit), без метки \(withoutEdit), прочих/нераспознанных \(max(0, total - withEdit - withoutEdit))"
                         report += "\nИз снимка в очередь оригиналов: \(item.tooLongOriginalsQueued ?? 0)"
                         report += "\nБез метки редакции ≠ доказательство прежней истории; уже изменённые снимки не считаем оригиналами."
+                    }
+                    if let started = item.labHistoryStarted {
+                        report += "\nFull Capture Lab №127: запросов свежей истории \(started), завершено \(item.labHistoryCompleted ?? 0)"
+                        report += "\nЗавершение снимка не доказывает, что оригинал записан на диск."
                     }
                     report += "\nОригиналов поставлено в очередь SQLite: \(item.originalsQueued)"
                 }

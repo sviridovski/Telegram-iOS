@@ -382,3 +382,39 @@ assert "не подтверждение отправки" in ui and "не под
 assert 'DispatchQueue.main.asyncAfter(deadline: .now() + 24.0)' in app
 assert 'self.network.goldgramRequestTransportRecovery(' not in observer
 print("Goldgram #126: transport evidence scoped, optional, 24s, no reconnect or SQL changes")
+
+
+# #127: separate OFF-by-default laboratory mode; no rewrite of existing
+# Telegram update/PTS/replay or original-capture provenance.
+for field in ("labHistoryStarted", "labHistoryCompleted"):
+    assert f"public var {field}: Int?" in model
+    assert f"self.{field} = nil" in model
+    assert f"let {field}: Int?" in ui
+assert 'public func goldgramFullCaptureLabEnabled(accountPeerId: PeerId) -> Bool' in core
+assert 'GoldgramFullCaptureLabV1.' in core and 'GoldgramFullCaptureLabV1.' in ui
+seed = core.split("private func goldgramSeedDiscussion(", 1)[1].split(
+    "private final class GoldgramDiscussionMonitor", 1)[0]
+assert 'labOnly: Bool = false' in seed
+assert 'if labOnly {' in seed and 'goldgramCaptureServerOriginal(' in seed
+assert 'id.peerId == peerId' in seed
+assert 'let _ = transaction.addMessages(stored, location: .Random)' in seed
+assert 'EditedMessageAttribute' in core
+monitor = core.split("private final class GoldgramDiscussionMonitor", 1)[1].split("// #114:", 1)[0]
+assert 'delay(10.0, queue: queue)' in monitor
+assert 'GoldgramForegroundActiveV1' in monitor
+assert 'self.labSeedWork.set(requests)' in monitor
+assert 'self.labPulse.dispose()' in monitor and 'self.labSeedWork.dispose()' in monitor
+refresh_lab = core.split("public func goldgramRefreshPriorityDiscussions(", 1)[1].split("// The UI owns", 1)[0]
+assert 'Array(selected.peers.prefix(6)) : Array(selected.peers.prefix(3))' in refresh_lab
+assert 'if goldgramFullCaptureLabEnabled(accountPeerId: account.peerId), !ids.isEmpty' in refresh_lab
+assert 'combineLatest(differences + history) |> ignoreValues' in refresh_lab
+assert 'ids.prefix(3).map' in refresh_lab
+assert 'return ids.reduce(Signal<Never, NoError>.complete())' in refresh_lab
+assert 'GoldgramBackgroundRefreshTrace.labHistory(diagnosticToken, finished: true)' in refresh_lab
+assert 'labOnly: true' in refresh_lab
+assert 'Включить Full Capture Lab №127' in ui and 'Выключить Full Capture Lab №127' in ui
+assert 'Full Capture Lab №127: запросов свежей истории' in ui
+assert 'DispatchQueue.main.asyncAfter(deadline: .now() + 24.0)' in app
+assert 'requestSecureTransportReset()' not in refresh_lab
+assert 'CLLocationManager' not in refresh_lab and 'AVAudioSession' not in refresh_lab
+print("Goldgram #127: reversible lab, bounded foreground bursts, concurrent BG, safe original provenance OK")
