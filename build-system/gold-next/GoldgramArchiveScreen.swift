@@ -97,6 +97,8 @@ private struct GoldgramBackgroundRunReport: Decodable {
 // #129: local plist mirror (archive UI is not linked into TelegramCore).
 // Strictly content-free: no coordinates, peer IDs, message texts or tokens.
 private struct GoldgramLocationLabReportRow: Decodable {
+    // App-generated UUID only; used for local SQL linkage, never printed.
+    let token: String
     let at: Double
     let source: String
     let appState: String
@@ -123,6 +125,11 @@ private struct GoldgramLocationLabReportRow: Decodable {
     let historyMessages: Int
     let historyFailed: Int
     let historyQueued: Int
+    let historySkippedEdited: Int?
+    let historySkippedEmpty: Int?
+    let historyWrongPeer: Int?
+    let historyNotConverted: Int?
+    let historyWriterRejected: Int?
     let lateCallbacksIgnored: Int
 }
 
@@ -342,11 +349,17 @@ public final class GoldgramArchiveScreen: UITableViewController {
         // A controlled GEO OFF test must not show a previous geo interval.
         let geoInThisTest = geoStarted > 0 && geoEnd > geoStarted &&
             geoStarted >= diagnosticSinceSeconds
+        let traceRows: [GoldgramLocationLabReportRow] = {
+            guard let data = defaults.data(forKey: "GoldgramLocationLabAttemptsV1"),
+                  let rows = try? PropertyListDecoder().decode([GoldgramLocationLabReportRow].self, from: data) else { return [] }
+            return Array(rows.suffix(12))
+        }()
         let request: NSDictionary = [
             "accountId": NSNumber(value: account), "category": 3,
             "mode": "diagnostics", "since": since ?? NSNumber(value: 0),
             "geoSince": NSNumber(value: geoInThisTest ? Int64(geoStarted * 1000.0) : 0),
-            "geoUntil": NSNumber(value: geoInThisTest ? Int64(geoEnd * 1000.0) : 0)
+            "geoUntil": NSNumber(value: geoInThisTest ? Int64(geoEnd * 1000.0) : 0),
+            "attemptTokens": traceRows.map { $0.token }
         ]
         GoldgramArchiveReader.query(request) { [weak self] answer in
             guard let self else { return }
@@ -382,8 +395,8 @@ public final class GoldgramArchiveScreen: UITableViewController {
                 var lines = "\n\n\(heading)"
                 lines += "\nПервичных оригиналов с SQLite COMMIT: \(count("committed"))"
                 lines += "\nИсточник: сенсор \(count("sensor")), сворачивание \(count("minimized")), BGAppRefresh \(count("os")), обычные обновления \(count("live")), NotificationService \(count("notification"))"
-                lines += "\nОригинал сохранён раньше первой ЗАРЕГИСТРИРОВАННОЙ редакции: \(count("beforeObservedEdit"))"
-                lines += "\nОригинал впервые получен одновременно с/после редакции: \(count("afterOrWithEdit"))"
+                lines += "\nПо времени ПОСТУПЛЕНИЯ в очередь раньше редакции: \(count("beforeObservedEdit")) (старый критерий №131)"
+                lines += "\nИз очереди вместе с/после редакции: \(count("afterOrWithEdit"))"
                 lines += "\nПолучен вместе с edit-update (не заранее): \(count("withEdit"))"
                 lines += "\nЭто местный порядок наблюдений, не доказательство времени первого изменения на сервере. Старые записи до #131 не переатрибутируются."
                 return lines
@@ -392,6 +405,38 @@ public final class GoldgramArchiveScreen: UITableViewController {
                 report += auditText(audit, heading: "Доказательства записи оригиналов №131 (текущий тест):")
             } else {
                 report += "\n\nАудит оригиналов №131 пока недоступен (не было инициализации новой служебной таблицы)."
+            }
+            // #133: current actual SQLite COMMIT window, not callback/queue.
+            func statesText(_ value: [String: Any], title: String) -> String {
+                func n(_ key: String) -> Int64 { (value[key] as? NSNumber)?.int64Value ?? 0 }
+                var lines = "\n\n\(title)"
+                lines += "\nФактических первичных COMMIT: \(n("total"))"
+                lines += "\nКогда приложение в фоне: \(n("committedBg"))"
+                lines += "\nКогда приложение на экране: \(n("committedFg"))"
+                lines += "\nНеизвестное состояние: \(n("stateUnknown"))"
+                lines += "\nПринято в фоне, COMMIT уже на экране: \(n("queuedBgCommittedFg"))"
+                lines += "\nЭто состояние по локальному lifecycle в МОМЕНТ записи SQLite, а не доказательство непрерывной работы iOS."
+                return lines
+            }
+            func editedText(_ value: [String: Any], title: String) -> String {
+                func n(_ key: String) -> Int64 { (value[key] as? NSNumber)?.int64Value ?? 0 }
+                var lines = "\n\n\(title)"
+                lines += "\nРедакций (уникальных сообщений) за окно: \(n("edited"))"
+                lines += "\nС оригиналом в SQLite сейчас: \(n("originalKnown"))"
+                lines += "\nПервый COMMIT раньше ПЕРВОЙ зарегистрированной редакции: \(n("provenBefore"))"
+                lines += "\nПервый COMMIT одновременно/после редакции: \(n("committedAfter"))"
+                lines += "\nОригинал известен, но источник/COMMIT до №133 не установлен: \(n("unattributedKnown"))"
+                lines += "\nРедакции без оригинала: \(n("missingOriginal"))"
+                lines += "\nИз записанных заранее: в фоне \(n("beforeBg")), на экране \(n("beforeFg"))"
+                lines += "\nИсточник заранее записанных: гео-сенсор \(n("fromGeoSensor")), сворачивание \(n("fromMinimized")), BGAppRefresh \(n("fromOS")), live \(n("fromLive")), история \(n("fromHistory"))"
+                lines += "\nРечь только о порядке наблюдений клиентом; серверное время редактирования может быть раньше."
+                return lines
+            }
+            if let states = answer["commitStates"] as? [String: Any] {
+                report += statesText(states, title: "Жизненный цикл SQLite COMMIT №133 (текущий тест):")
+            }
+            if let edits = answer["editedEvidence"] as? [String: Any] {
+                report += editedText(edits, title: "Редакции + конкретные оригиналы №133 (текущий тест):")
             }
             // OS refresh evidence, never interpreted as proof of original delivery.
             let defaults = UserDefaults.standard
@@ -428,11 +473,18 @@ public final class GoldgramArchiveScreen: UITableViewController {
                 if let geoAudit = answer["geoEvidence"] as? [String: Any] {
                     report += auditText(geoAudit, heading: "Аудит COMMIT за это гео-окно №131:")
                 }
+                if let states = answer["geoCommitStates"] as? [String: Any] {
+                    report += statesText(states, title: "Фактические COMMIT в гео-окне №133:")
+                }
+                if let edits = answer["geoEditedEvidence"] as? [String: Any] {
+                    report += editedText(edits, title: "Редакции и ранние оригиналы в гео-окне №133:")
+                }
             }
-            if let data = defaults.data(forKey: "GoldgramLocationLabAttemptsV1"),
-               let rows = try? PropertyListDecoder().decode([GoldgramLocationLabReportRow].self, from: data) {
+            if !traceRows.isEmpty {
                 report += "\n\nОтдельный журнал фоновых попыток №129:"
-                for (i, row) in rows.suffix(12).reversed().enumerated() {
+                // No account/message IDs or raw tokens are displayed.
+                let outcomes = (answer["attemptOutcomes"] as? [[String: Any]] ?? [])
+                for (i, row) in traceRows.reversed().enumerated() {
                     report += "\n\n\(i + 1). \(self.dateFormatter.string(from: Date(timeIntervalSince1970: row.at))) · \(row.source) · \(row.appState)"
                     let reason = row.finalReason ?? (Date().timeIntervalSince1970 - row.at > 18.0
                         ? "нет завершения (вероятно отложено системой)" : "выполняется")
@@ -444,6 +496,23 @@ public final class GoldgramArchiveScreen: UITableViewController {
                     report += "\nИз ответов API: новых \(row.newMessages), редакций \(row.edits)"
                     report += "\nВ очередь оригиналов из difference \(row.originalsQueued)"
                     report += "\nИстория: запущено \(row.historyStarted), ответов \(row.historyResponses), сообщений \(row.historyMessages), ошибок \(row.historyFailed), в очередь \(row.historyQueued)"
+                    let editedFiltered = row.historySkippedEdited ?? 0
+                    let emptyFiltered = row.historySkippedEmpty ?? 0
+                    let peerFiltered = row.historyWrongPeer ?? 0
+                    let unconverted = row.historyNotConverted ?? 0
+                    let rejected = row.historyWriterRejected ?? 0
+                    if row.historySkippedEdited != nil {
+                        report += "\nФильтры API-снимка: уже изменённые \(editedFiltered), пустые \(emptyFiltered), чужие \(peerFiltered), не распознаны \(unconverted), writer отклонил \(rejected)"
+                    }
+                    let accepted = row.historyQueued + row.originalsQueued
+                    if let dbrow = outcomes.first(where: { ($0["token"] as? String) == row.token }) {
+                        func n(_ key: String) -> Int64 { (dbrow[key] as? NSNumber)?.int64Value ?? 0 }
+                        let processed = n("processed")
+                        let failed = n("failed")
+                        report += "\nSQLite для ЭТОЙ попытки №133: writer принял \(accepted), обработано \(processed), новых COMMIT \(n("newCommitted")), уже существовали \(n("alreadyKnown")), ошибок записи (best effort) \(failed), не подтверждено \(max(Int64(0), Int64(accepted) - processed - failed))"
+                    } else if accepted > 0 {
+                        report += "\nSQLite №133: \(accepted) принятых в очередь, подтверждений обработки пока нет (либо запись недоступна)."
+                    }
                     if row.lateCallbacksIgnored > 0 {
                         report += "\nОтложенные callbacks вне окна 18с: \(row.lateCallbacksIgnored)"
                     }

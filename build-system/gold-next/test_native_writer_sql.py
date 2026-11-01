@@ -70,14 +70,14 @@ for mid in (100,101):
     db.execute('INSERT INTO messages(peer_kind,peer_id,message_id,first_seen_at,last_seen_at,original_observed,original_text) VALUES(2,111,?,100,100,1,?)',
                (mid, 'original text owned by existing messages table'))
 token = str(uuid.uuid4())
-db.execute(audit_sql, (2,111,100,100,'geo_sensor',token,0,2,111,100))
+db.execute(audit_sql, (2,111,100,100,'geo_sensor',token,0,2,111,100,100,'background','background'))
 db.execute('INSERT INTO events(peer_kind,peer_id,message_id,event_kind,source,event_key,observed_at) VALUES(2,111,100,1,?,?,200)',
            ('telegram_edit_update','edit_100'))
 db.execute('INSERT INTO events(peer_kind,peer_id,message_id,event_kind,source,event_key,observed_at) VALUES(2,111,101,1,?,?,150)',
            ('telegram_edit_update','edit_101'))
-db.execute(audit_sql, (2,111,101,175,'edit_with_before',None,1,2,111,101))
+db.execute(audit_sql, (2,111,101,175,'edit_with_before',None,1,2,111,101,175,'foreground','foreground'))
 # Duplicated API history must never rewrite the first source/time/attempt.
-db.execute(audit_sql, (2,111,100,300,'history_snapshot',None,0,2,111,100))
+db.execute(audit_sql, (2,111,100,300,'history_snapshot',None,0,2,111,100,300,'foreground','foreground'))
 assert db.execute('SELECT source,captured_at,edit_already_observed,attempt_token FROM original_capture_evidence WHERE message_id=100').fetchone() == ('geo_sensor',100,0,token)
 assert db.execute('SELECT source,captured_at,edit_already_observed FROM original_capture_evidence WHERE message_id=101').fetchone() == ('edit_with_before',175,1)
 assert db.execute(count_sql, (90,300)).fetchone() == (2,1,0,0,0,0,1,1,1)
@@ -85,6 +85,39 @@ cols={x[1] for x in db.execute('PRAGMA table_info(original_capture_evidence)')}
 assert 'original_text' not in cols and 'attempt_token' in cols
 # Pre-#131 known originals do NOT receive retrospective provenance.
 assert db.execute('SELECT COUNT(*) FROM original_capture_evidence').fetchone()[0] == 2
+# #133: exercise the exact production read-only aggregate SQL.
+commits_sql=re.search(r'let commitsSQL = """\n(.*?)\n            """', diagnostic, re.S)
+edited_sql=re.search(r'let editedSQL = """\n(.*?)\n            """', diagnostic, re.S)
+attempt_sql=re.search(r'let attemptsSQL = """\n(.*?)\n            """', diagnostic, re.S)
+assert commits_sql and edited_sql and attempt_sql
+commits_sql=commits_sql.group(1)
+edited_sql=edited_sql.group(1)
+attempt_sql=attempt_sql.group(1)
+assert db.execute(commits_sql,(90,300)).fetchone()==(2,1,1,0,0)
+assert db.execute(edited_sql,(90,300)).fetchone()==(2,2,1,1,0,0,1,0,1,0,0,0,0)
+assert db.execute('SELECT captured_at,committed_at,enqueue_state,commit_state FROM original_capture_evidence WHERE message_id=100').fetchone()==(100,100,'background','background')
+assert db.execute('SELECT captured_at,committed_at,enqueue_state,commit_state FROM original_capture_evidence WHERE message_id=101').fetchone()==(175,175,'foreground','foreground')
+
+# Per geo-attempt SQL is the exact upsert executed by the app writer.
+attempt_func=source.split('private static func recordAttempt(',1)[1].split(
+    'private static func lifecycleState()',1)[0] if False else source.split(
+    'private static func recordAttempt(',1)[1].split(
+    '// Goldgram #67: additive metadata',1)[0]
+attempt_insert=re.search(r'let sql = """\n(.*?)\n        """',attempt_func,re.S)
+assert attempt_insert, 'production attempt accounting SQL'
+insert=attempt_insert.group(1)
+db.execute(insert,(token,'geo_sensor',1,1,0,0))
+db.execute(insert,(token,'geo_sensor',1,0,1,0))
+assert db.execute(attempt_sql,(token,)).fetchone()==(2,1,1,0)
+assert 'let enqueueState = lifecycleState()' in source
+assert 'committedAt: Int64(Date().timeIntervalSince1970 * 1000)' in source
+assert 'commitState: lifecycleState()' in source
+assert 'try ensureOriginalEvidenceColumns(on: db)' in source
+assert 'ALTER TABLE original_capture_evidence ADD COLUMN' in source
+assert 'currentSchemaVersion: Int32 = 2' in source
+assert 'WHEN a.committed_at<e.first_edit_at' in edited_sql
+print('Goldgram #133: actual COMMIT timestamps, lifecycle, edit joins, per-attempt idempotency OK')
+
 db.execute('DELETE FROM messages WHERE peer_kind=2 AND peer_id=111 AND message_id=100')
 assert db.execute('SELECT COUNT(*) FROM original_capture_evidence WHERE message_id=100').fetchone()[0] == 0
 assert db.execute('PRAGMA foreign_key_check').fetchall() == []

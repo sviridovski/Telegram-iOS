@@ -517,7 +517,7 @@ assert 'removeObject(forKey: "GoldgramLocationLabStartedAtV1")' in ui
 assert 'removeObject(forKey: "GoldgramLocationLabWindowEndV1")' in ui
 assert 'Доказательства записи оригиналов №131' in ui
 assert 'Аудит COMMIT за это гео-окно №131' in ui
-assert 'ЗАРЕГИСТРИРОВАННОЙ редакции' in ui
+assert 'ПЕРВОЙ зарегистрированной редакции' in ui
 assert 'beforeObservedEdit' in sql
 assert 'edit_already_observed' in sql
 assert 'original_capture_evidence' in sql
@@ -525,3 +525,44 @@ assert 'evidence(since: diagnosticSince, until: Int64.max)' in sql
 assert 'evidence(since: geoSince, until: geoUntil)' in sql
 assert 'PRAGMA user_version = 2' in sql
 print('Goldgram #131: privacy-safe original evidence, edit timing and no stale geo window OK')
+
+
+# #133: no background bypass; account-scoped audit at actual SQLite COMMIT,
+# edited-record joins and count reconciliation for source-specific history.
+for needle in ('historySkippedEdited: Int?', 'historySkippedEmpty: Int?',
+               'historyWrongPeer: Int?', 'historyNotConverted: Int?',
+               'historyWriterRejected: Int?', 'func historyFilters(',
+               'skippedEdited += 1', 'skippedEmpty += 1',
+               'wrongPeer += 1', 'writerRejected += 1',
+               'messages.count - stored.count'):
+    assert needle in core, needle
+for needle in ('let token: String', '"attemptTokens": traceRows.map { $0.token }',
+               'Доказательства записи оригиналов №131',
+               'Жизненный цикл SQLite COMMIT №133',
+               'Редакции + конкретные оригиналы №133',
+               'SQLite для ЭТОЙ попытки №133',
+               'historySkippedEdited', 'historyWriterRejected',
+               'newCommitted', 'alreadyKnown', 'не подтверждено'):
+    assert needle in ui, needle
+for needle in ('ensureOriginalEvidenceColumns(on: db)', 'GoldgramForegroundActiveV1',
+               'committed_at INTEGER', 'enqueue_state TEXT', 'commit_state TEXT',
+               'CREATE TABLE IF NOT EXISTS original_capture_attempts',
+               'INSERT INTO original_capture_attempts',
+               'UPDATE SET' if False else 'ON CONFLICT(attempt_token) DO UPDATE SET',
+               'let enqueueState = lifecycleState()',
+               'commitState: lifecycleState()',
+               'let commitsSQL = """', 'WHERE committed_at >= ? AND committed_at < ?',
+               'let editedSQL = """', 'LEFT JOIN original_capture_evidence a USING',
+               'FROM recent r', 'let attemptsSQL = """',
+               'result["attemptOutcomes"] = attempts',
+               'result["geoCommitStates"] = states',
+               'result["geoEditedEvidence"] = joined'):
+    assert needle in sql, needle
+assert 'CREATE TABLE IF NOT EXISTS original_capture_attempts' in sql
+assert 'GoldgramForegroundSyncTrace.lifecycle(active: false)' in app
+assert app.count('GoldgramForegroundSyncTrace.lifecycle(active: true)') == 2
+assert 'self.goldgramLocationActiveToken == token' in app
+assert 'UPDATE messages SET original_observed=1' in sql
+assert 'DELETE FROM original_capture_evidence' not in sql
+assert 'ALTER TABLE original_capture_evidence ADD COLUMN' in sql
+print('Goldgram #133: lifecycle commit, per-edit source, queued/duplicate/failed reconciliation OK')

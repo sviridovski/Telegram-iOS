@@ -475,6 +475,12 @@ public struct GoldgramLocationLabAttempt: Codable {
     public var historyMessages: Int
     public var historyFailed: Int
     public var historyQueued: Int
+    // Optional for reading old #129/#132 property-list rows safely.
+    public var historySkippedEdited: Int?
+    public var historySkippedEmpty: Int?
+    public var historyWrongPeer: Int?
+    public var historyNotConverted: Int?
+    public var historyWriterRejected: Int?
     public var lateCallbacksIgnored: Int
 
     public init(token: String, source: String, appState: String) {
@@ -505,6 +511,11 @@ public struct GoldgramLocationLabAttempt: Codable {
         self.historyMessages = 0
         self.historyFailed = 0
         self.historyQueued = 0
+        self.historySkippedEdited = 0
+        self.historySkippedEmpty = 0
+        self.historyWrongPeer = 0
+        self.historyNotConverted = 0
+        self.historyWriterRejected = 0
         self.lateCallbacksIgnored = 0
     }
 }
@@ -643,6 +654,17 @@ public enum GoldgramLocationLabTrace {
     }
     public static func historyQueued(_ token: String, count: Int) {
         change(token) { $0.historyQueued += count }
+    }
+    // #133: only quantitative filter reasons; no message or peer IDs.
+    public static func historyFilters(_ token: String, edited: Int, empty: Int,
+                                      wrongPeer: Int, unconverted: Int, rejected: Int) {
+        change(token) { row in
+            row.historySkippedEdited = (row.historySkippedEdited ?? 0) + edited
+            row.historySkippedEmpty = (row.historySkippedEmpty ?? 0) + empty
+            row.historyWrongPeer = (row.historyWrongPeer ?? 0) + wrongPeer
+            row.historyNotConverted = (row.historyNotConverted ?? 0) + unconverted
+            row.historyWriterRejected = (row.historyWriterRejected ?? 0) + rejected
+        }
     }
     public static func finish(_ token: String, reason: String) {
         change(token) {
@@ -1630,8 +1652,23 @@ private func goldgramSeedDiscussion(account: Account, peerId: PeerId, labOnly: B
                     // native writes. Edited snapshots are rejected by the writer.
                     guard let kind = goldgramKind(peerId, peer) else { return }
                     var accepted = 0
+                    var skippedEdited = 0
+                    var skippedEmpty = 0
+                    var wrongPeer = 0
+                    var writerRejected = 0
                     for message in stored {
-                        guard case let .Id(id) = message.id, id.peerId == peerId else { continue }
+                        guard case let .Id(id) = message.id, id.peerId == peerId else {
+                            wrongPeer += 1
+                            continue
+                        }
+                        if message.attributes.contains(where: { $0 is EditedMessageAttribute }) {
+                            skippedEdited += 1
+                            continue
+                        }
+                        if message.text.isEmpty && message.media.isEmpty {
+                            skippedEmpty += 1
+                            continue
+                        }
                         if goldgramCaptureServerOriginal(
                             accountPeerId: account.peerId, message: message, peerKind: kind,
                             evidenceSource: locationTraceToken.map {
@@ -1639,10 +1676,17 @@ private func goldgramSeedDiscussion(account: Account, peerId: PeerId, labOnly: B
                             } ?? "history_snapshot",
                             evidenceAttempt: locationTraceToken) {
                             accepted += 1
+                        } else {
+                            writerRejected += 1
                         }
                     }
                     if let locationTraceToken {
                         GoldgramLocationLabTrace.historyQueued(locationTraceToken, count: accepted)
+                        GoldgramLocationLabTrace.historyFilters(locationTraceToken,
+                            edited: skippedEdited, empty: skippedEmpty,
+                            wrongPeer: wrongPeer,
+                            unconverted: max(0, messages.count - stored.count),
+                            rejected: writerRejected)
                     }
                 } else {
                     let _ = transaction.addMessages(stored, location: .Random)

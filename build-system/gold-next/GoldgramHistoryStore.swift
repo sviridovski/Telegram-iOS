@@ -124,6 +124,9 @@ enum GoldgramHistoryStore {
         // Additive idempotent table, not a new database or user_version bump.
         // Capture and audit are committed in the SAME SQLite transaction.
         try execute(schemaOriginalEvidence, on: db)
+        // #133: additive, backward-compatible: old #131 audits retain unknown
+        // commit state/time. No user_version bump and no archive rebuild.
+        try ensureOriginalEvidenceColumns(on: db)
 
         // Protect DB and existing WAL/SHM sidecars. The account directory
         // sets the inherited protection for sidecars created on later writes.
@@ -264,13 +267,104 @@ enum GoldgramHistoryStore {
         source TEXT NOT NULL,
         attempt_token TEXT,
         edit_already_observed INTEGER NOT NULL CHECK(edit_already_observed IN (0,1)),
+        committed_at INTEGER,
+        enqueue_state TEXT,
+        commit_state TEXT,
         PRIMARY KEY(peer_kind, peer_id, message_id),
         FOREIGN KEY(peer_kind, peer_id, message_id)
             REFERENCES messages(peer_kind, peer_id, message_id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS original_evidence_by_time
         ON original_capture_evidence(captured_at);
+    CREATE TABLE IF NOT EXISTS original_capture_attempts (
+        attempt_token TEXT PRIMARY KEY,
+        source TEXT NOT NULL,
+        processed INTEGER NOT NULL DEFAULT 0,
+        new_committed INTEGER NOT NULL DEFAULT 0,
+        already_present INTEGER NOT NULL DEFAULT 0,
+        failed INTEGER NOT NULL DEFAULT 0
+    );
     """
+
+    private static func ensureOriginalEvidenceColumns(on db: OpaquePointer) throws {
+        var pointer: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "PRAGMA table_info(original_capture_evidence);", -1, &pointer, nil) == SQLITE_OK,
+              let stmt = pointer else {
+            if let pointer { sqlite3_finalize(pointer) }
+            throw StorageError.sqlite(sqlite3_errcode(db))
+        }
+        var names = Set<String>()
+        var rc: Int32 = SQLITE_ROW
+        while true {
+            rc = sqlite3_step(stmt)
+            if rc != SQLITE_ROW { break }
+            if let raw = sqlite3_column_text(stmt, 1) {
+                names.insert(String(cString: raw))
+            }
+        }
+        sqlite3_finalize(stmt)
+        guard rc == SQLITE_DONE else { throw StorageError.sqlite(rc) }
+        for (name, type) in [("committed_at", "INTEGER"), ("enqueue_state", "TEXT"), ("commit_state", "TEXT")] {
+            if !names.contains(name) {
+                try execute("ALTER TABLE original_capture_evidence ADD COLUMN \(name) \(type);", on: db)
+            }
+        }
+    }
+
+    // Returns a lifecycle snapshot at the time of the actual SQLite operation.
+    // It is diagnostic context, not a guarantee that iOS never suspended the app.
+    private static func lifecycleState() -> String {
+        let defaults = UserDefaults.standard
+        guard let value = defaults.object(forKey: "GoldgramForegroundActiveV1") as? NSNumber else {
+            return "unknown"
+        }
+        return value.boolValue ? "foreground" : "background"
+    }
+
+    private static func recordAttempt(
+        db: OpaquePointer, token: String?, source: String, outcome: String
+    ) throws {
+        guard let token, UUID(uuidString: token) != nil else { return }
+        let acceptedSource = ["geo_sensor", "geo_minimized", "geo_unclassified"].contains(source)
+            ? source : "geo_unclassified"
+        let sql = """
+        INSERT INTO original_capture_attempts
+            (attempt_token,source,processed,new_committed,already_present,failed)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(attempt_token) DO UPDATE SET
+            processed=processed+excluded.processed,
+            new_committed=new_committed+excluded.new_committed,
+            already_present=already_present+excluded.already_present,
+            failed=failed+excluded.failed;
+        """
+        var pointer: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &pointer, nil) == SQLITE_OK, let stmt = pointer else {
+            if let pointer { sqlite3_finalize(pointer) }
+            throw StorageError.sqlite(sqlite3_errcode(db))
+        }
+        defer { sqlite3_finalize(stmt) }
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        func bind(_ string: String, _ index: Int32) throws {
+            let rc = string.utf8CString.withUnsafeBufferPointer {
+                sqlite3_bind_text(stmt, index, $0.baseAddress, Int32($0.count - 1), transient)
+            }
+            guard rc == SQLITE_OK else { throw StorageError.sqlite(rc) }
+        }
+        try bind(token, 1)
+        try bind(acceptedSource, 2)
+        let values: [Int64] = [
+            outcome == "failed" ? 0 : 1,
+            outcome == "new" ? 1 : 0,
+            outcome == "existing" ? 1 : 0,
+            outcome == "failed" ? 1 : 0
+        ]
+        for (i, value) in values.enumerated() {
+            let rc = sqlite3_bind_int64(stmt, Int32(i+3), value)
+            guard rc == SQLITE_OK else { throw StorageError.sqlite(rc) }
+        }
+        let rc = sqlite3_step(stmt)
+        guard rc == SQLITE_DONE else { throw StorageError.sqlite(rc) }
+    }
 
     // Goldgram #67: additive metadata, never a destructive table rebuild.
     // Times are Unix milliseconds; unknown values stay NULL. v1 rows retain
@@ -391,7 +485,8 @@ private extension GoldgramHistoryStore {
 
     static func recordFirstOriginalEvidence(
         db: OpaquePointer, scope: [Int64], at: Int64,
-        source: String, attempt: String?, concurrentEdit: Bool
+        source: String, attempt: String?, concurrentEdit: Bool,
+        committedAt: Int64, enqueueState: String, commitState: String
     ) throws {
         // Only these labels can be persisted; never store arbitrary caller strings.
         let sources: Set<String> = [
@@ -409,11 +504,12 @@ private extension GoldgramHistoryStore {
         }()
         let sql = """
         INSERT OR IGNORE INTO original_capture_evidence
-        (peer_kind, peer_id, message_id, captured_at, source, attempt_token, edit_already_observed)
+        (peer_kind, peer_id, message_id, captured_at, source, attempt_token, edit_already_observed,
+         committed_at, enqueue_state, commit_state)
         VALUES (?, ?, ?, ?, ?, ?, CASE WHEN ?=1 OR EXISTS(
             SELECT 1 FROM events e WHERE e.peer_kind=? AND e.peer_id=?
               AND e.message_id=? AND e.event_kind=1
-        ) THEN 1 ELSE 0 END);
+        ) THEN 1 ELSE 0 END, ?, ?, ?);
         """
         var pointer: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &pointer, nil) == SQLITE_OK, let stmt = pointer else {
@@ -440,6 +536,9 @@ private extension GoldgramHistoryStore {
             let rc = sqlite3_bind_int64(stmt, Int32(i + 7), value)
             guard rc == SQLITE_OK else { throw StorageError.sqlite(rc) }
         }
+        guard sqlite3_bind_int64(stmt, 11, committedAt) == SQLITE_OK else { throw StorageError.sqlite(SQLITE_ERROR) }
+        try bindText(["background","foreground","unknown"].contains(enqueueState) ? enqueueState : "unknown", index: 12)
+        try bindText(["background","foreground","unknown"].contains(commitState) ? commitState : "unknown", index: 13)
         let rc = sqlite3_step(stmt)
         guard rc == SQLITE_DONE else { throw StorageError.sqlite(rc) }
     }
@@ -988,12 +1087,16 @@ public final class GoldgramArchiveReader: NSObject {
         // claimed attribution to a specific CoreLocation callback.
         let geoSince = max(Int64(0), (request["geoSince"] as? NSNumber)?.int64Value ?? 0)
         let geoUntil = max(Int64(0), (request["geoUntil"] as? NSNumber)?.int64Value ?? 0)
+        // Only accept bounded UUIDs from this same selected account/test.
+        let attemptTokens = Array(Set((request["attemptTokens"] as? [String] ?? [])
+            .filter { UUID(uuidString: $0) != nil })).prefix(24)
         GoldgramHistoryStore.storageQueue.async {
             let response = self.read(
                 accountId: accountId, mode: mode,
                 kinds: kinds, peerId: peerId, peerKind: scopedPeerKind, sources: sources, deletedOnly: category == 3,
                 offset: Int32(offset), limit: Int32(limit), diagnosticSince: diagnosticSince,
-                geoSince: geoSince, geoUntil: geoUntil
+                geoSince: geoSince, geoUntil: geoUntil,
+                attemptTokens: Array(attemptTokens)
             )
             DispatchQueue.main.async {
                 completion(self.isSelected(accountId) ? response as NSDictionary : ["status": "account_changed", "items": []])
@@ -1021,7 +1124,7 @@ public final class GoldgramArchiveReader: NSObject {
         accountId: Int64, mode: String, kinds: [Int32],
         peerId: Int64, peerKind: Int32, sources: [(kind: Int32, id: Int64)], deletedOnly: Bool,
         offset: Int32, limit: Int32, diagnosticSince: Int64,
-        geoSince: Int64, geoUntil: Int64
+        geoSince: Int64, geoUntil: Int64, attemptTokens: [String]
     ) -> [String: Any] {
         // Opening a missing DB in READONLY mode must never create one.
         let support = FileManager.default.urls(
@@ -1141,6 +1244,123 @@ public final class GoldgramArchiveReader: NSObject {
             if let audit = evidence(since: diagnosticSince, until: Int64.max) {
                 result["evidence"] = audit
             }
+            // #133: actual COMMIT state, never infer from queued timestamp.
+            // NULL fields on earlier #131 captures are deliberately "unknown".
+            let commitsSQL = """
+            SELECT
+                COUNT(*),
+                COALESCE(SUM(CASE WHEN commit_state='background' THEN 1 ELSE 0 END),0),
+                COALESCE(SUM(CASE WHEN commit_state='foreground' THEN 1 ELSE 0 END),0),
+                COALESCE(SUM(CASE WHEN commit_state IS NULL OR commit_state='unknown' THEN 1 ELSE 0 END),0),
+                COALESCE(SUM(CASE WHEN enqueue_state='background' AND commit_state='foreground' THEN 1 ELSE 0 END),0)
+            FROM original_capture_evidence
+            WHERE committed_at >= ? AND committed_at < ?;
+            """
+            func countCommitStates(since: Int64, until: Int64) -> [String: Any]? {
+                var ptr: OpaquePointer?
+                guard sqlite3_prepare_v2(db, commitsSQL, -1, &ptr, nil) == SQLITE_OK,
+                      let stmt = ptr else {
+                    if let ptr { sqlite3_finalize(ptr) }
+                    return nil
+                }
+                defer { sqlite3_finalize(stmt) }
+                guard sqlite3_bind_int64(stmt, 1, since) == SQLITE_OK,
+                      sqlite3_bind_int64(stmt, 2, until) == SQLITE_OK,
+                      sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+                let keys = ["total", "committedBg", "committedFg", "stateUnknown", "queuedBgCommittedFg"]
+                var result: [String: Any] = [:]
+                for (i, key) in keys.enumerated() {
+                    result[key] = NSNumber(value: sqlite3_column_int64(stmt, Int32(i)))
+                }
+                return result
+            }
+            if let states = countCommitStates(since: diagnosticSince, until: Int64.max) {
+                result["commitStates"] = states
+            }
+            // Link EACH edited message to its first recorded edit and
+            // first-original evidence via primary key, returning AGGREGATES
+            // only. No message IDs/content cross the UI boundary.
+            let editedSQL = """
+            WITH recent AS (
+                SELECT DISTINCT peer_kind,peer_id,message_id
+                FROM events WHERE event_kind=1 AND observed_at>=? AND observed_at<?
+            ), edited AS (
+                SELECT r.peer_kind,r.peer_id,r.message_id,
+                  (SELECT MIN(e.observed_at) FROM events e
+                   WHERE e.peer_kind=r.peer_kind AND e.peer_id=r.peer_id
+                     AND e.message_id=r.message_id AND e.event_kind=1) AS first_edit_at
+                FROM recent r
+            )
+            SELECT COUNT(*),
+               COALESCE(SUM(CASE WHEN m.original_observed=1 AND m.original_text IS NOT NULL THEN 1 ELSE 0 END),0),
+               COALESCE(SUM(CASE WHEN a.committed_at IS NOT NULL AND a.committed_at < e.first_edit_at THEN 1 ELSE 0 END),0),
+               COALESCE(SUM(CASE WHEN a.committed_at IS NOT NULL AND a.committed_at >= e.first_edit_at THEN 1 ELSE 0 END),0),
+               COALESCE(SUM(CASE WHEN m.original_observed=1 AND a.committed_at IS NULL THEN 1 ELSE 0 END),0),
+               COALESCE(SUM(CASE WHEN m.original_observed=0 OR m.original_text IS NULL THEN 1 ELSE 0 END),0),
+               COALESCE(SUM(CASE WHEN a.committed_at<e.first_edit_at AND a.commit_state='background' THEN 1 ELSE 0 END),0),
+               COALESCE(SUM(CASE WHEN a.committed_at<e.first_edit_at AND a.commit_state='foreground' THEN 1 ELSE 0 END),0),
+               COALESCE(SUM(CASE WHEN a.committed_at<e.first_edit_at AND a.source='geo_sensor' THEN 1 ELSE 0 END),0),
+               COALESCE(SUM(CASE WHEN a.committed_at<e.first_edit_at AND a.source='geo_minimized' THEN 1 ELSE 0 END),0),
+               COALESCE(SUM(CASE WHEN a.committed_at<e.first_edit_at AND a.source='os_bg_refresh' THEN 1 ELSE 0 END),0),
+               COALESCE(SUM(CASE WHEN a.committed_at<e.first_edit_at AND a.source='live_update' THEN 1 ELSE 0 END),0),
+               COALESCE(SUM(CASE WHEN a.committed_at<e.first_edit_at AND a.source='history_snapshot' THEN 1 ELSE 0 END),0)
+            FROM edited e
+            JOIN messages m USING(peer_kind,peer_id,message_id)
+            LEFT JOIN original_capture_evidence a USING(peer_kind,peer_id,message_id);
+            """
+            func editedEvidence(since: Int64, until: Int64) -> [String: Any]? {
+                var ptr: OpaquePointer?
+                guard sqlite3_prepare_v2(db, editedSQL, -1, &ptr, nil) == SQLITE_OK,
+                      let stmt = ptr else {
+                    if let ptr { sqlite3_finalize(ptr) }
+                    return nil
+                }
+                defer { sqlite3_finalize(stmt) }
+                guard sqlite3_bind_int64(stmt, 1, since) == SQLITE_OK,
+                      sqlite3_bind_int64(stmt, 2, until) == SQLITE_OK,
+                      sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+                let keys = ["edited", "originalKnown", "provenBefore", "committedAfter",
+                            "unattributedKnown", "missingOriginal", "beforeBg", "beforeFg", "fromGeoSensor",
+                            "fromMinimized", "fromOS", "fromLive", "fromHistory"]
+                var result: [String: Any] = [:]
+                for (i,key) in keys.enumerated() {
+                    result[key] = NSNumber(value: sqlite3_column_int64(stmt, Int32(i)))
+                }
+                return result
+            }
+            if let joined = editedEvidence(since: diagnosticSince, until: Int64.max) {
+                result["editedEvidence"] = joined
+            }
+            // Per-attempt counts represent PROCESSED SQLite writes, not just
+            // API messages or enqueued payloads. Missing counts are unresolved.
+            var attempts: [[String: Any]] = []
+            let attemptsSQL = """
+            SELECT processed,new_committed,already_present,failed
+            FROM original_capture_attempts WHERE attempt_token=?;
+            """
+            for token in attemptTokens {
+                var ptr: OpaquePointer?
+                guard sqlite3_prepare_v2(db, attemptsSQL, -1, &ptr, nil) == SQLITE_OK,
+                      let stmt = ptr else {
+                    if let ptr { sqlite3_finalize(ptr) }
+                    continue
+                }
+                defer { sqlite3_finalize(stmt) }
+                let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+                let bound = token.utf8CString.withUnsafeBufferPointer {
+                    sqlite3_bind_text(stmt, 1, $0.baseAddress, Int32($0.count-1), transient)
+                }
+                if bound == SQLITE_OK, sqlite3_step(stmt) == SQLITE_ROW {
+                    attempts.append([
+                        "token": token,
+                        "processed": NSNumber(value: sqlite3_column_int64(stmt, 0)),
+                        "newCommitted": NSNumber(value: sqlite3_column_int64(stmt, 1)),
+                        "alreadyKnown": NSNumber(value: sqlite3_column_int64(stmt, 2)),
+                        "failed": NSNumber(value: sqlite3_column_int64(stmt, 3))
+                    ])
+                }
+            }
+            result["attemptOutcomes"] = attempts
             // 30-minute experiment plus small latitude for manual-stop tests.
             if geoSince > 0, geoUntil > geoSince,
                geoUntil - geoSince <= 2 * 60 * 60 * 1000,
@@ -1151,6 +1371,12 @@ public final class GoldgramArchiveReader: NSObject {
                 result["geoEdited"] = window["edited"]
                 if let audit = evidence(since: geoSince, until: geoUntil) {
                     result["geoEvidence"] = audit
+                }
+                if let states = countCommitStates(since: geoSince, until: geoUntil) {
+                    result["geoCommitStates"] = states
+                }
+                if let joined = editedEvidence(since: geoSince, until: geoUntil) {
+                    result["geoEditedEvidence"] = joined
                 }
             }
             return result
@@ -1339,6 +1565,7 @@ private extension GoldgramHistoryStore {
         let identity = parts.map { "\($0.utf8.count):\($0)" }.joined()
         var hash: UInt64 = 14695981039346656037
         for byte in identity.utf8 { hash = (hash ^ UInt64(byte)) &* 1099511628211 }
+        let enqueueState = lifecycleState()
         let key = event == 2 ? "native.delete.\(kind).\(peer).\(id)" : "native.edit.\(kind).\(peer).\(id).\(hash)"
         storageQueue.async {
             do {
@@ -1361,7 +1588,9 @@ private extension GoldgramHistoryStore {
                             try recordFirstOriginalEvidence(db: db, scope: scope,
                                 at: now, source: source,
                                 attempt: payload["evidenceAttempt"] as? String,
-                                concurrentEdit: event == 1)
+                                concurrentEdit: event == 1,
+                                committedAt: Int64(Date().timeIntervalSince1970 * 1000),
+                                enqueueState: enqueueState, commitState: lifecycleState())
                         }
                     }
                     try archiveSQL("UPDATE messages SET sender_kind=COALESCE(sender_kind,CASE WHEN ?4 BETWEEN 0 AND 3 THEN ?4 ELSE NULL END),sender_id=COALESCE(sender_id,NULLIF(?5,0)),sent_at=COALESCE(sent_at,NULLIF(?6,0)),thread_id=COALESCE(thread_id,NULLIF(?7,0)),last_seen_at=MAX(last_seen_at,?8),is_deleted=MAX(is_deleted,?9) WHERE peer_kind=?1 AND peer_id=?2 AND message_id=?3;", db: db, ints: scope + [senderKind,sender,sent,thread,now,event == 2 ? 1 : 0])
@@ -1381,10 +1610,24 @@ private extension GoldgramHistoryStore {
                     if event != 0 {
                         try archiveSQL("INSERT OR IGNORE INTO events(peer_kind,peer_id,message_id,event_kind,source,server_time,observed_at,event_key) VALUES(?,?,?,?, '\(source)',NULLIF(?,0),?,?);", db: db, ints: scope + [Int64(event),edited,now], text: key)
                     }
+                    if event == 0 && known && baseline != nil {
+                        try recordAttempt(db: db, token: payload["evidenceAttempt"] as? String,
+                            source: payload["evidenceSource"] as? String ?? "geo_unclassified",
+                            outcome: alreadyKnown ? "existing" : "new")
+                    }
                     try archiveSQL("COMMIT;", db: db, ints: [])
                     if event != 0 { DispatchQueue.main.async { NotificationCenter.default.post(name: Notification.Name("GoldgramArchiveChanged"), object: NSNumber(value: account)) } }
                 } catch {
-                    try? archiveSQL("ROLLBACK;", db: db, ints: []); throw error
+                    try? archiveSQL("ROLLBACK;", db: db, ints: [])
+                    // Failed writes are best-effort diagnostics after rollback.
+                    // If the DB is unavailable the client shows unresolved
+                    // accepted writes, never mislabels them as committed.
+                    if event == 0 {
+                        try? recordAttempt(db: db, token: payload["evidenceAttempt"] as? String,
+                            source: payload["evidenceSource"] as? String ?? "geo_unclassified",
+                            outcome: "failed")
+                    }
+                    throw error
                 }
             } catch { nativeWriteFailed = true /* Keep the durable extension handoff for retry. */ }
         }
