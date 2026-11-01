@@ -101,7 +101,24 @@ commits_sql=commits_sql.group(1)
 edited_sql=edited_sql.group(1)
 attempt_sql=attempt_sql.group(1)
 assert db.execute(commits_sql,(90,300)).fetchone()==(2,1,1,0,0)
-assert db.execute(edited_sql,(90,300)).fetchone()==(2,2,1,1,0,0,1,0,1,0,0,0,0)
+assert db.execute(edited_sql,(90,300)).fetchone()==(2,2,1,1,0,0,1,0,1,0,0,0,0,0,0,0,0)
+# #135: one missing message first appeared with the edit, one had a
+# long-standing SQLite placeholder, one appeared after the first local edit.
+for mid,first_seen,edit_time in ((102,200,200), (103,100,20000), (104,25000,20000)):
+    db.execute('INSERT INTO messages(peer_kind,peer_id,message_id,first_seen_at,last_seen_at,original_observed) VALUES(2,111,?,?,?,0)',
+               (mid,first_seen,first_seen))
+    db.execute('INSERT INTO events(peer_kind,peer_id,message_id,event_kind,source,event_key,observed_at) VALUES(2,111,?,1,?,?,?)',
+               (mid,'telegram_edit_update',f'edit_{mid}',edit_time))
+triage=db.execute(edited_sql,(0,30000)).fetchone()
+assert triage[:6]==(5,2,1,1,0,3), triage
+assert triage[13:17]==(1,1,1,0), triage
+geo_buckets=re.search(r'let geoBucketsSQL = """\n(.*?)\n                """', diagnostic, re.S)
+assert geo_buckets, 'production five-minute COMMIT bucket query'
+geo_sql=geo_buckets.group(1)
+assert db.execute(geo_sql,(90,90,300)).fetchall()==[(0,2,1,1,0,0)]
+assert 'CASE WHEN (m.original_observed=0 OR m.original_text IS NULL)' in edited_sql
+assert 'GROUP BY 1 ORDER BY 1 LIMIT 6' in geo_sql
+print('Goldgram #135: missing-original triage and 5-minute background COMMIT query OK')
 assert db.execute('SELECT captured_at,committed_at,enqueue_state,commit_state FROM original_capture_evidence WHERE message_id=100').fetchone()==(100,100,'background','background')
 assert db.execute('SELECT captured_at,committed_at,enqueue_state,commit_state FROM original_capture_evidence WHERE message_id=101').fetchone()==(175,175,'foreground','foreground')
 

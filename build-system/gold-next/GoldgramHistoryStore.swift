@@ -1303,7 +1303,19 @@ public final class GoldgramArchiveReader: NSObject {
                COALESCE(SUM(CASE WHEN a.committed_at<e.first_edit_at AND a.source='geo_minimized' THEN 1 ELSE 0 END),0),
                COALESCE(SUM(CASE WHEN a.committed_at<e.first_edit_at AND a.source='os_bg_refresh' THEN 1 ELSE 0 END),0),
                COALESCE(SUM(CASE WHEN a.committed_at<e.first_edit_at AND a.source='live_update' THEN 1 ELSE 0 END),0),
-               COALESCE(SUM(CASE WHEN a.committed_at<e.first_edit_at AND a.source='history_snapshot' THEN 1 ELSE 0 END),0)
+               COALESCE(SUM(CASE WHEN a.committed_at<e.first_edit_at AND a.source='history_snapshot' THEN 1 ELSE 0 END),0),
+               -- #135: missing-original triage is strictly a local observation,
+               -- NOT proof of the server's historical edit time.
+               COALESCE(SUM(CASE WHEN (m.original_observed=0 OR m.original_text IS NULL)
+                    AND m.first_seen_at BETWEEN e.first_edit_at-2000 AND e.first_edit_at+2000
+                    THEN 1 ELSE 0 END),0),
+               COALESCE(SUM(CASE WHEN (m.original_observed=0 OR m.original_text IS NULL)
+                    AND m.first_seen_at < e.first_edit_at-2000 THEN 1 ELSE 0 END),0),
+               COALESCE(SUM(CASE WHEN (m.original_observed=0 OR m.original_text IS NULL)
+                    AND m.first_seen_at > e.first_edit_at+2000 THEN 1 ELSE 0 END),0),
+               COALESCE(SUM(CASE WHEN a.committed_at<e.first_edit_at
+                    AND a.source NOT IN ('geo_sensor','geo_minimized','os_bg_refresh',
+                                         'live_update','history_snapshot') THEN 1 ELSE 0 END),0)
             FROM edited e
             JOIN messages m USING(peer_kind,peer_id,message_id)
             LEFT JOIN original_capture_evidence a USING(peer_kind,peer_id,message_id);
@@ -1321,7 +1333,9 @@ public final class GoldgramArchiveReader: NSObject {
                       sqlite3_step(stmt) == SQLITE_ROW else { return nil }
                 let keys = ["edited", "originalKnown", "provenBefore", "committedAfter",
                             "unattributedKnown", "missingOriginal", "beforeBg", "beforeFg", "fromGeoSensor",
-                            "fromMinimized", "fromOS", "fromLive", "fromHistory"]
+                            "fromMinimized", "fromOS", "fromLive", "fromHistory",
+                            "missingFirstSeenAtEdit", "missingSeenEarlier", "missingSeenLater",
+                            "beforeOtherSource"]
                 var result: [String: Any] = [:]
                 for (i,key) in keys.enumerated() {
                     result[key] = NSNumber(value: sqlite3_column_int64(stmt, Int32(i)))
@@ -1378,6 +1392,41 @@ public final class GoldgramArchiveReader: NSObject {
                 if let joined = editedEvidence(since: geoSince, until: geoUntil) {
                     result["geoEditedEvidence"] = joined
                 }
+                // #135: 5-minute COMMIT buckets, bounded to the consented
+                // 30-minute geo window. No peer IDs, texts or coordinates.
+                let geoBucketsSQL = """
+                SELECT ((committed_at - ?)/300000), COUNT(*),
+                    COALESCE(SUM(CASE WHEN commit_state='background' THEN 1 ELSE 0 END),0),
+                    COALESCE(SUM(CASE WHEN source='geo_sensor' THEN 1 ELSE 0 END),0),
+                    COALESCE(SUM(CASE WHEN source='geo_minimized' THEN 1 ELSE 0 END),0),
+                    COALESCE(SUM(CASE WHEN source='live_update' THEN 1 ELSE 0 END),0)
+                FROM original_capture_evidence
+                WHERE committed_at >= ? AND committed_at < ?
+                GROUP BY 1 ORDER BY 1 LIMIT 6;
+                """
+                var geoStmt: OpaquePointer?
+                if sqlite3_prepare_v2(db, geoBucketsSQL, -1, &geoStmt, nil) == SQLITE_OK,
+                   let stmt = geoStmt {
+                    defer { sqlite3_finalize(stmt) }
+                    if sqlite3_bind_int64(stmt, 1, geoSince) == SQLITE_OK,
+                       sqlite3_bind_int64(stmt, 2, geoSince) == SQLITE_OK,
+                       sqlite3_bind_int64(stmt, 3, geoUntil) == SQLITE_OK {
+                        var buckets: [[String: Any]] = []
+                        while sqlite3_step(stmt) == SQLITE_ROW {
+                            let slot = sqlite3_column_int64(stmt, 0)
+                            guard (0...5).contains(slot) else { continue }
+                            buckets.append([
+                                "slot": NSNumber(value: slot),
+                                "total": NSNumber(value: sqlite3_column_int64(stmt, 1)),
+                                "background": NSNumber(value: sqlite3_column_int64(stmt, 2)),
+                                "sensor": NSNumber(value: sqlite3_column_int64(stmt, 3)),
+                                "minimized": NSNumber(value: sqlite3_column_int64(stmt, 4)),
+                                "live": NSNumber(value: sqlite3_column_int64(stmt, 5))
+                            ])
+                        }
+                        result["geoBuckets"] = buckets
+                    }
+                } else if let geoStmt { sqlite3_finalize(geoStmt) }
             }
             return result
         }

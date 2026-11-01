@@ -428,7 +428,12 @@ public final class GoldgramArchiveScreen: UITableViewController {
                 lines += "\nОригинал известен, но источник/COMMIT до №133 не установлен: \(n("unattributedKnown"))"
                 lines += "\nРедакции без оригинала: \(n("missingOriginal"))"
                 lines += "\nИз записанных заранее: в фоне \(n("beforeBg")), на экране \(n("beforeFg"))"
-                lines += "\nИсточник заранее записанных: гео-сенсор \(n("fromGeoSensor")), сворачивание \(n("fromMinimized")), BGAppRefresh \(n("fromOS")), live \(n("fromLive")), история \(n("fromHistory"))"
+                lines += "\nИсточник заранее записанных: гео-сенсор \(n("fromGeoSensor")), сворачивание \(n("fromMinimized")), BGAppRefresh \(n("fromOS")), live \(n("fromLive")), история \(n("fromHistory")), прочие \(n("beforeOtherSource"))"
+                lines += "\n№135: ПОЧЕМУ оригинала нет (локальная последовательность):"
+                lines += "\nВпервые увидено около редакции (±2 сек): \(n("missingFirstSeenAtEdit"))"
+                lines += "\nСообщение в SQLite было более чем за 2 сек до редакции, но оригинала нет: \(n("missingSeenEarlier"))"
+                lines += "\nПервое наблюдение позже редакции более чем на 2 сек: \(n("missingSeenLater"))"
+                lines += "\nЭто диагностические категории, НЕ доказательство восстановления или точного времени редактирования на сервере."
                 lines += "\nРечь только о порядке наблюдений клиентом; серверное время редактирования может быть раньше."
                 return lines
             }
@@ -479,6 +484,16 @@ public final class GoldgramArchiveScreen: UITableViewController {
                 if let edits = answer["geoEditedEvidence"] as? [String: Any] {
                     report += editedText(edits, title: "Редакции и ранние оригиналы в гео-окне №133:")
                 }
+                if let buckets = answer["geoBuckets"] as? [[String: Any]] {
+                    report += "\n\n№135: Фактические COMMIT по пятиминуткам гео-окна:"
+                    if buckets.isEmpty { report += "\nНовых первичных COMMIT нет." }
+                    for row in buckets {
+                        func n(_ key: String) -> Int64 { (row[key] as? NSNumber)?.int64Value ?? 0 }
+                        let fromMinute = n("slot") * 5
+                        report += "\n\(fromMinute)–\(fromMinute + 5) мин: COMMIT \(n("total")), в фоне \(n("background")), источник geo sensor \(n("sensor")), сворачивание \(n("minimized")), live \(n("live"))"
+                    }
+                    report += "\nИсточник записи не доказывает, что CoreLocation вызвал поступление Telegram-сообщения. Времена относятся к SQLite COMMIT."
+                }
             }
             if !traceRows.isEmpty {
                 report += "\n\nОтдельный журнал фоновых попыток №129:"
@@ -489,7 +504,7 @@ public final class GoldgramArchiveScreen: UITableViewController {
                     let reason = row.finalReason ?? (Date().timeIntervalSince1970 - row.at > 18.0
                         ? "нет завершения (вероятно отложено системой)" : "выполняется")
                     report += "\nРешение: \(row.decision); итог: \(reason); этап: \(row.stage)"
-                    report += "\nАккаунт готов \(row.accountReady ? "да" : "нет"), обсуждений \(row.targets)"
+                    report += "\nАккаунт готов \(row.accountReady ? "да" : "нет"), целей на эту попытку \(row.targets) (№135: закреплённая + ротация ранее известных диалогов)"
                     report += "\nMTProto подписок/завершено \(row.rpcStarted)/\(row.rpcCompleted)"
                     report += "\nСервис принял \(row.rpcServiceAdded), ACK \(row.rpcAcknowledged) (не ответы API)"
                     report += "\nAPI difference/empty/tooLong/unavailable/error: \(row.apiDifference)/\(row.apiEmpty)/\(row.apiTooLong)/\(row.apiUnavailable)/\(row.apiErrors)"

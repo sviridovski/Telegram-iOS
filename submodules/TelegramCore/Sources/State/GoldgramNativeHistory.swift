@@ -1910,20 +1910,55 @@ public func goldgramRefreshPriorityDiscussions(
     }
 }
 
-// #128: actual background-location execution only, bounded by app and iOS.
-// Reuse verified pinned linked discussions and existing PTS replay. A current
-// edited snapshot is never accepted as an unedited original.
+// #135: the old geo probe always sampled the same two pinned histories.
+// Reuse already-known recent peers and validated linked discussions. Keep one
+// user-pinned discussion first; rotate other eligible dialogs between actual
+// iOS-granted location wakes. No new joins, subscriptions or background timers.
+// One sensor wake: at most four 100-message history reads and four channel
+// difference requests, with the existing 18-second cancellation in AppDelegate.
+private func goldgramGeoRotatingTargets(transaction: Transaction, accountPeerId: PeerId) -> [PeerId] {
+    let now = Int64(Date().timeIntervalSince1970)
+    var eligible = goldgramPriorityPeers(transaction: transaction, accountPeerId: accountPeerId)
+    let recent = transaction.retrieveItemCacheEntry(id: goldgramDiscussionTargetsKey)?
+        .get(GoldgramDiscussionTargets.self)?.items ?? []
+    for item in recent where item.seen <= now && now - item.seen < 86400 {
+        let id = PeerId(item.peer)
+        guard !eligible.contains(id), let peer = transaction.getPeer(id),
+              goldgramKind(id, peer) != nil, apiInputPeer(peer) != nil else { continue }
+        eligible.append(id)
+    }
+    guard !eligible.isEmpty else { return [] }
+    let fixed = Array(eligible.prefix(1))
+    let extras = Array(eligible.dropFirst())
+    guard !extras.isEmpty else { return fixed }
+    let key = "GoldgramGeoRotationV135.\(accountPeerId.id._internalGetInt64Value())"
+    let defaults = UserDefaults.standard
+    let position = (defaults.integer(forKey: key) % extras.count + extras.count) % extras.count
+    let rotated = (0..<extras.count).map { extras[(position + $0) % extras.count] }
+    let slots = 4 - fixed.count
+    let selected = fixed + Array(rotated.prefix(slots))
+    // Advances by the number of actual rotating slots, even if only one
+    // attempt is run. A subsequent wake visits previously skipped peers.
+    defaults.set((position + min(slots, extras.count)) % extras.count, forKey: key)
+    return selected
+}
+
+// #128/#135: genuine iOS-awake geo lab only, now up to 4 mixed known dialogs.
+// Never treat a current edited snapshot as a missing original.
 public func goldgramLocationLabPoll(account: Account, traceToken: String) -> Signal<Never, NoError> {
     return account.postbox.transaction { transaction -> [PeerId] in
         goldgramDrainPending(accountPeerId: account.peerId, transaction: transaction)
         guard goldgramNativeHistoryEnabled() else { return [] }
-        return Array(goldgramPrioritySelection(transaction: transaction,
-            accountPeerId: account.peerId).peers.prefix(3))
+        return goldgramGeoRotatingTargets(transaction: transaction,
+            accountPeerId: account.peerId)
     }
     |> mapToSignal { ids -> Signal<Never, NoError> in
         GoldgramLocationLabTrace.targets(traceToken, count: ids.count)
         guard !ids.isEmpty else { return .complete() }
-        let polls: [Signal<Bool, NoError>] = ids.map { id in
+        // CloudUser/CloudGroup do not use channel getDifference. They are
+        // still eligible for safe, bounded getHistory baselines below.
+        let channelIds = ids.filter { $0.namespace == Namespaces.Peer.CloudChannel }
+        let polls: [Signal<Bool, NoError>] = channelIds.map { id in
             return Signal { subscriber in
                 let disposable = standalonePollChannelOnce(
                     accountPeerId: account.peerId, postbox: account.postbox,
@@ -1938,7 +1973,7 @@ public func goldgramLocationLabPoll(account: Account, traceToken: String) -> Sig
                 return ActionDisposable { disposable.dispose() }
             }
         }
-        let snapshots: [Signal<Bool, NoError>] = ids.prefix(2).map { id in
+        let snapshots: [Signal<Bool, NoError>] = ids.prefix(4).map { id in
             return Signal { subscriber in
                 let disposable = goldgramSeedDiscussion(account: account, peerId: id,
                     labOnly: true, locationTraceToken: traceToken).start(completed: {

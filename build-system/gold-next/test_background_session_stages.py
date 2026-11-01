@@ -441,7 +441,7 @@ assert ".coordinate" not in location_class
 assert "locations[0]" not in location_class
 poll_location = core.split("public func goldgramLocationLabPoll(account: Account, traceToken: String)",1)[1].split(
     "// The UI owns this subscription",1)[0]
-for phrase in ("goldgramPrioritySelection(transaction:", "standalonePollChannelOnce(",
+for phrase in ("goldgramGeoRotatingTargets(transaction:", "standalonePollChannelOnce(",
                "labOnly: true", "combineLatest(polls + snapshots) |> ignoreValues"):
     assert phrase in poll_location, phrase
 assert "Гео-эксперимент №128: 30 минут" in ui
@@ -566,3 +566,38 @@ assert 'UPDATE messages SET original_observed=1' in sql
 assert 'DELETE FROM original_capture_evidence' not in sql
 assert 'ALTER TABLE original_capture_evidence ADD COLUMN' in sql
 print('Goldgram #133: lifecycle commit, per-edit source, queued/duplicate/failed reconciliation OK')
+
+
+# #135: more effective REAL background wake, no fake location / keepalive.
+# One pinned verified peer plus a round-robin over already-seen accessible
+# dialogs, same 18s abort and consent. No private chat in channelDifference.
+geo_helper = core.split('private func goldgramGeoRotatingTargets(',1)[1].split(
+    'public func goldgramLocationLabPoll(',1)[0]
+for needle in ('goldgramPriorityPeers(transaction:', 'goldgramDiscussionTargetsKey',
+               'now - item.seen < 86400', 'goldgramKind(id, peer) != nil',
+               'apiInputPeer(peer) != nil', 'GoldgramGeoRotationV135.',
+               'accountPeerId.id._internalGetInt64Value()', 'rotated.prefix(slots)',
+               'min(slots, extras.count)'):
+    assert needle in geo_helper, needle
+assert 'let fixed = Array(eligible.prefix(1))' in geo_helper
+assert 'let channelIds = ids.filter { $0.namespace == Namespaces.Peer.CloudChannel }' in poll_location
+assert 'ids.prefix(4).map' in poll_location
+assert 'channelIds.map' in poll_location
+assert 'self.goldgramLocationActiveToken == token' in app
+assert 'deadline: .now() + 18.0' in app
+for forbidden in ('requestLocation(', 'CLLocationManager', 'coordinates', 'readCoordinate',
+                  'while true', 'shouldKeepConnection.set'):
+    assert forbidden not in geo_helper
+# Diagnoses missing baselines without inventing unobserved original or
+# server time; windowed real COMMIT buckets are provenance-only.
+for needle in ('missingFirstSeenAtEdit', 'missingSeenEarlier',
+               'missingSeenLater', 'beforeOtherSource', 'let geoBucketsSQL = """',
+               'result["geoBuckets"] = buckets', 'GROUP BY 1 ORDER BY 1 LIMIT 6'):
+    assert needle in sql, needle
+for needle in ('ПОЧЕМУ оригинала нет', 'Впервые увидено',
+               'Фактические COMMIT по пятиминуткам',
+               'целей на эту попытку'):
+    assert needle.lower() in ui.lower(), needle
+assert 'let geoInThisTest = geoStarted > 0 && geoEnd > geoStarted' in ui
+assert 'GoldgramLocationLabUntilV1' in app
+print('Goldgram #135: rotating real limited geo capture and missing-original diagnostics OK')
