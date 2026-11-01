@@ -50,6 +50,13 @@ print('Goldgram #83: actual native writer SQL, immutable originals, media tombst
 # #131: actual additive audit DDL + production INSERT + diagnostic SQL.
 # No new DB, no plaintext duplicated, original+evidence commit atomically.
 import uuid
+# #134: isolate the #131/#133 provenance test dataset from the four
+# unrelated edit events (same timestamps) created by the earlier #83 test.
+db.close()
+db = sqlite3.connect(':memory:')
+db.execute('PRAGMA foreign_keys=ON')
+db.executescript(block('schemaV1'))
+db.executescript(block('schemaV2'))
 evidence_ddl = block("schemaOriginalEvidence")
 db.executescript(evidence_ddl)
 audit_func = source.split("static func recordFirstOriginalEvidence(",1)[1].split(
