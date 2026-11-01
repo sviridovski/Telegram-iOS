@@ -509,7 +509,7 @@ for q in ('evidenceSource: String = "native_unclassified"',
 for q in ('evidenceSource: "live_update"',
           '"os_bg_refresh" : "channel_difference"',
           'evidenceAttempt: locationTraceToken'):
-    assert q in state, q
+    assert q in utils, q
 assert 'let geoInThisTest = geoStarted > 0 && geoEnd > geoStarted' in ui
 assert 'geoStarted >= diagnosticSinceSeconds' in ui
 assert 'geoInThisTest ? Int64(geoStarted * 1000.0) : 0' in ui
