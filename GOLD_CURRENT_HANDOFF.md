@@ -1,5 +1,10 @@
 # Goldgram — current handoff, 2026-10-18
 ## Authoritative current state
+## 2026-11-01 #131 CI failure, minimal #132 correction
+- #131 code `ef465773f69da082e92a23a4892fd7f91212902f`, Actions https://github.com/sviridovski/Telegram-iOS/actions/runs/41288178519 **completed/failure** before Swift compilation. Actual first error: `build-system/gold-next/test_background_session_stages.py:512` `NameError: name 'state' is not defined`. New actual SQLite evidence SQL fixture **passed** immediately before this; no indication of an SQL failure in this run.
+- #132 `c59d679a0bafa306f90a8df3441f76cc5244d6c1` changed **one assertion only** from `assert q in state, q` to `assert q in utils, q` in `test_background_session_stages.py`. Existing `utils` already reads the AccountStateManagementUtils.swift file. No app/Swift/network/SQLite changes. Run https://github.com/sviridovski/Telegram-iOS/actions/runs/41288582197 first observed **in_progress**; confirm completed/success plus Swift build and IPA before device installation. #131 alone has no confirmed usable IPA.
+- If #132 red, inspect the FIRST actual failure again and fix minimally; update these files. No functional enhancements beyond the agreed #131 triple scope.
+
 ## 2026-11-01 #131 Original Evidence — first durable provenance audit (CI pending)
 - Code gold-next SHA `ef465773f69da082e92a23a4892fd7f91212902f` (parent green #130 `1ac7d21602577d7d3d97ad1de0f62911ef3f7391`). GitHub Actions run #131 `41288178519`: https://github.com/sviridovski/Telegram-iOS/actions/runs/41288178519 . Initially in_progress, **do NOT claim compiled/green or installable IPA without completed/success**.
 - Six changed files: `GoldgramHistoryStore.swift`, `GoldgramNativeHistory.swift`, `AccountStateManagementUtils.swift`, `GoldgramArchiveScreen.swift`, `test_native_writer_sql.py`, `test_background_session_stages.py`. No change to scheduling, VPN, CoreLocation permissions, existing Postbox or archive rendering paths.
