@@ -43,7 +43,8 @@ private func goldgramArchivePersonalOriginal(
     // messages and is intentionally not the owner while native capture is ON.
     if live && goldgramNativeHistoryEnabled(),
        case let .Id(id) = message.id, id.peerId.namespace == Namespaces.Peer.CloudUser {
-        goldgramCaptureServerOriginal(accountPeerId: accountPeerId, message: message, peerKind: 0)
+        goldgramCaptureServerOriginal(accountPeerId: accountPeerId, message: message,
+            peerKind: 0, evidenceSource: "live_update")
         return
     }
     guard !goldgramNativeHistoryEnabled(), UserDefaults.standard.bool(forKey: "GoldgramSQLiteCaptureEnabled"),
@@ -1375,7 +1376,8 @@ private func finalStateWithUpdatesAndServerTime(accountPeerId: PeerId, postbox: 
                            peerId: message.id.peerId, peer: updatedState.peers[message.id.peerId]
                        ) {
                         goldgramCaptureServerOriginal(
-                            accountPeerId: accountPeerId, message: message, peerKind: kind
+                            accountPeerId: accountPeerId, message: message, peerKind: kind,
+                            evidenceSource: "live_update"
                         )
                     }
                     if let previousState = updatedState.channelStates[message.id.peerId] {
@@ -3922,7 +3924,11 @@ private func pollChannel(accountPeerId: PeerId, postbox: Postbox, network: Netwo
                             if goldgramCaptureServerOriginal(
                                 accountPeerId: accountPeerId,
                                 message: message,
-                                peerKind: kind
+                                peerKind: kind,
+                                evidenceSource: locationTraceToken.map {
+                                    GoldgramLocationLabTrace.evidenceSource(for: $0)
+                                } ?? (diagnosticToken != nil ? "os_bg_refresh" : "channel_difference"),
+                                evidenceAttempt: locationTraceToken
                             ) {
                                 if let diagnosticToken {
                                     GoldgramBackgroundRefreshTrace.originalQueued(diagnosticToken)
@@ -4150,7 +4156,11 @@ private func pollChannel(accountPeerId: PeerId, postbox: Postbox, network: Netwo
                                        goldgramCaptureServerOriginal(
                                         accountPeerId: accountPeerId,
                                         message: message,
-                                        peerKind: kind
+                                        peerKind: kind,
+                                        evidenceSource: locationTraceToken.map {
+                                            GoldgramLocationLabTrace.evidenceSource(for: $0)
+                                        } ?? (diagnosticToken != nil ? "os_bg_refresh" : "channel_difference"),
+                                        evidenceAttempt: locationTraceToken
                                        ) {
                                         snapshotOriginalsQueued += 1
                                     }

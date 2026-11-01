@@ -496,3 +496,32 @@ assert "DELETE FROM messages" not in sql.split('if mode == "diagnostics" {', 1)[
     'var sql = mode == "totals"', 1)[0]
 assert 'goldgramLocationLabPoll(account: account, traceToken: token)' in app
 print("Goldgram #129: source-labelled geo attempts, bounded SQLite interval, prior capture intact OK")
+
+
+# #131: provenance and first-observed-edit evidence; no fake original,
+# no new SQLite database, no stale geo interval in a separate control test.
+for q in ('evidenceSource: String = "native_unclassified"',
+          'payload["evidenceAttempt"] = evidenceAttempt',
+          '"evidenceSource": "notification_postbox"',
+          'GoldgramLocationLabTrace.evidenceSource(for: $0)',
+          'evidenceAttempt: locationTraceToken'):
+    assert q in core, q
+for q in ('evidenceSource: "live_update"',
+          '"os_bg_refresh" : "channel_difference"',
+          'evidenceAttempt: locationTraceToken'):
+    assert q in state, q
+assert 'let geoInThisTest = geoStarted > 0 && geoEnd > geoStarted' in ui
+assert 'geoStarted >= diagnosticSinceSeconds' in ui
+assert 'geoInThisTest ? Int64(geoStarted * 1000.0) : 0' in ui
+assert 'removeObject(forKey: "GoldgramLocationLabStartedAtV1")' in ui
+assert 'removeObject(forKey: "GoldgramLocationLabWindowEndV1")' in ui
+assert 'Доказательства записи оригиналов №131' in ui
+assert 'Аудит COMMIT за это гео-окно №131' in ui
+assert 'ЗАРЕГИСТРИРОВАННОЙ редакции' in ui
+assert 'beforeObservedEdit' in sql
+assert 'edit_already_observed' in sql
+assert 'original_capture_evidence' in sql
+assert 'evidence(since: diagnosticSince, until: Int64.max)' in sql
+assert 'evidence(since: geoSince, until: geoUntil)' in sql
+assert 'PRAGMA user_version = 2' in sql
+print('Goldgram #131: privacy-safe original evidence, edit timing and no stale geo window OK')

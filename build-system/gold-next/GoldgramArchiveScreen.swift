@@ -201,8 +201,14 @@ public final class GoldgramArchiveScreen: UITableViewController {
             }
             defaults.set(Int64(Date().timeIntervalSince1970 * 1000), forKey: sinceKey)
             defaults.set(true, forKey: "GoldgramDiagnosticEnabledV1")
-            // Reset new content-free trace; never clear old SQLite history.
+            // Reset source-specific attempts. Leave archived SQLite untouched.
             defaults.removeObject(forKey: "GoldgramLocationLabAttemptsV1")
+            // A new control test WITHOUT a geo session must never inherit
+            // the previous geo interval (the confusing #130 screenshot).
+            if defaults.double(forKey: "GoldgramLocationLabUntilV1") <= Date().timeIntervalSince1970 {
+                defaults.removeObject(forKey: "GoldgramLocationLabStartedAtV1")
+                defaults.removeObject(forKey: "GoldgramLocationLabWindowEndV1")
+            }
             let alert = UIAlertController(title: "Диагностика включена",
                 message: self.sources == nil
                     ? "Для адресной диагностики выбери обсуждение в архиве и запусти «Тест» внутри. Второй аккаунт не нужен."
@@ -331,11 +337,16 @@ public final class GoldgramArchiveScreen: UITableViewController {
         let defaults = UserDefaults.standard
         let geoStarted = defaults.double(forKey: "GoldgramLocationLabStartedAtV1")
         let geoEnd = defaults.double(forKey: "GoldgramLocationLabWindowEndV1")
+        let diagnosticSinceSeconds = (since?.doubleValue ?? 0.0) / 1000.0
+        // #131: distinguish this diagnostic session from stale prior GEO ON.
+        // A controlled GEO OFF test must not show a previous geo interval.
+        let geoInThisTest = geoStarted > 0 && geoEnd > geoStarted &&
+            geoStarted >= diagnosticSinceSeconds
         let request: NSDictionary = [
             "accountId": NSNumber(value: account), "category": 3,
             "mode": "diagnostics", "since": since ?? NSNumber(value: 0),
-            "geoSince": NSNumber(value: Int64(max(0.0, geoStarted) * 1000.0)),
-            "geoUntil": NSNumber(value: Int64(max(0.0, geoEnd) * 1000.0))
+            "geoSince": NSNumber(value: geoInThisTest ? Int64(geoStarted * 1000.0) : 0),
+            "geoUntil": NSNumber(value: geoInThisTest ? Int64(geoEnd * 1000.0) : 0)
         ]
         GoldgramArchiveReader.query(request) { [weak self] answer in
             guard let self else { return }
@@ -362,6 +373,26 @@ public final class GoldgramArchiveScreen: UITableViewController {
             } else {
                 report += "\n\nSQLite: \(status)"
             }
+            // #131: audit rows are created only on a first-baseline transition
+            // and committed atomically with the existing SQLite original.
+            func auditText(_ audit: [String: Any], heading: String) -> String {
+                func count(_ field: String) -> Int64 {
+                    return (audit[field] as? NSNumber)?.int64Value ?? 0
+                }
+                var lines = "\n\n\(heading)"
+                lines += "\nПервичных оригиналов с SQLite COMMIT: \(count("committed"))"
+                lines += "\nИсточник: сенсор \(count("sensor")), сворачивание \(count("minimized")), BGAppRefresh \(count("os")), обычные обновления \(count("live")), NotificationService \(count("notification"))"
+                lines += "\nОригинал сохранён раньше первой ЗАРЕГИСТРИРОВАННОЙ редакции: \(count("beforeObservedEdit"))"
+                lines += "\nОригинал впервые получен одновременно с/после редакции: \(count("afterOrWithEdit"))"
+                lines += "\nПолучен вместе с edit-update (не заранее): \(count("withEdit"))"
+                lines += "\nЭто местный порядок наблюдений, не доказательство времени первого изменения на сервере. Старые записи до #131 не переатрибутируются."
+                return lines
+            }
+            if let audit = answer["evidence"] as? [String: Any] {
+                report += auditText(audit, heading: "Доказательства записи оригиналов №131 (текущий тест):")
+            } else {
+                report += "\n\nАудит оригиналов №131 пока недоступен (не было инициализации новой служебной таблицы)."
+            }
             // OS refresh evidence, never interpreted as proof of original delivery.
             let defaults = UserDefaults.standard
             func refreshDate(_ key: String) -> String {
@@ -380,6 +411,11 @@ public final class GoldgramArchiveScreen: UITableViewController {
             report += "\nСобытий CoreLocation: \(defaults.integer(forKey: "GoldgramLocationLabTicksV1"))"
             report += "\nПоследнее обновление: \(refreshDate("GoldgramLocationLabLastTickV1"))"
             report += "\nСобытие датчика не доказывает сохранение оригинала."
+            if !geoInThisTest {
+                report += "\nГео-сессия в этом диагностическом периоде НЕ запускалась. Старые события датчика выше — только история предыдущего эксперимента."
+            } else {
+                report += "\nГео-сессия этого теста: \(self.dateFormatter.string(from: Date(timeIntervalSince1970: geoStarted))) — \(self.dateFormatter.string(from: Date(timeIntervalSince1970: geoEnd)))"
+            }
             // #129: SQLite window counts reflect disk contents at report time,
             // not attribution to CoreLocation or the original capture timestamp.
             if let geoObserved = answer["geoObserved"] {
@@ -389,6 +425,9 @@ public final class GoldgramArchiveScreen: UITableViewController {
                 report += "\nИзменённых: \(answer["geoEdited"] ?? 0)"
                 report += "\nИзменённых без оригинала: \(answer["geoMissingEdited"] ?? 0)"
                 report += "\nЭто first_seen_at внутри окна, не доказательство получения из гео-пробуждения."
+                if let geoAudit = answer["geoEvidence"] as? [String: Any] {
+                    report += auditText(geoAudit, heading: "Аудит COMMIT за это гео-окно №131:")
+                }
             }
             if let data = defaults.data(forKey: "GoldgramLocationLabAttemptsV1"),
                let rows = try? PropertyListDecoder().decode([GoldgramLocationLabReportRow].self, from: data) {

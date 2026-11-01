@@ -546,6 +546,18 @@ public enum GoldgramLocationLabTrace {
         write(rows)
         return token
     }
+    // #131 source is derived from the actual accepted geo-lab attempt,
+    // not inferred from a nearby timestamp or the iOS blue location icon.
+    public static func evidenceSource(for token: String) -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let row = read().first(where: { $0.token == token }) else { return "geo_unclassified" }
+        switch row.source {
+        case "sensor": return "geo_sensor"
+        case "minimized": return "geo_minimized"
+        default: return "geo_unclassified"
+        }
+    }
     private static func change(_ token: String, _ update: (inout GoldgramLocationLabAttempt) -> Void) {
         lock.lock()
         defer { lock.unlock() }
@@ -949,7 +961,10 @@ private func goldgramCaptureSince(_ account: PeerId, transaction: Transaction? =
 // server content immediately, independently of that transaction/replay path.
 // A delayed original repairs the baseline only, never the latest revision.
 @discardableResult
-func goldgramCaptureServerOriginal(accountPeerId: PeerId, message: StoreMessage, peerKind: Int32) -> Bool {
+func goldgramCaptureServerOriginal(
+    accountPeerId: PeerId, message: StoreMessage, peerKind: Int32,
+    evidenceSource: String = "native_unclassified", evidenceAttempt: String? = nil
+) -> Bool {
     guard goldgramNativeHistoryEnabled(), (0...3).contains(peerKind),
           case let .Id(id) = message.id, id.namespace == Namespaces.Message.Cloud, id.id > 0,
           !message.attributes.contains(where: { $0 is EditedMessageAttribute }),
@@ -958,7 +973,7 @@ func goldgramCaptureServerOriginal(accountPeerId: PeerId, message: StoreMessage,
     goldgramTraceMessage(accountPeerId: accountPeerId, id: id, stage: "originalEligible")
     let sender = message.authorId
     let original = goldgramArchiveText(message.text, message.media)
-    if goldgramWrite([
+    var payload: [String: Any] = [
         "accountId": accountPeerId.id._internalGetInt64Value(), "peerKind": peerKind,
         "peerId": id.peerId.id._internalGetInt64Value(), "messageId": id.id, "eventKind": 0,
         "text": original, "originalText": original, "originalObserved": true,
@@ -966,8 +981,11 @@ func goldgramCaptureServerOriginal(accountPeerId: PeerId, message: StoreMessage,
         "senderId": sender?.id._internalGetInt64Value() ?? 0,
         "senderKind": sender.flatMap { goldgramKind($0, nil) } ?? -1,
         "sentAt": Int64(message.timestamp) * 1000, "threadId": message.threadId ?? 0,
-        "mediaKeys": goldgramMediaKeys(message.media)
-    ]) {
+        "mediaKeys": goldgramMediaKeys(message.media),
+        "evidenceSource": evidenceSource
+    ]
+    if let evidenceAttempt { payload["evidenceAttempt"] = evidenceAttempt }
+    if goldgramWrite(payload) {
         goldgramDiagnosticRecord(accountPeerId: accountPeerId, stage: "writerAccepted")
         goldgramTraceMessage(accountPeerId: accountPeerId, id: id, stage: "originalQueued")
         return true
@@ -1068,7 +1086,8 @@ public func goldgramCaptureNotificationOriginal(
         "senderKind": author.flatMap { goldgramKind($0, transaction.getPeer($0)) } ?? -1,
         "sentAt": Int64(message.timestamp) * 1000,
         "threadId": message.threadId ?? 0,
-        "mediaKeys": goldgramMediaKeys(message.media)
+        "mediaKeys": goldgramMediaKeys(message.media),
+        "evidenceSource": "notification_postbox"
     ]
     let accepted = goldgramWrite(payload, transaction: transaction)
     goldgramNoteNotificationTrace(transaction: transaction, accountPeerId: accountPeerId,
@@ -1614,7 +1633,11 @@ private func goldgramSeedDiscussion(account: Account, peerId: PeerId, labOnly: B
                     for message in stored {
                         guard case let .Id(id) = message.id, id.peerId == peerId else { continue }
                         if goldgramCaptureServerOriginal(
-                            accountPeerId: account.peerId, message: message, peerKind: kind) {
+                            accountPeerId: account.peerId, message: message, peerKind: kind,
+                            evidenceSource: locationTraceToken.map {
+                                GoldgramLocationLabTrace.evidenceSource(for: $0)
+                            } ?? "history_snapshot",
+                            evidenceAttempt: locationTraceToken) {
                             accepted += 1
                         }
                     }
