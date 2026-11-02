@@ -21,7 +21,7 @@ enum GoldgramHistoryStore {
     // Later write APIs must use the same serialization discipline.
     static let storageQueue = DispatchQueue(
         label: "goldgram.history.sqlite.setup",
-        qos: .utility
+        qos: .userInitiated
     )
     private static let currentSchemaVersion: Int32 = 2
 
@@ -1692,6 +1692,20 @@ public func goldgramCaptureEventV1(_ raw: UnsafePointer<CChar>?) -> Int32 {
 }
 
 // Notification events are committed before their Postbox handoff is removed.
+// #136: cheap read-only first-original check before costly geo history replay.
+// 1 = confirmed committed original, 0 = absent, -1 = unavailable/unknown.
+// Unknown must NEVER be treated as proof that the original exists.
+@_cdecl("goldgram_has_original_v1")
+public func goldgramHasOriginalV1(_ account: Int64, _ kind: Int32, _ peer: Int64, _ id: Int32) -> Int32 {
+    guard account > 0, (0...3).contains(kind), peer > 0, id > 0 else { return -1 }
+    return GoldgramHistoryStore.storageQueue.sync {
+        guard let db = try? GoldgramHistoryStore.archiveConnection(for: account),
+              let known = try? GoldgramHistoryStore.originalIsKnown(db: db,
+                  scope: [Int64(kind), peer, Int64(id)]) else { return -1 }
+        return known ? 1 : 0
+    }
+}
+
 @_cdecl("goldgram_flush_capture_v1")
 public func goldgramFlushCaptureV1() -> Int32 {
     return GoldgramHistoryStore.storageQueue.sync {

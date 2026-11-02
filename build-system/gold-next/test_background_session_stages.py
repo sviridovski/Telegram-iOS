@@ -601,3 +601,24 @@ for needle in ('ПОЧЕМУ оригинала нет', 'Впервые уви�
 assert 'let geoInThisTest = geoStarted > 0 && geoEnd > geoStarted' in ui
 assert 'GoldgramLocationLabUntilV1' in app
 print('Goldgram #135: rotating real limited geo capture and missing-original diagnostics OK')
+
+#136: priority and durable fence, committed-only geo filtering, no invented original.
+assert 'qos: .userInitiated' in sql
+assert '@_cdecl("goldgram_has_original_v1")' in sql
+assert 'try? GoldgramHistoryStore.originalIsKnown(' in sql
+assert 'return known ? 1 : 0' in sql
+assert 'goldgramHasOriginalCallback' in core
+assert 'goldgramHasCommittedOriginal(accountPeerId: account.peerId,' in core
+assert 'historySkippedKnown: Int?' in core
+assert 'writerFlushConfirmed: Bool?' in core
+assert 'known: skippedKnown' in core
+assert core.index('goldgramHasCommittedOriginal(accountPeerId: account.peerId,') < core.index('if goldgramCaptureServerOriginal(', core.index('var skippedKnown = 0'))
+assert 'goldgramFlushOriginalCapture()' in app
+assert 'GoldgramLocationLabTrace.writerFlush(token,' in app
+assert 'self.goldgramRefreshWork.set(nil)' in app and 'GoldgramBackgroundRefreshTrace.finish(token, reason: reason)' in app
+assert 'already in SQLite' not in ui or 'уже в SQLite (без повторного writer)' in ui
+assert 'historySkippedKnown: Int?' in ui and 'writerFlushConfirmed: Bool?' in ui
+assert 'evidenceSource: "live_update"' in utils
+assert 'deadline: .now() + 18.0' in app
+assert 'GoldgramLocationLabUntilV1' in app
+print('Goldgram #136: priority live durable writes + read-only committed filter + bounded wake fence OK')

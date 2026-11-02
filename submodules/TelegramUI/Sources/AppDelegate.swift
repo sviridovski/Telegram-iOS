@@ -502,6 +502,10 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
                         token: "goldgram-location-lab-128", accountId: account.id)
                     GoldgramLocationLabTrace.stage(token, "lease_requested")
                     let poll = goldgramLocationLabPoll(account: account, traceToken: token).start(completed: {
+                        // #136: drain all native originals accepted during
+                        // this finite OS wake before releasing its lease.
+                        GoldgramLocationLabTrace.writerFlush(token,
+                            confirmed: goldgramFlushOriginalCapture())
                         subscriber.putCompletion()
                     })
                     return ActionDisposable {
@@ -579,6 +583,12 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
                     // the last in-window service/network state BEFORE releasing
                     // the lease. Cleanup's natural .never is not a BG failure.
                     self.goldgramRefreshWork.set(nil)
+                    if reason == "completed" {
+                        // #136: serialize accepted native baseline writes
+                        // before signalling BG completion; no extra OS time.
+                        GoldgramBackgroundRefreshTrace.phase(token,
+                            goldgramFlushOriginalCapture() ? "sqlite_queue_drained" : "sqlite_queue_not_confirmed")
+                    }
                     GoldgramBackgroundRefreshTrace.finish(token, reason: reason)
                     let hadLease = self.goldgramRefreshLease != nil
                     self.goldgramRefreshLease?.dispose()

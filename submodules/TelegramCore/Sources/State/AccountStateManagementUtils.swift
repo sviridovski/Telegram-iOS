@@ -157,7 +157,8 @@ private func goldgramArchivePublicOriginal(
     // Called only for accepted live public new-message updates, after peer kind
     // verification. Save the true original before deferred Postbox application.
     if goldgramNativeHistoryEnabled() {
-        goldgramCaptureServerOriginal(accountPeerId: accountPeerId, message: message, peerKind: peerKind)
+        goldgramCaptureServerOriginal(accountPeerId: accountPeerId, message: message,
+            peerKind: peerKind, evidenceSource: "live_update")
         return
     }
     guard !goldgramNativeHistoryEnabled(), UserDefaults.standard.bool(forKey: "GoldgramSQLiteCaptureEnabled"),

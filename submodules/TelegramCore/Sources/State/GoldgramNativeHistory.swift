@@ -481,6 +481,8 @@ public struct GoldgramLocationLabAttempt: Codable {
     public var historyWrongPeer: Int?
     public var historyNotConverted: Int?
     public var historyWriterRejected: Int?
+    public var historySkippedKnown: Int?
+    public var writerFlushConfirmed: Bool?
     public var lateCallbacksIgnored: Int
 
     public init(token: String, source: String, appState: String) {
@@ -516,6 +518,8 @@ public struct GoldgramLocationLabAttempt: Codable {
         self.historyWrongPeer = 0
         self.historyNotConverted = 0
         self.historyWriterRejected = 0
+        self.historySkippedKnown = 0
+        self.writerFlushConfirmed = nil
         self.lateCallbacksIgnored = 0
     }
 }
@@ -657,14 +661,18 @@ public enum GoldgramLocationLabTrace {
     }
     // #133: only quantitative filter reasons; no message or peer IDs.
     public static func historyFilters(_ token: String, edited: Int, empty: Int,
-                                      wrongPeer: Int, unconverted: Int, rejected: Int) {
+                                      wrongPeer: Int, unconverted: Int, rejected: Int, known: Int) {
         change(token) { row in
             row.historySkippedEdited = (row.historySkippedEdited ?? 0) + edited
             row.historySkippedEmpty = (row.historySkippedEmpty ?? 0) + empty
             row.historyWrongPeer = (row.historyWrongPeer ?? 0) + wrongPeer
             row.historyNotConverted = (row.historyNotConverted ?? 0) + unconverted
             row.historyWriterRejected = (row.historyWriterRejected ?? 0) + rejected
+            row.historySkippedKnown = (row.historySkippedKnown ?? 0) + known
         }
+    }
+    public static func writerFlush(_ token: String, confirmed: Bool) {
+        change(token) { $0.writerFlushConfirmed = confirmed }
     }
     public static func finish(_ token: String, reason: String) {
         change(token) {
@@ -893,6 +901,35 @@ private func goldgramDrainPending(accountPeerId: PeerId, transaction: Transactio
     guard let symbol = dlsym(handle, "goldgram_flush_capture_v1"), unsafeBitCast(symbol, to: Flush.self)() == 1 else { return }
     if remaining.isEmpty { transaction.removeItemCacheEntry(id: goldgramPendingKey) }
     else if let entry = CodableEntry(GoldgramPendingEvents(items: remaining)) { transaction.putItemCacheEntry(id: goldgramPendingKey, entry: entry) }
+}
+
+// #136: use a fast, account-scoped committed-baseline check only in the
+// opt-in geo history snapshot path. Never skip on error or absent native ABI.
+private typealias GoldgramHasOriginalCallback = @convention(c) (Int64, Int32, Int64, Int32) -> Int32
+private let goldgramHasOriginalCallback: GoldgramHasOriginalCallback? = {
+    guard let handle = dlopen(nil, RTLD_NOW),
+          let symbol = dlsym(handle, "goldgram_has_original_v1") else { return nil }
+    return unsafeBitCast(symbol, to: GoldgramHasOriginalCallback.self)
+}()
+
+private func goldgramHasCommittedOriginal(accountPeerId: PeerId, kind: Int32, id: MessageId) -> Bool {
+    guard let check = goldgramHasOriginalCallback else { return false }
+    return check(accountPeerId.id._internalGetInt64Value(), kind,
+                 id.peerId.id._internalGetInt64Value(), id.id) == 1
+}
+
+// A native flush is a serial-queue fence, not an assertion about any
+// particular original. Invoke only in a finite, genuinely OS-awake window.
+private typealias GoldgramFlushCallback = @convention(c) () -> Int32
+private let goldgramFlushCallback: GoldgramFlushCallback? = {
+    guard let handle = dlopen(nil, RTLD_NOW),
+          let symbol = dlsym(handle, "goldgram_flush_capture_v1") else { return nil }
+    return unsafeBitCast(symbol, to: GoldgramFlushCallback.self)
+}()
+
+public func goldgramFlushOriginalCapture() -> Bool {
+    guard goldgramNativeHistoryEnabled(), let flush = goldgramFlushCallback else { return false }
+    return flush() == 1
 }
 
 private func goldgramSavedOriginal(accountPeerId: PeerId, kind: Int32, id: MessageId) -> String? {
@@ -1656,6 +1693,7 @@ private func goldgramSeedDiscussion(account: Account, peerId: PeerId, labOnly: B
                     var skippedEmpty = 0
                     var wrongPeer = 0
                     var writerRejected = 0
+                    var skippedKnown = 0
                     for message in stored {
                         guard case let .Id(id) = message.id, id.peerId == peerId else {
                             wrongPeer += 1
@@ -1667,6 +1705,14 @@ private func goldgramSeedDiscussion(account: Account, peerId: PeerId, labOnly: B
                         }
                         if message.text.isEmpty && message.media.isEmpty {
                             skippedEmpty += 1
+                            continue
+                        }
+                        // Never replay already committed baselines through the
+                        // async writer. A failed/unknown lookup falls through
+                        // to the existing idempotent INSERT OR IGNORE path.
+                        if goldgramHasCommittedOriginal(accountPeerId: account.peerId,
+                            kind: kind, id: id) {
+                            skippedKnown += 1
                             continue
                         }
                         if goldgramCaptureServerOriginal(
@@ -1686,7 +1732,7 @@ private func goldgramSeedDiscussion(account: Account, peerId: PeerId, labOnly: B
                             edited: skippedEdited, empty: skippedEmpty,
                             wrongPeer: wrongPeer,
                             unconverted: max(0, messages.count - stored.count),
-                            rejected: writerRejected)
+                            rejected: writerRejected, known: skippedKnown)
                     }
                 } else {
                     let _ = transaction.addMessages(stored, location: .Random)

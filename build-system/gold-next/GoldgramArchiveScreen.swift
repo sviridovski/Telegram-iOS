@@ -130,6 +130,8 @@ private struct GoldgramLocationLabReportRow: Decodable {
     let historyWrongPeer: Int?
     let historyNotConverted: Int?
     let historyWriterRejected: Int?
+    let historySkippedKnown: Int?
+    let writerFlushConfirmed: Bool?
     let lateCallbacksIgnored: Int
 }
 
@@ -516,8 +518,12 @@ public final class GoldgramArchiveScreen: UITableViewController {
                     let peerFiltered = row.historyWrongPeer ?? 0
                     let unconverted = row.historyNotConverted ?? 0
                     let rejected = row.historyWriterRejected ?? 0
+                    let knownSkipped = row.historySkippedKnown ?? 0
                     if row.historySkippedEdited != nil {
-                        report += "\nФильтры API-снимка: уже изменённые \(editedFiltered), пустые \(emptyFiltered), чужие \(peerFiltered), не распознаны \(unconverted), writer отклонил \(rejected)"
+                        report += "\nФильтры API-снимка: уже изменённые \(editedFiltered), пустые \(emptyFiltered), чужие \(peerFiltered), не распознаны \(unconverted), writer отклонил \(rejected), уже в SQLite (без повторного writer) \(knownSkipped)"
+                    }
+                    if let flushed = row.writerFlushConfirmed {
+                        report += "\n№136: очередь SQLite проверена при завершении: \(flushed ? "без зарегистрированных ошибок" : "не подтверждено"). Это НЕ гарантия отдельного COMMIT."
                     }
                     let accepted = row.historyQueued + row.originalsQueued
                     if let dbrow = outcomes.first(where: { ($0["token"] as? String) == row.token }) {
