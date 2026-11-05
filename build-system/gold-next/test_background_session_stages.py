@@ -444,7 +444,7 @@ poll_location = core.split("public func goldgramLocationLabPoll(account: Account
 for phrase in ("goldgramGeoRotatingTargets(transaction:", "standalonePollChannelOnce(",
                "labOnly: true", "combineLatest(polls + snapshots) |> ignoreValues"):
     assert phrase in poll_location, phrase
-assert "Гео-эксперимент №128: 30 минут" in ui
+assert "Гео-эксперимент №128: до отключения" in ui
 assert "Остановить гео-эксперимент №128" in ui
 assert "Гео-эксперимент №128 (координаты не записываются)" in ui
 assert 'DispatchQueue.main.asyncAfter(deadline: .now() + 24.0)' in app
@@ -512,7 +512,7 @@ for q in ('evidenceSource: "live_update"',
     assert q in utils, q
 assert 'let geoInThisTest = geoStarted > 0 && geoEnd > geoStarted' in ui
 assert 'geoStarted >= diagnosticSinceSeconds' in ui
-assert 'geoInThisTest ? Int64(geoStarted * 1000.0) : 0' in ui
+assert 'geoInThisTest ? Int64(geoQuerySince * 1000.0) : 0' in ui
 assert 'removeObject(forKey: "GoldgramLocationLabStartedAtV1")' in ui
 assert 'removeObject(forKey: "GoldgramLocationLabWindowEndV1")' in ui
 assert 'Доказательства записи оригиналов №131' in ui
@@ -622,3 +622,20 @@ assert 'evidenceSource: "live_update"' in utils
 assert 'deadline: .now() + 18.0' in app
 assert 'GoldgramLocationLabUntilV1' in app
 print('Goldgram #136: priority live durable writes + read-only committed filter + bounded wake fence OK')
+
+#137: explicit persistent manual geo mode with a legacy-deadline fallback.
+assert 'return until == -1.0 || until > Date().timeIntervalSince1970' in app
+assert 'return until == -1.0 || until > Date().timeIntervalSince1970' in ui
+assert 'defaults.set(locationActive ? 0.0 : -1.0,' in ui
+assert '"Гео-эксперимент №128: до отключения"' in ui
+assert 'geoRunning ? Date().timeIntervalSince1970' in ui
+assert 'geoQuerySince = max(geoStarted, diagnosticSinceSeconds)' in ui
+assert 'if geoRunning {' in ui and 'включена до ручного отключения' in ui
+assert 'if goldgramLocationLabIsActive(UserDefaults.standard) {' in app
+assert 'self.goldgramLocationLabChanged(Notification(name: Notification.Name("GoldgramLocationLabChanged")))' in app
+assert 'deadline: .now() + 1800.0' not in app
+assert 'now + 1800.0' not in ui
+assert 'deadline: .now() + 18.0' in app
+assert 'allowsBackgroundLocationUpdates = false' in app
+assert 'stopUpdatingLocation()' in app
+print('Goldgram #137: persistent manual geo experiment, bounded per-wake work and accurate live reporting OK')

@@ -170,6 +170,13 @@ public final class GoldgramArchiveScreen: UITableViewController {
 
     required init?(coder: NSCoder) { return nil }
 
+    // #137: -1 means enabled until explicitly stopped. Legacy positive
+    // deadlines are honored so an already-running timed session is not lost.
+    private static func locationLabIsActive(_ defaults: UserDefaults) -> Bool {
+        let until = defaults.double(forKey: "GoldgramLocationLabUntilV1")
+        return until == -1.0 || until > Date().timeIntervalSince1970
+    }
+
     private static let diagnosticCountPrefix = "GoldgramDiagnosticCountsV1."
     private static let foregroundTracePrefix = "GoldgramForegroundSyncEventsV1."
     private static let foregroundUISamplePrefix = "GoldgramForegroundUISnapshotV1."
@@ -214,7 +221,7 @@ public final class GoldgramArchiveScreen: UITableViewController {
             defaults.removeObject(forKey: "GoldgramLocationLabAttemptsV1")
             // A new control test WITHOUT a geo session must never inherit
             // the previous geo interval (the confusing #130 screenshot).
-            if defaults.double(forKey: "GoldgramLocationLabUntilV1") <= Date().timeIntervalSince1970 {
+            if !Self.locationLabIsActive(defaults) {
                 defaults.removeObject(forKey: "GoldgramLocationLabStartedAtV1")
                 defaults.removeObject(forKey: "GoldgramLocationLabWindowEndV1")
             }
@@ -264,19 +271,19 @@ public final class GoldgramArchiveScreen: UITableViewController {
             alert.addAction(UIAlertAction(title: "Понятно", style: .default))
             self.present(alert, animated: true)
         })
-        // #128: explicit 30-minute location activity, actual sensor but NEVER
+        // #137: explicit manual location activity, actual sensor but NEVER
         // store/send coordinates. Independent of Full Capture Lab #127.
-        let locationActive = defaults.double(forKey: "GoldgramLocationLabUntilV1") > Date().timeIntervalSince1970
+        let locationActive = Self.locationLabIsActive(defaults)
         menu.addAction(UIAlertAction(
-            title: locationActive ? "Остановить гео-эксперимент №128" : "Гео-эксперимент №128: 30 минут",
+            title: locationActive ? "Остановить гео-эксперимент №128" : "Гео-эксперимент №128: до отключения",
             style: locationActive ? .destructive : .default
         ) { _ in
             let now = Date().timeIntervalSince1970
-            defaults.set(locationActive ? 0.0 : now + 1800.0,
+            defaults.set(locationActive ? 0.0 : -1.0,
                          forKey: "GoldgramLocationLabUntilV1")
             if !locationActive {
                 defaults.set(now, forKey: "GoldgramLocationLabStartedAtV1")
-                defaults.set(now + 1800.0, forKey: "GoldgramLocationLabWindowEndV1")
+                defaults.set(now, forKey: "GoldgramLocationLabWindowEndV1")
                 defaults.removeObject(forKey: "GoldgramLocationLabAttemptsV1")
                 defaults.set(0, forKey: "GoldgramLocationLabTicksV1")
                 defaults.set("starting", forKey: "GoldgramLocationLabStateV1")
@@ -287,7 +294,7 @@ public final class GoldgramArchiveScreen: UITableViewController {
                 name: Notification.Name("GoldgramLocationLabChanged"), object: nil)
             let message = locationActive
                 ? "Сессия остановлена, SQLite не изменена."
-                : "Включаются НАСТОЯЩИЕ обновления CoreLocation, но координаты НЕ записываются и НЕ отправляются в Telegram. iOS может запросить разрешение и покажет индикатор геолокации. В доступном фоновом времени до 3 проверенных обсуждений опрашиваются через MTProto. Возможен большой расход батареи. Сессия автоматически истекает через 30 минут. Для теста включи слежение за нужным каналом. Можно остановить вручную."
+                : "Включаются НАСТОЯЩИЕ обновления CoreLocation, но координаты НЕ записываются и НЕ отправляются в Telegram. iOS может запросить разрешение и покажет индикатор геолокации. В доступном фоновом времени до 3 проверенных обсуждений опрашиваются через MTProto. Возможен большой расход батареи. Режим остаётся включённым до ручного отключения в этом меню и возобновляется при запуске приложения. iOS может приостанавливать фоновую работу, поэтому непрерывное получение сообщений не гарантируется. Для теста включи слежение за нужным каналом."
             let alert = UIAlertController(title: "Гео-эксперимент №128",
                 message: message, preferredStyle: .alert)
             alert.addAction(UIAlertAction(title: "Понятно", style: .default))
@@ -345,12 +352,17 @@ public final class GoldgramArchiveScreen: UITableViewController {
     private func showCaptureDiagnosticReport(account: Int64, since: NSNumber?) {
         let defaults = UserDefaults.standard
         let geoStarted = defaults.double(forKey: "GoldgramLocationLabStartedAtV1")
-        let geoEnd = defaults.double(forKey: "GoldgramLocationLabWindowEndV1")
+        let geoRunning = Self.locationLabIsActive(defaults)
+        // #137: while manually enabled the report window ends at the current
+        // snapshot time, not at a made-up future deadline.
+        let geoEnd = geoRunning ? Date().timeIntervalSince1970 :
+            defaults.double(forKey: "GoldgramLocationLabWindowEndV1")
         let diagnosticSinceSeconds = (since?.doubleValue ?? 0.0) / 1000.0
-        // #131: distinguish this diagnostic session from stale prior GEO ON.
-        // A controlled GEO OFF test must not show a previous geo interval.
+        // A GEO OFF control test must not inherit a previous completed session.
+        // A newly started diagnostic test may overlap an already-running GEO session.
         let geoInThisTest = geoStarted > 0 && geoEnd > geoStarted &&
-            geoStarted >= diagnosticSinceSeconds
+            (geoStarted >= diagnosticSinceSeconds || (geoRunning && diagnosticSinceSeconds > 0))
+        let geoQuerySince = max(geoStarted, diagnosticSinceSeconds)
         let traceRows: [GoldgramLocationLabReportRow] = {
             guard let data = defaults.data(forKey: "GoldgramLocationLabAttemptsV1"),
                   let rows = try? PropertyListDecoder().decode([GoldgramLocationLabReportRow].self, from: data) else { return [] }
@@ -359,7 +371,7 @@ public final class GoldgramArchiveScreen: UITableViewController {
         let request: NSDictionary = [
             "accountId": NSNumber(value: account), "category": 3,
             "mode": "diagnostics", "since": since ?? NSNumber(value: 0),
-            "geoSince": NSNumber(value: geoInThisTest ? Int64(geoStarted * 1000.0) : 0),
+            "geoSince": NSNumber(value: geoInThisTest ? Int64(geoQuerySince * 1000.0) : 0),
             "geoUntil": NSNumber(value: geoInThisTest ? Int64(geoEnd * 1000.0) : 0),
             "attemptTokens": traceRows.map { $0.token }
         ]
@@ -466,7 +478,11 @@ public final class GoldgramArchiveScreen: UITableViewController {
             if !geoInThisTest {
                 report += "\nГео-сессия в этом диагностическом периоде НЕ запускалась. Старые события датчика выше — только история предыдущего эксперимента."
             } else {
-                report += "\nГео-сессия этого теста: \(self.dateFormatter.string(from: Date(timeIntervalSince1970: geoStarted))) — \(self.dateFormatter.string(from: Date(timeIntervalSince1970: geoEnd)))"
+                if geoRunning {
+                    report += "\nГео-сессия этого теста: с \(self.dateFormatter.string(from: Date(timeIntervalSince1970: geoStarted))); включена до ручного отключения. Срез: \(self.dateFormatter.string(from: Date(timeIntervalSince1970: geoEnd)))"
+                } else {
+                    report += "\nГео-сессия этого теста: \(self.dateFormatter.string(from: Date(timeIntervalSince1970: geoStarted))) — \(self.dateFormatter.string(from: Date(timeIntervalSince1970: geoEnd)))"
+                }
             }
             // #129: SQLite window counts reflect disk contents at report time,
             // not attribution to CoreLocation or the original capture timestamp.
