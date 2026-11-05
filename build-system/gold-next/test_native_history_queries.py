@@ -29,7 +29,11 @@ add(3,10,7,'goldgram_native_v1',latest='old edited text',server=10)
 add(3,10,8,'goldgram_native_v1',original='old A',latest='old B',server=10)
 
 rows=db.execute(block('messagesSQL'),(3,10,30,0)).fetchall()
-assert {x[2] for x in rows}=={3,4,5}, 'reject legacy false/unchanged, retain proven events'
+# #140: verified edit #3 and retained deletion #5 remain; edit #4 without a
+# confirmed original is archived but intentionally hidden by #138.
+assert {x[2] for x in rows}=={3,5}, 'show verified edits and retained deletes only'
+assert db.execute("""SELECT original_text, original_observed FROM messages
+    WHERE peer_kind=3 AND peer_id=10 AND message_id=4""").fetchone()==(None,0), 'hidden edit preserved in SQLite'
 photo=next(x for x in rows if x[2]==5)
 assert photo[16:18]==(500,1), 'deletion receipt time + native retained anchor'
 # Reproduce production composition for deleted category (4 bound kinds).
@@ -58,17 +62,20 @@ add(2,20,93,'goldgram_native_live_v2',latest='Полученный текст б
 add(2,20,94,'goldgram_native_retained_v1',event=2,latest='[Видео]',deleted=1,time=901)
 add(2,20,95,'goldgram_native_v1',event=2,original='Сохранённый оригинал',latest='[Содержимое не было получено]',deleted=1,time=902)
 visible=db.execute(block('messagesSQL'),(2,20,30,0)).fetchall()
-assert {x[2] for x in visible}=={5,93,94,95}
+# #140: #93 is a genuine edit update, but without an original; hide it.
+assert {x[2] for x in visible}=={5,94,95}
+assert db.execute("""SELECT original_text, original_observed FROM messages
+    WHERE peer_kind=2 AND peer_id=20 AND message_id=93""").fetchone()==(None,0), 'hidden update preserved in SQLite'
 assert db.execute(block('messagesSQL'),(2,21,30,0)).fetchall()==[]
 assert db.execute(block('messagesSQL'),(2,22,30,0)).fetchall()==[]
 folders=db.execute(block('dialogsSQL'),(2,3,30,0)).fetchall()
 assert {x[1] for x in folders if x[0]==2}=={20}, 'no empty receipt-only folders'
-assert next(x[2] for x in folders if x[0:2]==(2,20))==4, 'counts exclude hidden receipts'
-assert [db.execute(block('messagesSQL'),(2,20,1,i)).fetchone()[2] for i in range(4)]==[x[2] for x in visible]
-assert db.execute(block('messagesSQL'),(2,20,1,4)).fetchall()==[], 'no blank pages'
+assert next(x[2] for x in folders if x[0:2]==(2,20))==3, 'counts exclude hidden receipts and missing originals'
+assert [db.execute(block('messagesSQL'),(2,20,1,i)).fetchone()[2] for i in range(3)]==[x[2] for x in visible]
+assert db.execute(block('messagesSQL'),(2,20,1,3)).fetchall()==[], 'no blank pages'
 assert db.execute('SELECT COUNT(*) FROM messages WHERE peer_kind=2 AND peer_id=21').fetchone()[0]==1, 'hide, do not destroy diagnostic receipts'
 # Cascade clear also removes delete events/revisions; no mixed-peer IDs.
 db.execute('DELETE FROM dialogs WHERE peer_kind=3')
 assert db.execute('SELECT COUNT(*) FROM events WHERE peer_kind=2 AND peer_id=20 AND message_id=5').fetchone()[0]==1
 assert db.execute('PRAGMA foreign_key_check').fetchall()==[]
-print('Goldgram #83: false-edit regression, deleted/media anchors, event clock, all peer kinds and scoped paging OK')
+print('Goldgram #140: verified edits only, deleted/media anchors, retained hidden evidence, all peer kinds and paging OK')
