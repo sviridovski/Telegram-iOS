@@ -639,3 +639,85 @@ assert 'deadline: .now() + 18.0' in app
 assert 'allowsBackgroundLocationUpdates = false' in app
 assert 'stopUpdatingLocation()' in app
 print('Goldgram #137: persistent manual geo experiment, bounded per-wake work and accurate live reporting OK')
+
+#138: hide only edit-only rows missing a verified original, before pagination.
+# Folder counts, message pages and visible totals must agree; deletion records
+# with known content remain available. SQLite rows must never be removed.
+import re
+import sqlite3
+
+def archive_sql_literal(name):
+    m = re.search(r'private static let ' + name + r' = """\n(.*?)\n    """', sql, re.S)
+    assert m is not None, name
+    return m.group(1)
+
+archive_dialogs = archive_sql_literal("dialogsSQL")
+archive_messages = archive_sql_literal("messagesSQL")
+visibility = "m.original_observed = 1"
+assert archive_dialogs.count(visibility) >= 2
+assert archive_messages.count(visibility) >= 2
+assert "de.event_kind=2" in archive_dialogs and "de.event_kind=2" in archive_messages
+assert "DELETE FROM messages" not in archive_dialogs + archive_messages
+assert "UPDATE messages" not in archive_dialogs + archive_messages
+assert 'if mode == "diagnostics" {' in sql
+
+db = sqlite3.connect(":memory:")
+db.executescript("""
+CREATE TABLE dialogs (peer_kind INTEGER, peer_id INTEGER);
+CREATE TABLE messages (
+    peer_kind INTEGER, peer_id INTEGER, message_id INTEGER,
+    original_text TEXT, original_observed INTEGER, capture_provenance INTEGER,
+    sender_id INTEGER, sent_at INTEGER, last_seen_at INTEGER,
+    is_deleted INTEGER, sender_kind INTEGER
+);
+CREATE TABLE revisions (
+    peer_kind INTEGER, peer_id INTEGER, message_id INTEGER,
+    version_index INTEGER, content TEXT
+);
+CREATE TABLE events (
+    peer_kind INTEGER, peer_id INTEGER, message_id INTEGER,
+    event_kind INTEGER, source TEXT, server_time INTEGER, observed_at INTEGER
+);
+""")
+db.executemany("INSERT INTO dialogs VALUES (?,?)", [(2, 41), (2, 42)])
+db.executemany("INSERT INTO messages VALUES (?,?,?,?,?,?,?,?,?,?,?)", [
+    (2, 41, 1, None, 0, 0, None, 100, 100, 0, None),  # edited, no original: hide
+    (2, 41, 2, "before", 1, 0, None, 200, 200, 0, None), # edited, original: show
+    (2, 41, 3, None, 0, 0, None, 300, 300, 0, None), # deleted with known text: show
+    (2, 41, 4, "[Содержимое не было получено]", 1, 0, None, 400, 400, 0, None),
+    (2, 42, 5, None, 0, 0, None, 500, 500, 0, None), # peer with only missing original
+    (2, 41, 6, "not edited", 1, 0, None, 600, 600, 0, None) # baseline only: hide
+])
+db.executemany("INSERT INTO revisions VALUES (?,?,?,?,?)", [
+    (2, 41, 1, 0, "changed"), (2, 41, 2, 0, "changed"),
+    (2, 41, 3, 0, "retained deletion text"),
+    (2, 41, 4, 0, "changed"), (2, 42, 5, 0, "changed")
+])
+db.executemany("INSERT INTO events VALUES (?,?,?,?,?,?,?)", [
+    (2, 41, 1, 1, "goldgram_native_live_v2", 0, 110),
+    (2, 41, 2, 1, "goldgram_native_live_v2", 0, 210),
+    (2, 41, 3, 2, "deleted", 0, 310),
+    (2, 41, 4, 1, "goldgram_native_live_v2", 0, 410),
+    (2, 42, 5, 1, "goldgram_native_live_v2", 0, 510)
+])
+
+folders = db.execute(archive_dialogs, (2, 3, 30, 0)).fetchall()
+assert [(row[1], row[2]) for row in folders] == [(41, 2)], folders
+rows = db.execute(archive_messages, (2, 41, 30, 0)).fetchall()
+assert [row[2] for row in rows] == [3, 2], rows
+assert db.execute(archive_messages, (2, 41, 1, 0)).fetchone()[2] == 3
+assert db.execute(archive_messages, (2, 41, 1, 1)).fetchone()[2] == 2
+assert db.execute(archive_messages, (2, 41, 1, 2)).fetchone() is None
+assert db.execute(archive_messages, (2, 42, 30, 0)).fetchall() == []
+# The Swift countsSQL uses the same WHERE as messagesSQL.
+count_rows = archive_messages.split(
+    "ORDER BY COALESCE(m.sent_at, m.last_seen_at) DESC", 1
+)[0].replace("WHERE m.peer_kind = ? AND m.peer_id = ?",
+            "WHERE m.peer_kind IN (0,1,2,3)")
+counts_sql = ("SELECT COALESCE(SUM(edited),0), "
+              "COALESCE(SUM(CASE WHEN is_deleted=1 OR delete_event=1 "
+              "THEN 1 ELSE 0 END),0) FROM (" + count_rows + ");")
+assert db.execute(counts_sql).fetchone() == (1, 1)
+assert db.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 6
+db.close()
+print("Goldgram #138: hide missing originals in journal, preserve deletions, pagination and archive data OK")

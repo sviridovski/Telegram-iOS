@@ -966,6 +966,18 @@ public final class GoldgramArchiveReader: NSObject {
              AND body.peer_id=m.peer_id AND body.message_id=m.message_id
              AND NULLIF(TRIM(body.content), '') IS NOT NULL
              AND body.content != '[Содержимое не было получено]'))
+      -- #138: hide edit-only archive entries when no verified original was
+      -- captured. Keep deletion entries with retained content, and do not
+      -- modify stored revisions, missing-original counters, or diagnostics.
+      AND (
+          (m.original_observed = 1
+           AND NULLIF(TRIM(COALESCE(m.original_text, '')), '') IS NOT NULL
+           AND m.original_text != '[Содержимое не было получено]')
+          OR m.is_deleted = 1
+          OR EXISTS (SELECT 1 FROM events de
+                     WHERE de.peer_kind=m.peer_kind AND de.peer_id=m.peer_id
+                       AND de.message_id=m.message_id AND de.event_kind=2)
+      )
       AND (m.is_deleted = 1 OR EXISTS (
            SELECT 1 FROM events e
            WHERE e.peer_kind = m.peer_kind AND e.peer_id = m.peer_id
@@ -1014,6 +1026,18 @@ public final class GoldgramArchiveReader: NSObject {
              AND body.peer_id=m.peer_id AND body.message_id=m.message_id
              AND NULLIF(TRIM(body.content), '') IS NOT NULL
              AND body.content != '[Содержимое не было получено]'))
+      -- #138: hide edit-only archive entries when no verified original was
+      -- captured. Keep deletion entries with retained content, and do not
+      -- modify stored revisions, missing-original counters, or diagnostics.
+      AND (
+          (m.original_observed = 1
+           AND NULLIF(TRIM(COALESCE(m.original_text, '')), '') IS NOT NULL
+           AND m.original_text != '[Содержимое не было получено]')
+          OR m.is_deleted = 1
+          OR EXISTS (SELECT 1 FROM events de
+                     WHERE de.peer_kind=m.peer_kind AND de.peer_id=m.peer_id
+                       AND de.message_id=m.message_id AND de.event_kind=2)
+      )
       AND (m.is_deleted = 1 OR EXISTS (
            SELECT 1 FROM events e
            WHERE e.peer_kind = m.peer_kind AND e.peer_id = m.peer_id
