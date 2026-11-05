@@ -64,7 +64,17 @@ assert messages(a, 1, 20)[0][0:3] == (1,20,7)
 assert messages(a, 2, 20)[0][0:3] == (2,20,7)
 assert messages(b,0,10)[0][3] == "Другой аккаунт"
 assert messages(a,0,10)[0][3] == "Начало"
-# Unknown original after catch-up is explicitly not observed as original.
+# #139: a catch-up record without a verified original must be hidden by
+# #138's archive filter, but the underlying SQLite evidence stays untouched.
 a.execute("UPDATE messages SET original_observed=0 WHERE peer_kind=0")
-assert messages(a,0,10)[0][4] == 0
-print("Goldgram #72 reader: scoped, paginated, read-only SQL and certainty OK")
+assert messages(a,0,10) == []
+assert dialogs(a,(0,0)) == []
+assert a.execute("""SELECT original_text, original_observed FROM messages
+    WHERE peer_kind=0 AND peer_id=10 AND message_id=7""").fetchone() == ("Начало", 0)
+# If a genuine baseline is later confirmed, it becomes visible without
+# recreating the archive or changing another account's history.
+a.execute("UPDATE messages SET original_observed=1 WHERE peer_kind=0")
+assert messages(a,0,10)[0][4] == 1
+assert dialogs(a,(0,0))[0][2] == 1
+assert messages(b,0,10)[0][3] == "Другой аккаунт"
+print("Goldgram #139 reader: scoped, paginated, verified originals only, durable hidden records OK")
