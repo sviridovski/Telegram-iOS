@@ -97,14 +97,14 @@ struct NativeCaptureFixture {
         try send(999, event: 0, text: "Повтор после ошибки", known: true)
         precondition(goldgramFlushCaptureV1() == 1)
         precondition(row("SELECT original_text FROM messages WHERE message_id=999") == ["Повтор после ошибки"])
-        precondition(row(GoldgramArchiveReader.countsSQL) == ["3", "2"], "production totals SQL")
+        precondition(row(GoldgramArchiveReader.countsSQL) == ["2", "2"], "journal totals include edits 1 and 6 and deletions 1 and 2")
         GoldgramArchiveReader.updateSelectedAccount(account)
         var totals: NSDictionary?
         GoldgramArchiveReader.query(["accountId": NSNumber(value: account), "category": 3, "mode": "totals"]) { totals = $0 }
         let deadline = Date().addingTimeInterval(10)
         while totals == nil && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
         precondition(totals?["status"] as? String == "ok", "totals reader status: \(String(describing: totals))")
-        precondition((totals?["edited"] as? NSNumber)?.intValue == 3, "count distinct edited messages")
+        precondition((totals?["edited"] as? NSNumber)?.intValue == 2, "edit 3 has no verified original and is hidden from journal totals")
         precondition((totals?["deleted"] as? NSNumber)?.intValue == 2, "exclude empty receipts and ordinary originals")
         // Diagnostic report is limited to local aggregate evidence from
         // the test window; no message content or identity leaves the reader.
