@@ -932,6 +932,20 @@ public func goldgramFlushOriginalCapture() -> Bool {
     return flush() == 1
 }
 
+// A flush waits for the archive's serial writer queue. Keep this fence off
+// the main thread so an OS expiry can cancel the task without waiting for I/O.
+// One serial worker also bounds concurrent waits across refresh/geo attempts.
+private let goldgramOriginalFlushQueue = Queue(name: "GoldgramOriginalFlush", qos: .utility)
+
+public func goldgramFlushOriginalCaptureAsync() -> Signal<Bool, NoError> {
+    return Signal<Bool, NoError> { subscriber in
+        subscriber.putNext(goldgramFlushOriginalCapture())
+        subscriber.putCompletion()
+        return EmptyDisposable
+    }
+    |> runOn(goldgramOriginalFlushQueue)
+}
+
 private func goldgramSavedOriginal(accountPeerId: PeerId, kind: Int32, id: MessageId) -> String? {
     goldgramTraceMessage(accountPeerId: accountPeerId, id: id, stage: "sqlOriginalLookupAttempt")
     typealias Read = @convention(c) (Int64, Int32, Int64, Int32) -> UnsafeMutablePointer<CChar>?

@@ -613,7 +613,8 @@ assert 'historySkippedKnown: Int?' in core
 assert 'writerFlushConfirmed: Bool?' in core
 assert 'known: skippedKnown' in core
 assert core.index('goldgramHasCommittedOriginal(accountPeerId: account.peerId,') < core.index('if goldgramCaptureServerOriginal(', core.index('var skippedKnown = 0'))
-assert 'goldgramFlushOriginalCapture()' in app
+assert 'goldgramFlushOriginalCaptureAsync()' in app
+assert 'goldgramFlushOriginalCapture()' not in app, 'Never wait for the SQLite writer on the app main thread'
 assert 'GoldgramLocationLabTrace.writerFlush(token,' in app
 assert 'self.goldgramRefreshWork.set(nil)' in app and 'GoldgramBackgroundRefreshTrace.finish(token, reason: reason)' in app
 assert 'already in SQLite' not in ui or 'уже в SQLite (без повторного writer)' in ui

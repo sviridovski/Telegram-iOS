@@ -556,13 +556,14 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
                     let lease = shared.wakeupManager.acquireGoldgramRefreshLease(
                         token: "goldgram-location-lab-128", accountId: account.id)
                     GoldgramLocationLabTrace.stage(token, "lease_requested")
-                    let poll = goldgramLocationLabPoll(account: account, traceToken: token).start(completed: {
-                        // #136: drain all native originals accepted during
-                        // this finite OS wake before releasing its lease.
-                        GoldgramLocationLabTrace.writerFlush(token,
-                            confirmed: goldgramFlushOriginalCapture())
-                        subscriber.putCompletion()
-                    })
+                    let poll = (goldgramLocationLabPoll(account: account, traceToken: token)
+                    |> then(goldgramFlushOriginalCaptureAsync()
+                        |> map { confirmed -> Bool in
+                            GoldgramLocationLabTrace.writerFlush(token, confirmed: confirmed)
+                            return confirmed
+                        }
+                        |> ignoreValues)
+                    |> deliverOnMainQueue).start(completed: subscriber.putCompletion)
                     return ActionDisposable {
                         poll.dispose()
                         lease.dispose()
@@ -638,12 +639,6 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
                     // the last in-window service/network state BEFORE releasing
                     // the lease. Cleanup's natural .never is not a BG failure.
                     self.goldgramRefreshWork.set(nil)
-                    if reason == "completed" {
-                        // #136: serialize accepted native baseline writes
-                        // before signalling BG completion; no extra OS time.
-                        GoldgramBackgroundRefreshTrace.phase(token,
-                            goldgramFlushOriginalCapture() ? "sqlite_queue_drained" : "sqlite_queue_not_confirmed")
-                    }
                     GoldgramBackgroundRefreshTrace.finish(token, reason: reason)
                     let hadLease = self.goldgramRefreshLease != nil
                     self.goldgramRefreshLease?.dispose()
@@ -726,23 +721,23 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
                 }
             }
         }
-        |> deliverOnMainQueue).start(completed: {
-            // Targets=0 before Postbox is read means UNKNOWN, not "not pinned".
-            let sample = GoldgramBackgroundRefreshTrace.find(token)
-            let reason: String
-            if sample?.phase == "capture_disabled" {
-                reason = "capture_disabled"
-            } else if sample?.storedPinned == nil {
-                reason = "postbox_unreached"
-            } else if sample?.storedPinned == 0 {
-                reason = "no_targets"
-            } else if sample?.targets == 0 {
-                reason = "targets_unavailable"
-            } else if let sample, sample.requests != sample.completed {
-                reason = "incomplete_requests"
-            } else {
-                reason = "completed"
+        |> deliverOnMainQueue
+        |> then(Signal<Never, NoError> { [weak self] subscriber in
+            guard let self, self.goldgramRefreshActiveToken == token,
+                  self.goldgramRefreshCompletionReason(for: token) == "completed" else {
+                subscriber.putCompletion()
+                return EmptyDisposable
             }
+            return (goldgramFlushOriginalCaptureAsync()
+            |> deliverOnMainQueue).start(next: { [weak self] confirmed in
+                guard self?.goldgramRefreshActiveToken == token else { return }
+                GoldgramBackgroundRefreshTrace.phase(token,
+                    confirmed ? "sqlite_queue_drained" : "sqlite_queue_not_confirmed")
+            }, completed: subscriber.putCompletion)
+        })
+        |> deliverOnMainQueue).start(completed: { [weak self] in
+            guard let self else { return }
+            let reason = self.goldgramRefreshCompletionReason(for: token)
             complete(reason, reason == "completed")
         })
         // Some paths complete synchronously (e.g. no active account).
@@ -751,6 +746,24 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
             self.goldgramRefreshWork.set(work)
         } else {
             work.dispose()
+        }
+    }
+
+    private func goldgramRefreshCompletionReason(for token: String) -> String {
+        // Targets=0 before Postbox is read means UNKNOWN, not "not pinned".
+        let sample = GoldgramBackgroundRefreshTrace.find(token)
+        if sample?.phase == "capture_disabled" {
+            return "capture_disabled"
+        } else if sample?.storedPinned == nil {
+            return "postbox_unreached"
+        } else if sample?.storedPinned == 0 {
+            return "no_targets"
+        } else if sample?.targets == 0 {
+            return "targets_unavailable"
+        } else if let sample, sample.requests != sample.completed {
+            return "incomplete_requests"
+        } else {
+            return "completed"
         }
     }
 

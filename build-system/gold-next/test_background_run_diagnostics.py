@@ -39,7 +39,7 @@ for check_file in (root / "build-system/gold-next").glob("*.py"):
 assert '"ios_expiration"' in bg and '"goldgram_deadline"' in bg, "OS expiration != app deadline"
 assert "GoldgramBackgroundRefreshTrace.finish(token, reason: reason)" in bg
 assert "guard let self, !finished else { return }" in bg, "BG completion must run once"
-assert 'reason = "no_targets"' in bg and 'reason = "incomplete_requests"' in bg
+assert 'return "no_targets"' in bg and 'return "incomplete_requests"' in bg
 assert "goldgramRefreshPriorityDiscussions(" in bg and "diagnosticToken: token" in bg
 
 func = core.split("public func goldgramRefreshPriorityDiscussions(", 1)[1].split(
