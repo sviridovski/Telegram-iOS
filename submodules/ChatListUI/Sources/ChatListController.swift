@@ -6845,6 +6845,7 @@ private final class ChatListLocationContext {
     private var goldgramRefreshOnlineTitle: ((AccountNetworkState) -> Void)?
     private var goldgramStableOnlineSince: Double?
     private var goldgramLastHeaderRepairAt: Double = -10000.0
+    private var goldgramLastUISampleAt: Double = -10000.0
 
     private static func goldgramStateName(_ state: AccountNetworkState) -> String {
         switch state {
@@ -6865,29 +6866,32 @@ private final class ChatListLocationContext {
         let titleName = self.goldgramTitleInput.map(Self.goldgramStateName) ?? "not_received"
         let isUpdatingTitle = self.chatListTitle?.text == self.goldgramExpectedUpdatingText
             && !self.goldgramExpectedUpdatingText.isEmpty
-        GoldgramForegroundSyncTrace.uiSample(
-            accountPeerId: self.context.account.peerId, rawNetwork: inputs.raw,
-            accountNetwork: accountName, updating: inputs.updating,
-            flags: inputs.flags, titleInputNetwork: titleName,
-            titleActivity: self.chatListTitle?.activity ?? false,
-            titleUpdating: isUpdatingTitle)
+        let now = ProcessInfo.processInfo.systemUptime
+        if now - self.goldgramLastUISampleAt >= 10.0 {
+            self.goldgramLastUISampleAt = now
+            GoldgramForegroundSyncTrace.uiSample(
+                accountPeerId: self.context.account.peerId, rawNetwork: inputs.raw,
+                accountNetwork: accountName, updating: inputs.updating,
+                flags: inputs.flags, titleInputNetwork: titleName,
+                titleActivity: self.chatListTitle?.activity ?? false,
+                titleUpdating: isUpdatingTitle)
+        }
 
         // UI-only resync if BOTH independent network observations agree
-        // on healthy online for 30s while the list is still showing Updating.
+        // on healthy online for 1s while the list is still showing Updating.
         // Never fake "online" if MTProto, the account mapper, or the update
-        // manager currently disagrees. Bounded to once per two minutes.
+        // manager currently disagrees. Bounded to once per five seconds.
         guard inputs.raw == "online", accountName == "online", !inputs.updating,
               isUpdatingTitle, self.goldgramRefreshOnlineTitle != nil else {
             self.goldgramStableOnlineSince = nil
             return
         }
-        let now = ProcessInfo.processInfo.systemUptime
         if self.goldgramStableOnlineSince == nil {
             self.goldgramStableOnlineSince = now
             return
         }
-        guard now - (self.goldgramStableOnlineSince ?? now) >= 30.0,
-              now - self.goldgramLastHeaderRepairAt >= 120.0 else { return }
+        guard now - (self.goldgramStableOnlineSince ?? now) >= 1.0,
+              now - self.goldgramLastHeaderRepairAt >= 5.0 else { return }
         self.goldgramLastHeaderRepairAt = now
         self.goldgramStableOnlineSince = nil
         GoldgramForegroundSyncTrace.poll(
@@ -6917,7 +6921,7 @@ private final class ChatListLocationContext {
                 flags: flags, active: active)
             if active {
                 if self.goldgramStatusTimer == nil {
-                    let timer = SwiftSignalKit.Timer(timeout: 10.0, repeat: true,
+                    let timer = SwiftSignalKit.Timer(timeout: 1.0, repeat: true,
                         completion: { [weak self] in self?.goldgramForegroundTick() },
                         queue: .mainQueue())
                     self.goldgramStatusTimer = timer

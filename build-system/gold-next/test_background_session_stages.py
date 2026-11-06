@@ -204,14 +204,14 @@ assert "goldgramConnectionRecoveryDisposable.dispose()" in account
 assert "if !supplementary {" in account
 assert 'ValuePromise<Bool>(false, ignoreRepeated: true)' in foreground
 assert "foregroundSignal.set(active)" in foreground
-assert "self.active, self.master, !self.managerUpdating" in watchdog
+assert "self.active, self.master," in watchdog
 assert 'UserDefaults.standard.bool(forKey: "GoldgramForegroundActiveV1")' in watchdog
 assert '(self.flags & 4) != 0' in watchdog
 assert '(self.flags & 1) != 0' in watchdog
-assert "self.schedule(after: 20.0)" in watchdog
-assert "60.0 - elapsed" in watchdog and "150.0 - elapsed" in watchdog
-assert "self.hardResetTimes.count < 2" in watchdog
-assert "now - 900.0" in watchdog
+assert "self.schedule(after: 1.0)" in watchdog
+assert "4.0 - elapsed" in watchdog and "12.0 - elapsed" in watchdog
+assert "self.hardResetTimes.count < 4" in watchdog
+assert "now - 300.0" in watchdog
 assert "recovery_online_after_reset" in watchdog
 assert "recovery_still_stalled_after_two_resets" in watchdog
 assert "recovery_long_stall_retry" in watchdog
@@ -243,7 +243,7 @@ assert 'Срез UI №118:' in ui and 'УСТАРЕЛ' in ui and 'age <= 25' in
 assert 'Self.foregroundUISamplePrefix + String(account)' in ui
 for gate in ('inputs.raw == "online"', 'accountName == "online"',
              '!inputs.updating', 'isUpdatingTitle',
-             'now - self.goldgramLastHeaderRepairAt >= 120.0',
+             'now - self.goldgramLastHeaderRepairAt >= 5.0',
              'self.goldgramStableOnlineSince', 'self.goldgramRefreshOnlineTitle?'):
     assert gate in foreground_ui, gate
 assert 'GoldgramForegroundSyncTrace.uiSample(' in foreground_ui

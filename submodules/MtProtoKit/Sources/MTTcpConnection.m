@@ -28,6 +28,20 @@
 
 #import <libkern/OSAtomic.h>
 
+// Validate the prefix actually sent on the wire, before deriving CTR keys.
+// https://core.telegram.org/mtproto/mtproto-transports#transport-obfuscation
+static bool MTObfuscatedControlHeaderIsValid(const uint8_t controlBytes[64]) {
+    uint32_t firstWord = 0;
+    uint32_t secondWord = 0;
+    memcpy(&firstWord, controlBytes, sizeof(firstWord));
+    memcpy(&secondWord, controlBytes + 4, sizeof(secondWord));
+    return controlBytes[0] != 0xef && secondWord != 0 &&
+        firstWord != 0x44414548 && firstWord != 0x54534f50 &&
+        firstWord != 0x20544547 && firstWord != 0x4954504f &&
+        firstWord != 0xdddddddd && firstWord != 0xeeeeeeee &&
+        firstWord != 0x02010316;
+}
+
 static id<MTBignum> get_y2(id<MTBignum> x, id<MTBignum> mod, id<MTBignumContext> context) {
     // returns y^2 = x^3 + 486662 * x^2 + x
     id<MTBignum> y = [context clone:x];
@@ -1229,7 +1243,9 @@ struct ctr_state {
                         _addedControlHeader = true;
                         for (int retryCount = 0; retryCount < 10; retryCount++) {
                             uint8_t controlBytes[64];
-                            arc4random_buf(controlBytes, 64);
+                            do {
+                                arc4random_buf(controlBytes, 64);
+                            } while (!MTObfuscatedControlHeaderIsValid(controlBytes));
                             
                             int32_t controlVersion;
                             if (_useIntermediateFormat) {

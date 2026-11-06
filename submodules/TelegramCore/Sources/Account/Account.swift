@@ -1161,7 +1161,8 @@ private final class GoldgramForegroundConnectionRecovery {
     private var cooldownLogged = false
     private var active = false
     private var master = false
-    private var managerUpdating = false
+    private var resumePending = false
+    private var lastResumeNudgeAt: Double = -10000.0
     private var status: ConnectionStatus = .waitingForNetwork
     private var flags: Int32 = 0
 
@@ -1178,11 +1179,35 @@ private final class GoldgramForegroundConnectionRecovery {
     func update(appActive: Bool, connectionMaster: Bool, managerUpdating: Bool,
                 status: ConnectionStatus, flags: Int32) {
         assert(self.queue.isCurrent())
+        if appActive && !self.active {
+            self.resumePending = true
+        } else if !appActive {
+            self.resumePending = false
+        }
         self.active = appActive
         self.master = connectionMaster
-        self.managerUpdating = managerUpdating
         self.status = status
+        let transportConnected = (self.flags & 2) == 0 && (flags & 2) != 0
         self.flags = flags
+        if transportConnected {
+            self.timer?.invalidate()
+            self.timer = nil
+            self.stalledSince = nil
+            self.stage = 0
+        }
+
+        // Wake a reused socket as soon as the real account master is ready.
+        // The OS/network gate may arrive after the foreground lifecycle event.
+        if self.resumePending, self.active, self.master, (flags & 1) != 0,
+           UserDefaults.standard.bool(forKey: "GoldgramForegroundActiveV1") {
+            self.resumePending = false
+            let now = ProcessInfo.processInfo.systemUptime
+            if now - self.lastResumeNudgeAt >= 1.0 {
+                self.lastResumeNudgeAt = now
+                self.record("recovery_foreground_nudge")
+                self.network.goldgramRequestTransportRecovery(resetTransport: false)
+            }
+        }
 
         if !self.canRecover {
             if self.stalledSince != nil && self.stage >= 2 && appActive {
@@ -1205,20 +1230,22 @@ private final class GoldgramForegroundConnectionRecovery {
             self.stage = 0
             self.cooldownLogged = false
             self.record("recovery_watch_started")
-            self.schedule(after: 20.0)
+            self.schedule(after: 1.0)
         }
     }
 
+    // A pending getDifference cannot block repair of a stalled transport.
+    // A connected transport doing only account synchronization is left alone.
     // MTProto "updating" without context bit 4 can be legitimate service work.
     // "connecting" requires an OS-available network; a true offline state is excluded.
     private var canRecover: Bool {
-        guard self.active, self.master, !self.managerUpdating,
+        guard self.active, self.master,
               UserDefaults.standard.bool(forKey: "GoldgramForegroundActiveV1") else {
             return false
         }
         switch self.status {
         case .updating:
-            return (self.flags & 4) != 0
+            return (self.flags & 1) != 0 && (self.flags & 4) != 0
         case .connecting:
             return (self.flags & 1) != 0
         case .waitingForNetwork, .online:
@@ -1242,15 +1269,15 @@ private final class GoldgramForegroundConnectionRecovery {
     }
 
     private func resetIfBudgetAllows(now: Double, nextStage: Int) -> Bool {
-        // At most two transport resets per rolling 15 minutes, including
+        // At most four transport resets per rolling five minutes, including
         // across separate short foreground episodes in this Account object.
-        self.hardResetTimes.removeAll(where: { $0 <= now - 900.0 })
-        guard self.hardResetTimes.count < 2 else {
+        self.hardResetTimes.removeAll(where: { $0 <= now - 300.0 })
+        guard self.hardResetTimes.count < 4 else {
             if !self.cooldownLogged {
-                self.record("recovery_rate_limited_15m")
+                self.record("recovery_rate_limited_5m")
                 self.cooldownLogged = true
             }
-            let delay = max(1.0, (self.hardResetTimes.first ?? now) + 900.0 - now)
+            let delay = max(1.0, (self.hardResetTimes.first ?? now) + 300.0 - now)
             self.schedule(after: delay)
             return false
         }
@@ -1273,47 +1300,47 @@ private final class GoldgramForegroundConnectionRecovery {
         let elapsed = now - startedAt
         switch self.stage {
         case 0:
-            if elapsed < 20.0 {
-                self.schedule(after: 20.0 - elapsed)
+            if elapsed < 1.0 {
+                self.schedule(after: 1.0 - elapsed)
                 return
             }
             self.stage = 1
             self.record("recovery_transaction_nudge")
             self.network.goldgramRequestTransportRecovery(resetTransport: false)
-            self.schedule(after: max(0.1, 60.0 - elapsed))
+            self.schedule(after: max(0.1, 4.0 - elapsed))
         case 1:
-            if elapsed < 60.0 {
-                self.schedule(after: 60.0 - elapsed)
+            if elapsed < 4.0 {
+                self.schedule(after: 4.0 - elapsed)
                 return
             }
             if self.resetIfBudgetAllows(now: now, nextStage: 2) {
-                self.schedule(after: max(0.1, 150.0 - elapsed))
+                self.schedule(after: max(0.1, 12.0 - elapsed))
             }
         case 2:
-            if elapsed < 150.0 {
-                self.schedule(after: 150.0 - elapsed)
+            if elapsed < 12.0 {
+                self.schedule(after: 12.0 - elapsed)
                 return
             }
             if self.resetIfBudgetAllows(now: now, nextStage: 3) {
-                self.schedule(after: max(0.1, 180.0 - elapsed))
+                self.schedule(after: max(0.1, 20.0 - elapsed))
             }
         case 3:
-            if elapsed < 180.0 {
-                self.schedule(after: 180.0 - elapsed)
+            if elapsed < 20.0 {
+                self.schedule(after: 20.0 - elapsed)
                 return
             }
             self.stage = 4
             self.record("recovery_still_stalled_after_two_resets")
             // Long VPN outages get another bounded opportunity later, without
             // frequent timers or a storm of transport resets.
-            self.hardResetTimes.removeAll(where: { $0 <= now - 900.0 })
-            let retryAt = (self.hardResetTimes.first ?? now) + 900.0
+            self.hardResetTimes.removeAll(where: { $0 <= now - 300.0 })
+            let retryAt = (self.hardResetTimes.first ?? now) + 300.0
             self.schedule(after: max(60.0, retryAt - now))
         case 4:
             self.record("recovery_long_stall_retry")
             self.stalledSince = now
             self.stage = 0
-            self.schedule(after: 20.0)
+            self.schedule(after: 1.0)
         default:
             break
         }
