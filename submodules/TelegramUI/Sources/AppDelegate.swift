@@ -241,10 +241,13 @@ private func goldgramLocationLabIsActive(_ defaults: UserDefaults) -> Bool {
 private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDelegate {
     private let manager = CLLocationManager()
     private let onTick: () -> Void
+    private let onRunningChanged: (Bool) -> Void
     private var isRunning = false
+    private var isPaused = false
 
-    init(onTick: @escaping () -> Void) {
+    init(onTick: @escaping () -> Void, onRunningChanged: @escaping (Bool) -> Void) {
         self.onTick = onTick
+        self.onRunningChanged = onRunningChanged
         super.init()
         self.manager.delegate = self
         self.manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
@@ -265,27 +268,36 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
         }
         guard CLLocationManager.locationServicesEnabled(),
               (Bundle.main.object(forInfoDictionaryKey: "UIBackgroundModes") as? [String])?.contains("location") == true else {
+            self.stop()
             settings.set("unavailable", forKey: "GoldgramLocationLabStateV1")
             return
         }
         switch self.status() {
         case .authorizedAlways, .authorizedWhenInUse:
-            guard !self.isRunning else { return }
+            guard !self.isRunning || self.isPaused else {
+                self.onRunningChanged(true)
+                return
+            }
             self.isRunning = true
+            self.isPaused = false
             self.manager.allowsBackgroundLocationUpdates = true
             self.manager.showsBackgroundLocationIndicator = true
             self.manager.startUpdatingLocation()
             settings.set("running", forKey: "GoldgramLocationLabStateV1")
+            self.onRunningChanged(true)
         case .notDetermined:
             settings.set("authorization_pending", forKey: "GoldgramLocationLabStateV1")
             self.manager.requestWhenInUseAuthorization()
         default:
+            self.stop()
             settings.set("permission_denied", forKey: "GoldgramLocationLabStateV1")
         }
     }
 
     func stop() {
         self.isRunning = false
+        self.isPaused = false
+        self.onRunningChanged(false)
         self.manager.stopUpdatingLocation()
         self.manager.allowsBackgroundLocationUpdates = false
         UserDefaults.standard.set("stopped", forKey: "GoldgramLocationLabStateV1")
@@ -295,7 +307,7 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) { self.start() }
 
     func locationManager(_ manager: CLLocationManager, didChangeAuthorization status: CLAuthorizationStatus) {
-        if status == .authorizedWhenInUse || status == .authorizedAlways { self.start() }
+        self.start()
     }
 
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
@@ -312,11 +324,23 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
     }
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        // A temporary unavailable fix does not end an active location session.
+        if (error as? CLError)?.code == .locationUnknown { return }
+        self.stop()
         UserDefaults.standard.set("sensor_error", forKey: "GoldgramLocationLabStateV1")
     }
 
     func locationManagerDidPauseLocationUpdates(_ manager: CLLocationManager) {
+        self.isPaused = true
+        self.onRunningChanged(false)
         UserDefaults.standard.set("sensor_paused", forKey: "GoldgramLocationLabStateV1")
+    }
+
+    func locationManagerDidResumeLocationUpdates(_ manager: CLLocationManager) {
+        guard self.isRunning, goldgramLocationLabIsActive(UserDefaults.standard) else { return }
+        self.isPaused = false
+        self.onRunningChanged(true)
+        UserDefaults.standard.set("running", forKey: "GoldgramLocationLabStateV1")
     }
 }
 
@@ -427,6 +451,8 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
     private var goldgramRefreshLease: Disposable?
     private var goldgramLocationLab: GoldgramBackgroundLocationLab?
     private let goldgramLocationWork = MetaDisposable()
+    private let goldgramLocationSession = MetaDisposable()
+    private var goldgramLocationSessionRunning = false
     private var goldgramLocationPollBusy = false
     private var goldgramLocationLastPoll = Date.distantPast
     private var goldgramLocationActiveToken: String?
@@ -444,10 +470,38 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
         }
         if self.goldgramLocationLab == nil {
             self.goldgramLocationLab = GoldgramBackgroundLocationLab(onTick: { [weak self] in
+                self?.goldgramUpdateLocationSession(running: true)
                 self?.goldgramLocationPoll(source: "sensor")
+            }, onRunningChanged: { [weak self] running in
+                self?.goldgramUpdateLocationSession(running: running)
             })
         }
         self.goldgramLocationLab?.start()
+    }
+
+    private func goldgramUpdateLocationSession(running: Bool) {
+        // Observe account switches for the lifetime of actual sensor activity.
+        // The signal's disposal releases only this session's connection lease.
+        let enabled = running && goldgramNativeHistoryEnabled()
+        guard enabled != self.goldgramLocationSessionRunning else { return }
+        self.goldgramLocationSessionRunning = enabled
+        self.goldgramLocationSession.set(nil)
+        guard enabled else { return }
+        self.goldgramLocationSession.set((self.sharedContextPromise.get()
+        |> take(1)
+        |> deliverOnMainQueue
+        |> mapToSignal { shared -> Signal<Never, NoError> in
+            return shared.sharedContext.activeAccountContexts
+            |> map { primary, _, _ in primary?.account.id }
+            |> distinctUntilChanged
+            |> deliverOnMainQueue
+            |> mapToSignal { accountId -> Signal<Never, NoError> in
+                guard let accountId else { return .complete() }
+                return Signal { _ in
+                    return shared.wakeupManager.acquireGoldgramLocationLease(accountId: accountId)
+                }
+            }
+        }).start())
     }
 
     private func goldgramLocationPoll(source: String) {
@@ -2433,11 +2487,13 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
         
         taskIdHolder.taskId = application.beginBackgroundTask(withName: "lock", expirationHandler: {
             if let taskId = taskIdHolder.taskId {
+                taskIdHolder.taskId = nil
                 UIApplication.shared.endBackgroundTask(taskId)
             }
         })
         DispatchQueue.main.asyncAfter(deadline: DispatchTime.now() + 5.0, execute: {
             if let taskId = taskIdHolder.taskId {
+                taskIdHolder.taskId = nil
                 UIApplication.shared.endBackgroundTask(taskId)
             }
         })
@@ -2450,7 +2506,9 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
         self.goldgramLocationActiveToken = nil
         self.goldgramLocationWork.set(nil)
         self.goldgramLocationPollBusy = false
-        if !goldgramLocationLabIsActive(UserDefaults.standard) {
+        if goldgramLocationLabIsActive(UserDefaults.standard) {
+            self.goldgramLocationLabChanged(Notification(name: Notification.Name("GoldgramLocationLabChanged")))
+        } else {
             self.goldgramLocationLab?.stop()
         }
         // Start trace before the resumed connection changes state.

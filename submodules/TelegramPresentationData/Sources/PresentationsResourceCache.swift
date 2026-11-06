@@ -54,6 +54,25 @@ private final class PresentationsResourceAnyCacheHolder {
 public final class PresentationsResourceCache {
     private let imageCache = Atomic<PresentationsResourceCacheHolder>(value: PresentationsResourceCacheHolder())
     private let objectCache = Atomic<PresentationsResourceAnyCacheHolder>(value: PresentationsResourceAnyCacheHolder())
+    private var memoryObservers: [NSObjectProtocol] = []
+
+    init() {
+        // Theme images can be regenerated. Release their cache references
+        // before another app needs RAM and again on system memory pressure.
+        for name in [UIApplication.didEnterBackgroundNotification, UIApplication.didReceiveMemoryWarningNotification] {
+            self.memoryObservers.append(NotificationCenter.default.addObserver(
+                forName: name, object: nil, queue: nil, using: { [weak self] _ in
+                    guard let self else { return }
+                    let _ = self.imageCache.swap(PresentationsResourceCacheHolder())
+                }))
+        }
+    }
+
+    deinit {
+        for observer in self.memoryObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
     
     public func image(_ key: Int32, _ theme: PresentationTheme, _ generate: (PresentationTheme) -> UIImage?) -> UIImage? {
         let result = self.imageCache.with { holder -> UIImage? in

@@ -128,7 +128,7 @@ assert 'self.goldgramRefreshLeaseAccountId = nil' in lease
 assert 'self.checkTasks()' in lease
 assert 'self.goldgramRefreshLeaseToken == token' in lease
 assert 'ActionDisposable' in lease and 'Queue.mainQueue().isCurrent()' in lease
-assert 'self.goldgramRefreshLeaseToken != nil || self.silenceAudioRenderer != nil' in wakeup
+assert 'self.goldgramRefreshLeaseToken != nil || self.goldgramLocationLeaseAccountId != nil || self.silenceAudioRenderer != nil' in wakeup
 assert '(self.goldgramRefreshLeaseToken != nil && self.goldgramRefreshLeaseAccountId == account.id)' in wakeup
 assert '(self.goldgramRefreshLeaseToken != nil && primary)' not in wakeup, "BG lease must not depend on a stale primary snapshot"
 assert 'account.shouldExplicitelyKeepWorkerConnections.set' in wakeup

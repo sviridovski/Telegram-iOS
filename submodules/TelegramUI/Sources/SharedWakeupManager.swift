@@ -93,6 +93,31 @@ public final class SharedWakeupManager {
     private var silenceAudioRenderer: MediaPlayerAudioRenderer?
     private var goldgramRefreshLeaseToken: String?
     private var goldgramRefreshLeaseAccountId: AccountRecordId?
+    private var goldgramLocationLeaseToken: String?
+    private var goldgramLocationLeaseAccountId: AccountRecordId?
+
+    // A real, user-enabled CoreLocation session owns this independently of
+    // short refresh/poll leases. Releasing a poll must not pause live updates.
+    func acquireGoldgramLocationLease(accountId: AccountRecordId) -> Disposable {
+        assert(Queue.mainQueue().isCurrent())
+        let token = UUID().uuidString
+        self.goldgramLocationLeaseToken = token
+        self.goldgramLocationLeaseAccountId = accountId
+        self.checkTasks()
+        return ActionDisposable { [weak self] in
+            let release = {
+                guard let self, self.goldgramLocationLeaseToken == token else { return }
+                self.goldgramLocationLeaseToken = nil
+                self.goldgramLocationLeaseAccountId = nil
+                self.checkTasks()
+            }
+            if Queue.mainQueue().isCurrent() {
+                release()
+            } else {
+                Queue.mainQueue().async(release)
+            }
+        }
+    }
 
     // #111: Only BGAppRefreshTask's actual system-granted execution may hold
     // this scoped lease. It does not schedule or extend background runtime.
@@ -1175,18 +1200,18 @@ public final class SharedWakeupManager {
     private func updateAccounts(hasTasks: Bool, endTaskAfterTransactionsComplete: UIBackgroundTaskIdentifier?) {
         let hasBackgroundLocationTask = self.accountsAndTasks.contains(where: { $0.2.backgroundLocation })
         
-        if self.inForeground || self.hasActiveAudioSession || self.isInBackgroundExtension || self.backgroundProcessingTaskId != nil || self.backgroundStoryProcessingTaskId != nil || hasBackgroundLocationTask || (hasTasks && self.currentExternalCompletion != nil) || self.activeExplicitExtensionTimer != nil || self.goldgramRefreshLeaseToken != nil || self.silenceAudioRenderer != nil {
+        if self.inForeground || self.hasActiveAudioSession || self.isInBackgroundExtension || self.backgroundProcessingTaskId != nil || self.backgroundStoryProcessingTaskId != nil || hasBackgroundLocationTask || (hasTasks && self.currentExternalCompletion != nil) || self.activeExplicitExtensionTimer != nil || self.goldgramRefreshLeaseToken != nil || self.goldgramLocationLeaseAccountId != nil || self.silenceAudioRenderer != nil {
             Logger.shared.log("Wakeup", "enableBeginTransactions: true (active)")
             
             for (account, primary, tasks) in self.accountsAndTasks {
                 account.postbox.setCanBeginTransactions(true)
                 
-                if (self.inForeground && primary) || !tasks.isEmpty || (self.activeExplicitExtensionTimer != nil && primary) || (self.goldgramRefreshLeaseToken != nil && self.goldgramRefreshLeaseAccountId == account.id) {
+                if (self.inForeground && primary) || !tasks.isEmpty || (self.activeExplicitExtensionTimer != nil && primary) || (self.goldgramRefreshLeaseToken != nil && self.goldgramRefreshLeaseAccountId == account.id) || self.goldgramLocationLeaseAccountId == account.id {
                     account.shouldBeServiceTaskMaster.set(.single(.always))
                 } else {
                     account.shouldBeServiceTaskMaster.set(.single(.never))
                 }
-                account.shouldExplicitelyKeepWorkerConnections.set(.single(tasks.backgroundAudio || tasks.backgroundLocation || tasks.importantTasks.pendingStoryCount != 0 || tasks.importantTasks.pendingMessageCount != 0 || (self.goldgramRefreshLeaseToken != nil && self.goldgramRefreshLeaseAccountId == account.id)))
+                account.shouldExplicitelyKeepWorkerConnections.set(.single(tasks.backgroundAudio || tasks.backgroundLocation || tasks.importantTasks.pendingStoryCount != 0 || tasks.importantTasks.pendingMessageCount != 0 || (self.goldgramRefreshLeaseToken != nil && self.goldgramRefreshLeaseAccountId == account.id) || self.goldgramLocationLeaseAccountId == account.id))
                 account.shouldKeepOnlinePresence.set(.single(primary && self.inForeground))
                 account.shouldKeepBackgroundDownloadConnections.set(.single(tasks.backgroundDownloads))
             }
