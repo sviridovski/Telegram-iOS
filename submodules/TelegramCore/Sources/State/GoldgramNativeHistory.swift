@@ -795,16 +795,35 @@ public extension GoldgramForegroundSyncTrace {
 // #97: opt-in, account-scoped stage counts. No message contents, IDs,
 // peer names or message hashes are recorded. Disabled outside explicit test.
 private enum GoldgramCaptureDiagnostics {
-    static let lock = NSLock()
+    static let queue = DispatchQueue(label: "goldgram.capture.diagnostics", qos: .utility)
+    private static let lock = NSLock()
+    private static var pending: [String: [String: Int]] = [:]
+
     static func count(account: PeerId, stage: String) {
-        let defaults = UserDefaults.standard
-        guard defaults.bool(forKey: "GoldgramDiagnosticEnabledV1") else { return }
+        guard UserDefaults.standard.bool(forKey: "GoldgramDiagnosticEnabledV1") else { return }
         let key = "GoldgramDiagnosticCountsV1.\(account.id._internalGetInt64Value())"
         lock.lock()
-        defer { lock.unlock() }
-        var values = defaults.dictionary(forKey: key) as? [String: Int] ?? [:]
-        values[stage] = min(1_000_000, (values[stage] ?? 0) + 1)
-        defaults.set(values, forKey: key)
+        let schedule = pending.isEmpty
+        pending[key, default: [:]][stage, default: 0] += 1
+        lock.unlock()
+        if schedule {
+            queue.async { flushCounts() }
+        }
+    }
+
+    private static func flushCounts() {
+        lock.lock()
+        let batch = pending
+        pending.removeAll()
+        lock.unlock()
+        let defaults = UserDefaults.standard
+        for (key, increments) in batch {
+            var values = defaults.dictionary(forKey: key) as? [String: Int] ?? [:]
+            for (stage, increment) in increments {
+                values[stage] = min(1_000_000, (values[stage] ?? 0) + increment)
+            }
+            defaults.set(values, forKey: key)
+        }
     }
 }
 func goldgramDiagnosticRecord(accountPeerId: PeerId, stage: String) {
@@ -828,20 +847,20 @@ func goldgramTraceMessage(accountPeerId: PeerId, id: MessageId, stage: String) {
     guard (defaults.stringArray(forKey: "GoldgramDiagnosticTraceScopeV2.\(account)") ?? []).contains(peer) else { return }
     let key = "\(peer):\(id.id)"
     let storage = "GoldgramDiagnosticTraceRowsV2.\(account)"
-    GoldgramCaptureDiagnostics.lock.lock()
-    defer { GoldgramCaptureDiagnostics.lock.unlock() }
-    var rows = defaults.array(forKey: storage) as? [[String: Any]] ?? []
-    if let index = rows.firstIndex(where: { ($0["key"] as? String) == key }) {
-        var row = rows.remove(at: index)
-        var stages = row["stages"] as? [String] ?? []
-        if !stages.contains(stage) { stages.append(stage) }
-        row["stages"] = stages
-        rows.append(row)
-    } else {
-        rows.append(["key": key, "stages": [stage]])
-        if rows.count > 256 { rows.removeFirst(rows.count - 256) }
+    GoldgramCaptureDiagnostics.queue.async {
+        var rows = defaults.array(forKey: storage) as? [[String: Any]] ?? []
+        if let index = rows.firstIndex(where: { ($0["key"] as? String) == key }) {
+            var row = rows.remove(at: index)
+            var stages = row["stages"] as? [String] ?? []
+            if !stages.contains(stage) { stages.append(stage) }
+            row["stages"] = stages
+            rows.append(row)
+        } else {
+            rows.append(["key": key, "stages": [stage]])
+            if rows.count > 256 { rows.removeFirst(rows.count - 256) }
+        }
+        defaults.set(rows, forKey: storage)
     }
-    defaults.set(rows, forKey: storage)
 }
 
 @inline(never)
