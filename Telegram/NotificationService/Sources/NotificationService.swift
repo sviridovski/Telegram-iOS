@@ -527,6 +527,7 @@ private struct NotificationContent: CustomStringConvertible {
     // MARK: Swiftgram
     var isEmpty: Bool
     var isMentionOrReply: Bool
+    var archivePreview: (String, Double)?
     var isPinned: Bool = false
     let chatId: Int64?
     let sgStatus: SGStatus
@@ -1347,6 +1348,12 @@ private final class NotificationServiceHandler {
                                 if let _ = aps["_ddie"] {
                                     enableInlineEmoji = false
                                 }
+                                if isLockedMessage == nil, messageIdValue != nil,
+                                   let category = aps["category"] as? String, ["m", "r"].contains(category),
+                                   ["r", "react_emoji", "edit_date", "edit", "attachb64"].allSatisfy({ payloadJson[$0] == nil && aps[$0] == nil }),
+                                   let alert = aps["alert"] as? [String: Any], let body = alert["body"] as? String {
+                                    content.archivePreview = (body, Date().timeIntervalSince1970)
+                                }
                                 action = .poll(peerId: peerId, content: content, messageId: messageIdValue, reportDelivery: reportDelivery, enableInlineEmoji: enableInlineEmoji)
                             }
                             
@@ -2028,6 +2035,9 @@ private final class NotificationServiceHandler {
                                         }
                                         
                                         if let messageId = messageId {
+                                            if let (body, at) = initialContent.archivePreview {
+                                                goldgramSavePushPreview(transaction, account: stateManager.accountPeerId, id: messageId, body: body, at: at)
+                                            }
                                             goldgramNoteNotificationTrace(
                                                 transaction: transaction, accountPeerId: stateManager.accountPeerId,
                                                 id: messageId, stage: "extensionPushPolled"

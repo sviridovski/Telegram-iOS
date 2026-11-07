@@ -904,6 +904,40 @@ func goldgramCaptureEnabled(accountPeerId: PeerId, transaction: Transaction) -> 
     return old?.account == accountPeerId.toInt64() && old?.enabled == true
 }
 
+// Push bodies are presentation text. Keep them apart from confirmed originals.
+public struct GoldgramPushPreview: Codable {
+    public let peer: Int64
+    public let message: Int32
+    public let at: Double
+    public let body: String
+}
+private struct GoldgramPushPreviews: Codable {
+    let rows: [GoldgramPushPreview]
+}
+private let goldgramPreviewKey = ItemCacheEntryId(collectionId: -107, key: ValueBoxKey(length: 0))
+
+public func goldgramPushPreviews(_ transaction: Transaction) -> [GoldgramPushPreview] {
+    return transaction.retrieveItemCacheEntry(id: goldgramPreviewKey)?.get(GoldgramPushPreviews.self)?.rows ?? []
+}
+
+public func goldgramSavePushPreview(_ transaction: Transaction, account: PeerId, id: MessageId, body: String, at: Double) {
+    guard id.namespace == Namespaces.Message.Cloud, id.id > 0,
+          [Namespaces.Peer.CloudUser, Namespaces.Peer.CloudGroup, Namespaces.Peer.CloudChannel].contains(id.peerId.namespace),
+          !body.isEmpty, body.utf8.count <= 4096,
+          goldgramCaptureEnabled(accountPeerId: account, transaction: transaction) else { return }
+    var rows = goldgramPushPreviews(transaction)
+    let peer = id.peerId.toInt64()
+    guard !rows.contains(where: { $0.peer == peer && $0.message == id.id }) else { return }
+    rows.append(GoldgramPushPreview(peer: peer, message: id.id, at: at, body: body))
+    if let entry = CodableEntry(GoldgramPushPreviews(rows: Array(rows.suffix(64)))) {
+        transaction.putItemCacheEntry(id: goldgramPreviewKey, entry: entry)
+    }
+}
+
+public func goldgramClearPushPreviews(_ transaction: Transaction) {
+    transaction.removeItemCacheEntry(id: goldgramPreviewKey)
+}
+
 private func goldgramDrainPending(accountPeerId: PeerId, transaction: Transaction) {
     guard goldgramCaptureEnabled(accountPeerId: accountPeerId, transaction: transaction), goldgramNativeWriter() != nil,
           let pending = transaction.retrieveItemCacheEntry(id: goldgramPendingKey)?.get(GoldgramPendingEvents.self) else { return }

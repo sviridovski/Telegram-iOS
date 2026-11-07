@@ -92,6 +92,24 @@ public final class GoldgramNativeArchiveMetadata: NSObject {
               primary.account.peerId.id._internalGetInt64Value() == accountId
         else { completion(["status": "account_changed", "items": []]); return }
         let recordId = primary.account.id
+        if let action = request["action"] as? String, ["push_previews", "clear_push_previews"].contains(action) {
+            let _ = (primary.account.postbox.transaction { transaction -> [String] in
+                if action == "clear_push_previews" {
+                    goldgramClearPushPreviews(transaction)
+                    return []
+                }
+                return goldgramPushPreviews(transaction).reversed().map { row in
+                    let time = DateFormatter.localizedString(from: Date(timeIntervalSince1970: row.at), dateStyle: .short, timeStyle: .medium)
+                    return "\(time) · \(row.peer)/\(row.message)\n\(row.body)"
+                }
+            } |> deliverOnMainQueue).start(next: { rows in
+                guard goldgramNativeNavigationContext?.sgPrimaryAccountContextForMigration()?.account.id == recordId else {
+                    completion(["status": "account_changed"]); return
+                }
+                completion(["status": "ok", "rows": rows])
+            })
+            return
+        }
         if let action = request["action"] as? String,
            action == "notification_trace_start" || action == "notification_trace_stop" || action == "notification_trace_read" {
             let entries = request["items"] as? [[String: Any]] ?? []

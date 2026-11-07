@@ -200,6 +200,20 @@ public final class GoldgramArchiveScreen: UITableViewController {
         let menu = UIAlertController(title: "Тест захвата Goldgram",
                                      message: "Только счётчики этапов и состояние SQLite. Без текстов, имён и ID сообщений.",
                                      preferredStyle: .actionSheet)
+        menu.addAction(UIAlertAction(title: "Текст уведомлений", style: .default) { _ in
+            goldgramResolveNativeMetadata(["action": "push_previews", "accountId": NSNumber(value: account), "items": []]) { response in
+                let result = response as NSDictionary
+                guard result["status"] as? String == "ok" else { return }
+                let rows = result["rows"] as? [String] ?? []
+                let alert = UIAlertController(title: "Текст уведомлений · \(rows.count)",
+                    message: rows.isEmpty ? "Пока нет сохранённых уведомлений" : rows.joined(separator: "\n\n"), preferredStyle: .alert)
+                alert.addAction(UIAlertAction(title: "Закрыть", style: .cancel))
+                alert.addAction(UIAlertAction(title: "Очистить тексты уведомлений", style: .destructive) { _ in
+                    goldgramResolveNativeMetadata(["action": "clear_push_previews", "accountId": NSNumber(value: account), "items": []]) { _ in }
+                })
+                self.present(alert, animated: true)
+            }
+        })
         menu.addAction(UIAlertAction(title: "Начать новый тест", style: .default) { _ in
             defaults.set([String: Int](), forKey: Self.diagnosticCountPrefix + String(account))
             // #115 reset only diagnostic breadcrumbs, never the SQLite archive.
