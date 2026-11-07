@@ -410,7 +410,28 @@ enum GoldgramHistoryStore {
 private extension GoldgramHistoryStore {
     static var archiveConnections: [Int64: OpaquePointer] = [:]
 
+    // Access and cleanup are both serialized with archive transactions.
+    static var lastArchiveAccess = DispatchTime.now()
+    static var archiveTrimScheduled = false
+
+    static func scheduleArchiveTrim() {
+        guard !archiveTrimScheduled else { return }
+        archiveTrimScheduled = true
+        storageQueue.asyncAfter(deadline: lastArchiveAccess + .seconds(10)) {
+            archiveTrimScheduled = false
+            if DispatchTime.now() < lastArchiveAccess + .seconds(10) {
+                scheduleArchiveTrim()
+                return
+            }
+            for db in archiveConnections.values {
+                sqlite3_db_release_memory(db)
+            }
+        }
+    }
+
     static func archiveConnection(for accountId: Int64) throws -> OpaquePointer {
+        lastArchiveAccess = .now()
+        scheduleArchiveTrim()
         if let cached = archiveConnections[accountId] { return cached }
         let url = try createOrOpen(accountId: accountId)
         var pointer: OpaquePointer?
