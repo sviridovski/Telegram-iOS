@@ -31,6 +31,6 @@ print("Goldgram #104: priority discussion policy gates OK")
 # behavior remain intact for accounts that never enable the experiment.
 assert "GoldgramFullCaptureLabV1." in core and "Full Capture Lab №127" in screen
 assert "goldgramFullCaptureLabEnabled(accountPeerId: account.peerId)" in core
-assert "return ids.reduce(Signal<Never, NoError>.complete())" in core
+assert "let differences = ids.reduce(Signal<Never, NoError>.complete())" in core
 assert "case .broadcast = channel.info" in core and "linkedId == groupId" in core
 print("Goldgram #127: account consent, verified-peer fallback OK")

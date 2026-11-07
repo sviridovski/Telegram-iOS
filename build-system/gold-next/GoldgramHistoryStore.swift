@@ -1119,7 +1119,7 @@ public final class GoldgramArchiveReader: NSObject {
             }
         }
         guard isSelected(accountId), !kinds.isEmpty,
-              mode == "dialogs" || mode == "messages" || mode == "combined" || mode == "totals" || mode == "diagnostics",
+              mode == "dialogs" || mode == "messages" || mode == "combined" || mode == "totals" || mode == "diagnostics" || (mode == "discussion_score" && peerId > 0 && scopedPeerKind == 2),
               offset >= 0, offset <= 5000,
               limit >= 1, limit <= 50,
               mode != "messages" ||
@@ -1208,6 +1208,25 @@ public final class GoldgramArchiveReader: NSObject {
             return ["status": "incompatible_schema", "items": []]
         }
 
+        if mode == "discussion_score" {
+            let sql = """
+            SELECT COUNT(*), COUNT(CASE WHEN a.committed_at < e.first_edit THEN 1 END)
+            FROM (SELECT message_id, MIN(observed_at) AS first_edit FROM events
+                  WHERE peer_kind=2 AND peer_id=? AND event_kind=1 GROUP BY message_id
+                  HAVING MIN(observed_at)>=?) e
+            LEFT JOIN original_capture_evidence a ON a.peer_kind=2 AND a.peer_id=? AND a.message_id=e.message_id
+            """
+            var pointer: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &pointer, nil) == SQLITE_OK, let stmt = pointer else {
+                return ["status": "unavailable"]
+            }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_int64(stmt, 1, peerId)
+            sqlite3_bind_int64(stmt, 2, diagnosticSince)
+            sqlite3_bind_int64(stmt, 3, peerId)
+            guard sqlite3_step(stmt) == SQLITE_ROW else { return ["status": "unavailable"] }
+            return ["status": "ok", "edited": sqlite3_column_int64(stmt, 0), "before": sqlite3_column_int64(stmt, 1)]
+        }
         if mode == "diagnostics" {
             // Read-only, parameter-bound aggregates of actual persisted rows.
             // This is an observational first_seen_at window, NOT evidence that

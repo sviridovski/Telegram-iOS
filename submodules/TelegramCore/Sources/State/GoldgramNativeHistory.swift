@@ -1935,6 +1935,16 @@ public func goldgramObserveBackgroundConnectionReadiness(
     return observations
 }
 
+public func goldgramMinimizedSnapshot(account: Account) -> Signal<Never, NoError> {
+    return account.postbox.transaction { transaction -> PeerId? in
+        guard goldgramNativeHistoryEnabled() else { return nil }
+        return goldgramPriorityPeers(transaction: transaction, accountPeerId: account.peerId).last
+    } |> mapToSignal { id -> Signal<Never, NoError> in
+        guard let id else { return .complete() }
+        return goldgramSeedDiscussion(account: account, peerId: id, labOnly: true)
+    }
+}
+
 // #107: an iOS-discretionary BGAppRefresh window, not a keep-alive.
 // Use ONLY user-pinned verified linked discussions and the existing PTS
 // difference replay. Correct original evidence must precede subsequent edits.
@@ -1955,8 +1965,9 @@ public func goldgramRefreshPriorityDiscussions(
         goldgramDrainPending(accountPeerId: account.peerId, transaction: transaction)
         let selected = goldgramPrioritySelection(transaction: transaction,
             accountPeerId: account.peerId)
+        let ordered = Array(selected.peers.reversed())
         let ids = goldgramFullCaptureLabEnabled(accountPeerId: account.peerId)
-            ? Array(selected.peers.prefix(6)) : Array(selected.peers.prefix(3))
+            ? Array(ordered.prefix(6)) : Array(ordered.prefix(3))
         GoldgramBackgroundRefreshTrace.targets(diagnosticToken,
             accountId: account.peerId.id._internalGetInt64Value(), count: ids.count)
         GoldgramBackgroundRefreshTrace.selection(diagnosticToken,
@@ -2002,7 +2013,7 @@ public func goldgramRefreshPriorityDiscussions(
             return combineLatest(differences + history) |> ignoreValues
         }
         // Original non-experimental sequential behavior unchanged.
-        return ids.reduce(Signal<Never, NoError>.complete()) { previous, id in
+        let differences = ids.reduce(Signal<Never, NoError>.complete()) { previous, id in
             let polled: Signal<Never, NoError> = Signal { subscriber in
                 GoldgramBackgroundRefreshTrace.request(diagnosticToken)
                 let disposable = standalonePollChannelOnce(
@@ -2020,6 +2031,9 @@ public func goldgramRefreshPriorityDiscussions(
             }
             return previous |> then(polled)
         }
+        guard let first = ids.first else { return .complete() }
+        let history = goldgramSeedDiscussion(account: account, peerId: first, labOnly: true)
+        return combineLatest((differences |> map { _ -> Bool in true }) |> then(.single(true)), (history |> map { _ -> Bool in true }) |> then(.single(true))) |> ignoreValues
     }
 }
 

@@ -197,12 +197,25 @@ public final class GoldgramNativeArchiveMetadata: NSObject {
         // Archive-selected broadcast channels only: no inferred peer IDs,
         // no joining and no implicit subscription beyond the user's choice.
         if let action = request["action"] as? String,
-           action == "priority_discussion_add" || action == "priority_discussion_remove" {
+           action == "priority_discussion_add" || action == "priority_discussion_remove" || action == "discussion_group" {
             guard entries.count == 1, let entry = entries.first,
                   (entry["peerKind"] as? NSNumber)?.int32Value == 3,
                   let raw = (entry["peerId"] as? NSNumber)?.int64Value,
                   let channelId = self.peerId(kind: 3, raw: raw) else {
                 completion(["status": "invalid", "items": []]); return
+            }
+            if action == "discussion_group" {
+                let _ = (primary.account.postbox.transaction { transaction -> Int64? in
+                    guard let cached = transaction.getPeerCachedData(peerId: channelId) as? CachedChannelData,
+                          case let .known(link) = cached.linkedDiscussionPeerId, let link else { return nil }
+                    return link.id._internalGetInt64Value()
+                } |> deliverOnMainQueue).start(next: { group in
+                    guard let group, goldgramNativeNavigationContext?.sgPrimaryAccountContextForMigration()?.account.id == recordId else {
+                        completion(["status": "unavailable"]); return
+                    }
+                    completion(["status": "ok", "peerId": NSNumber(value: group)])
+                })
+                return
             }
             let _ = (primary.account.postbox.transaction { transaction -> (String, Int) in
                 let result = goldgramSetPriorityDiscussion(

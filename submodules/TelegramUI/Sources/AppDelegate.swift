@@ -450,6 +450,7 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
     private var goldgramRefreshFinish: ((String, Bool) -> Void)?
     private var goldgramRefreshLease: Disposable?
     private var goldgramLocationLab: GoldgramBackgroundLocationLab?
+    private let goldgramMinimizedWork = MetaDisposable()
     private let goldgramLocationWork = MetaDisposable()
     private let goldgramLocationSession = MetaDisposable()
     private var goldgramLocationSessionRunning = false
@@ -2481,6 +2482,12 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
             let _ = (sharedApplicationContext.sharedContext.activeAccountContexts
              |> take(1)
              |> deliverOnMainQueue).start(next: { activeAccounts in
+                if UIApplication.shared.applicationState == .background,
+                   !goldgramLocationLabIsActive(UserDefaults.standard),
+                   goldgramNativeHistoryEnabled(), let account = activeAccounts.primary?.account {
+                    self.goldgramMinimizedWork.set((goldgramMinimizedSnapshot(account: account)
+                    |> timeout(8.0, queue: .mainQueue(), alternate: .complete())).start())
+                }
                 for (_, context, _) in activeAccounts.accounts {
                     context.account.postbox.clearCaches()
                 }
@@ -2513,6 +2520,7 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
     }
 
     func applicationWillEnterForeground(_ application: UIApplication) {
+        self.goldgramMinimizedWork.set(nil)
         if let token = self.goldgramLocationActiveToken {
             GoldgramLocationLabTrace.finish(token, reason: "foreground_return")
         }

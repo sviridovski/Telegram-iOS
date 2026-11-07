@@ -319,6 +319,21 @@ public final class GoldgramArchiveScreen: UITableViewController {
         if category == 2, let source = sources?.first(where: {
             ($0["peerKind"] as? NSNumber)?.int32Value == 3
         }) {
+            menu.addAction(UIAlertAction(title: "Результат по комментариям", style: .default) { _ in
+                goldgramResolveNativeMetadata(["action": "discussion_group", "accountId": NSNumber(value: account), "items": [source]]) { response in
+                    let group = (response as NSDictionary)["peerId"] as? NSNumber
+                    GoldgramArchiveReader.query(["mode": "discussion_score", "accountId": NSNumber(value: account),
+                        "category": 2, "peerKind": 2, "peerId": group ?? NSNumber(value: 0),
+                        "since": NSNumber(value: Int64((Date().timeIntervalSince1970 - 86400) * 1000))]) { result in
+                        let message = result["status"] as? String == "ok"
+                            ? "Сообщений с правкой: \(result["edited"] ?? 0). Оригинал сохранён до первой замеченной правки: \(result["before"] ?? 0)."
+                            : "Нет данных по связанной группе."
+                        let alert = UIAlertController(title: "Обсуждение · за 24 часа", message: message, preferredStyle: .alert)
+                        alert.addAction(UIAlertAction(title: "Закрыть", style: .cancel))
+                        self.present(alert, animated: true)
+                    }
+                }
+            })
             menu.addAction(UIAlertAction(title: "Следить за комментариями канала", style: .default) { _ in
                 self.updatePriorityDiscussion(source: source, enabled: true, account: account)
             })

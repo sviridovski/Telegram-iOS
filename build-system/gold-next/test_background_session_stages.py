@@ -409,11 +409,11 @@ assert 'GoldgramForegroundActiveV1' in monitor
 assert 'self.labSeedWork.set(requests)' in monitor
 assert 'self.labPulse.dispose()' in monitor and 'self.labSeedWork.dispose()' in monitor
 refresh_lab = core.split("public func goldgramRefreshPriorityDiscussions(", 1)[1].split("// The UI owns", 1)[0]
-assert 'Array(selected.peers.prefix(6)) : Array(selected.peers.prefix(3))' in refresh_lab
+assert 'Array(ordered.prefix(6)) : Array(ordered.prefix(3))' in refresh_lab
 assert 'if goldgramFullCaptureLabEnabled(accountPeerId: account.peerId), !ids.isEmpty' in refresh_lab
 assert 'combineLatest(differences + history) |> ignoreValues' in refresh_lab
 assert 'ids.prefix(3).map' in refresh_lab
-assert 'return ids.reduce(Signal<Never, NoError>.complete())' in refresh_lab
+assert 'let differences = ids.reduce(Signal<Never, NoError>.complete())' in refresh_lab
 assert 'GoldgramBackgroundRefreshTrace.labHistory(diagnosticToken, finished: true)' in refresh_lab
 assert 'labOnly: true' in refresh_lab
 assert 'Включить Full Capture Lab №127' in ui and 'Выключить Full Capture Lab №127' in ui
