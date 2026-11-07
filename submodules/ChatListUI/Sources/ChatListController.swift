@@ -7034,7 +7034,7 @@ private final class ChatListLocationContext {
         networkState = .single(AccountNetworkState.connecting(proxy: nil))
         #else
         let realNetworkState = context.account.networkState
-        networkState = Signal { subscriber in
+        let titleState = Signal<AccountNetworkState, NoError> { subscriber in
             let currentValue = Atomic<AccountNetworkState?>(value: nil)
             let disposable = (realNetworkState
             |> mapToSignal { value -> Signal<AccountNetworkState, NoError> in
@@ -7062,6 +7062,29 @@ private final class ChatListLocationContext {
                 disposable.dispose()
             }
         }
+        // Keep the chat title steady through short catch-ups after unlocking.
+        let resumeGrace = Signal<Bool, NoError> { subscriber in
+            var wasBackgrounded = false
+            return (context.sharedContext.applicationBindings.applicationInForeground
+            |> distinctUntilChanged
+            |> deliverOnMainQueue
+            |> mapToSignal { foreground -> Signal<Bool, NoError> in
+                if !foreground {
+                    wasBackgrounded = true
+                    return .single(true)
+                }
+                guard wasBackgrounded else { return .single(false) }
+                return .single(true) |> then(.single(false) |> delay(3.0, queue: .mainQueue()))
+            }).start(next: { subscriber.putNext($0) })
+        }
+        networkState = combineLatest(titleState, resumeGrace)
+        |> map { state, grace -> AccountNetworkState in
+            if grace, case let .updating(proxy) = state {
+                return .online(proxy: proxy)
+            }
+            return state
+        }
+        |> distinctUntilChanged
         #endif
         
         switch location {
