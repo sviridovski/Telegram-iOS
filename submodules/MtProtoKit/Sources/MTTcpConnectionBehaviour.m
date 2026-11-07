@@ -80,6 +80,10 @@
 - (void)clearBackoff
 {
     _backoffCount = 0;
+    // Reachability returned while a failed connection was waiting to retry.
+    if (_backoffTimer != nil && _needsReconnection) {
+        [self timerEvent:false];
+    }
 }
 
 - (void)invalidateTimer
