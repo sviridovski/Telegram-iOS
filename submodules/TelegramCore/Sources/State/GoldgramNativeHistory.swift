@@ -2033,7 +2033,15 @@ public func goldgramRefreshPriorityDiscussions(
         }
         guard let first = ids.first else { return .complete() }
         let history = goldgramSeedDiscussion(account: account, peerId: first, labOnly: true)
-        return combineLatest((differences |> map { _ -> Bool in true }) |> then(.single(true)), (history |> map { _ -> Bool in true }) |> then(.single(true))) |> ignoreValues
+        let completions: [Signal<Bool, NoError>] = [differences, history].map { work in
+            Signal { subscriber in
+                return work.start(completed: {
+                    subscriber.putNext(true)
+                    subscriber.putCompletion()
+                })
+            }
+        }
+        return combineLatest(completions) |> ignoreValues
     }
 }
 
