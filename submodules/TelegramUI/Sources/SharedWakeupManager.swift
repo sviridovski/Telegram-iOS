@@ -1034,6 +1034,7 @@ public final class SharedWakeupManager {
         let window = BackgroundWindow()
         guard let id = self.beginBackgroundTask(name, { [weak self, window] in
             guard let self, window.id != nil else { return }
+            GoldgramProcessJournal.record("iOS отозвала фоновое время: \(name)")
             let wasActive = self.retire(window)
             if wasActive { self.allowBackgroundTimeExtensionDeadline = nil }
             // The OS deadline cannot wait for either queue. Previously queued
@@ -1188,7 +1189,10 @@ public final class SharedWakeupManager {
         if needsDrain { self.closeGeneration &+= 1 }
         let generation = self.closeGeneration
         if active {
-            if changed { goldgramSetArchiveAdmission(true) }
+            if changed {
+                GoldgramProcessJournal.record("Открытие очередей запрошено")
+                goldgramSetArchiveAdmission(true)
+            }
             Logger.shared.log("Wakeup", "enableBeginTransactions: true (active)")
             
             for (account, primary, tasks) in self.accountsAndTasks {
@@ -1204,8 +1208,10 @@ public final class SharedWakeupManager {
                 account.shouldKeepBackgroundDownloadConnections.set(.single(tasks.backgroundDownloads))
             }
             
+            GoldgramProcessJournal.record("Барьер очереди архива пройден")
             self.finishRetiringWindows()
         } else {
+            if needsDrain { GoldgramProcessJournal.record("Закрытие очередей запрошено") }
             let group = self.postboxDrains
             for (account, _, _) in self.accountsAndTasks {
                 if needsDrain {
@@ -1222,11 +1228,13 @@ public final class SharedWakeupManager {
                     // In-flight Postbox transactions can hand their originals
                     // to the archive before we close its FIFO.
                     guard generation == self.closeGeneration else { return }
+                    GoldgramProcessJournal.record("Postbox завершил транзакции")
                     goldgramSetArchiveAdmission(false)
                     goldgramArchiveBarrier {
                         DispatchQueue.main.async {
                             guard generation == self.closeGeneration else { return }
-                            self.finishRetiringWindows()
+                            GoldgramProcessJournal.record("Барьер очереди архива пройден")
+            self.finishRetiringWindows()
                         }
                     }
                 }

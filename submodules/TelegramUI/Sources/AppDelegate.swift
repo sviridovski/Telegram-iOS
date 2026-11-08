@@ -782,6 +782,7 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         precondition(!testIsLaunched)
         testIsLaunched = true
+        GoldgramProcessJournal.record("Запуск процесса")
         
         let _ = voipTokenPromise.get().start(next: { token in
             self.voipDeviceToken.set(.single(token))
@@ -2461,6 +2462,7 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
     }
 
     func applicationDidEnterBackground(_ application: UIApplication) {
+        GoldgramProcessJournal.record("Уход в фон")
         self.goldgramScheduleRefresh()
         if goldgramLocationLabIsActive(UserDefaults.standard) {
             DispatchQueue.main.async { [weak self] in self?.goldgramLocationPoll(source: "minimized") }
@@ -2576,6 +2578,7 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
     }
 
     func applicationDidBecomeActive(_ application: UIApplication) {
+        GoldgramProcessJournal.record("Приложение открыто")
         GoldgramForegroundSyncTrace.lifecycle(active: true)
         self.isInForegroundValue = true
         self.isInForegroundPromise.set(true)
@@ -2605,7 +2608,12 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
         //cancelWindowPanGestures(view: self.mainWindow.hostView.containerView)
     }
     
+    func applicationDidReceiveMemoryWarning(_ application: UIApplication) {
+        GoldgramProcessJournal.record("Предупреждение iOS о памяти")
+    }
+
     func applicationWillTerminate(_ application: UIApplication) {
+        GoldgramProcessJournal.record("iOS вызвала willTerminate")
         Logger.shared.log("App \(self.episodeId)", "terminating")
     }
     
@@ -4078,5 +4086,31 @@ extension AppDelegate {
 //            SGLogger.shared.log("SGIAP", "Setting user id \(userId) keep connection back to false")
 //            primaryContext.account.network.shouldKeepConnection.set(.single(false))
 //        }
+    }
+}
+
+// Keep independent process histories so a busy new launch cannot evict the
+// last observations of its predecessor. Never open SQLite for diagnostics.
+enum GoldgramProcessJournal {
+    private static let queue = DispatchQueue(label: "goldgram.process.journal", qos: .utility)
+    private static let session = UUID().uuidString
+    private static let key = "GoldgramProcessHistoryV1"
+
+    static func record(_ event: String) {
+        let time = Date()
+        queue.async {
+            let defaults = UserDefaults.standard
+            var histories = defaults.array(forKey: key) as? [[String: Any]] ?? []
+            if histories.last?["session"] as? String != session {
+                histories.append(["session": session, "start": time,
+                    "pid": Int(ProcessInfo.processInfo.processIdentifier),
+                    "build": Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"])
+            }
+            let index = histories.count - 1
+            var events = histories[index]["events"] as? [[String: Any]] ?? []
+            events.append(["time": time, "event": event])
+            histories[index]["events"] = Array(events.suffix(24))
+            defaults.set(Array(histories.suffix(4)), forKey: key)
+        }
     }
 }

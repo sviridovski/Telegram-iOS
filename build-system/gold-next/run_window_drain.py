@@ -20,6 +20,7 @@ enum SwiftSignalKit {
     }
 }
 class Queue { static func mainQueue() -> Queue { Queue() } }
+enum GoldgramProcessJournal { static func record(_ event: String) {} }
 class Logger { static let shared = Logger(); func log(_ a: String, _ b: String) {} }
 enum Policy { case always, never }
 enum Signal<T> { case single(T) }

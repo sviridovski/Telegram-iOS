@@ -200,6 +200,30 @@ public final class GoldgramArchiveScreen: UITableViewController {
         let menu = UIAlertController(title: "Тест захвата Goldgram",
                                      message: "Только счётчики этапов и состояние SQLite. Без текстов, имён и ID сообщений.",
                                      preferredStyle: .actionSheet)
+        menu.addAction(UIAlertAction(title: "Журнал запусков", style: .default) { _ in
+            let history = defaults.array(forKey: "GoldgramProcessHistoryV1") as? [[String: Any]] ?? []
+            let formatter = DateFormatter()
+            formatter.dateFormat = "dd.MM HH:mm:ss"
+            var sections: [String] = []
+            for (index, run) in history.reversed().enumerated() {
+                guard let start = run["start"] as? Date else { continue }
+                let label = index == 0 ? "Текущий запуск" : "Прошлый запуск"
+                let pid = run["pid"] as? Int ?? 0
+                let build = run["build"] as? String ?? "?"
+                var lines = ["\(label) · \(formatter.string(from: start)) · PID \(pid) · сборка \(build)"]
+                for entry in run["events"] as? [[String: Any]] ?? [] {
+                    if let date = entry["time"] as? Date, let event = entry["event"] as? String {
+                        lines.append("\(formatter.string(from: date))  \(event)")
+                    }
+                }
+                sections.append(lines.joined(separator: "\n"))
+            }
+            let report = sections.joined(separator: "\n\n")
+            let alert = UIAlertController(title: "Журнал запусков", message: report.isEmpty ? "Пока нет записей" : report, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "Скопировать", style: .default) { _ in UIPasteboard.general.string = report })
+            alert.addAction(UIAlertAction(title: "Закрыть", style: .cancel))
+            self.present(alert, animated: true)
+        })
         menu.addAction(UIAlertAction(title: "Текст уведомлений", style: .default) { _ in
             goldgramResolveNativeMetadata(["action": "push_previews", "accountId": NSNumber(value: account), "items": []]) { response in
                 let result = response as NSDictionary
