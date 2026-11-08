@@ -1664,7 +1664,7 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
                 let id = application.beginBackgroundTask(withName: name, expirationHandler: expiration)
                 Logger.shared.log("App \(self.episodeId)", "Begin background task \(name): \(id)")
                 print("App \(self.episodeId)", "Begin background task \(name): \(id)")
-                return id
+                return id == .invalid ? nil : id
             }, endBackgroundTask: { id in
                 print("App \(self.episodeId)", "End background task \(id)")
                 Logger.shared.log("App \(self.episodeId)", "End background task \(id)")

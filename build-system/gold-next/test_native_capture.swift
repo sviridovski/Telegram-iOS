@@ -149,6 +149,40 @@ struct NativeCaptureFixture {
         precondition(row("SELECT original_text, original_observed FROM messages WHERE message_id=1003") ==
             ["NULL", "0"],
             "an edited-only catch-up must NOT fabricate an original")
+        // Hold an actual SQLite write transaction while admission closes. The
+        // system expiration path must return before the worker is released.
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        GoldgramHistoryStore.enqueueArchiveWork {
+            precondition(sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK)
+            entered.signal()
+            precondition(release.wait(timeout: .now() + 5) == .success)
+            precondition(sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK)
+        }
+        precondition(entered.wait(timeout: .now() + 5) == .success)
+        goldgramArchiveAdmissionV1(-1)
+        try send(1503, event: 0, text: "До блокировки", known: true)
+        release.signal()
+        precondition(goldgramFlushCaptureV1() == 0)
+        precondition(row("SELECT COUNT(*) FROM messages WHERE message_id=1503") == ["0"])
+        let pending = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("GoldgramPendingOriginals/\(account)_2_99_1503.pending")
+        let persisted = try Data(contentsOf: pending)
+        goldgramArchiveAdmissionV1(1)
+        precondition(goldgramFlushCaptureV1() == 1)
+        precondition(row("SELECT original_text FROM messages WHERE message_id=1503") == ["До блокировки"])
+        precondition(!FileManager.default.fileExists(atPath: pending.path))
+        // Crash between commit and unlink: only the file survives; idempotent
+        // replay must preserve the newer revision and acknowledge the spool.
+        try send(1503, event: 1, text: "После правки")
+        precondition(goldgramFlushCaptureV1() == 1)
+        try persisted.write(to: pending, options: .atomic)
+        goldgramArchiveAdmissionV1(0)
+        goldgramArchiveAdmissionV1(1)
+        precondition(goldgramFlushCaptureV1() == 1)
+        precondition(row("SELECT COUNT(*) FROM revisions WHERE message_id=1503") == ["2"])
+        precondition(row("SELECT content FROM revisions WHERE message_id=1503 ORDER BY version_index DESC LIMIT 1") == ["После правки"])
+        precondition(!FileManager.default.fileExists(atPath: pending.path))
         print("Goldgram #106: ordered difference original/edit writer regression passes")
         print("Goldgram #91: durable original bridge and selected-account archive totals passed against actual Swift writer/reader")
         print("Goldgram #89: production async writer preserves received content/authors on ID-only deletion; observations never become edit events")

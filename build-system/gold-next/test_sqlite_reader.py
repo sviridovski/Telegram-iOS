@@ -17,7 +17,7 @@ def schema(name):
 
 assert '@objc(GoldgramArchiveReader)' in src
 assert "SQLITE_OPEN_READONLY" in src
-assert 'GoldgramHistoryStore.storageQueue.async' in src
+assert 'GoldgramHistoryStore.enqueueArchiveWork' in src
 assert 'MxLastKnownUserId' in src  # explicitly rejected in the data contract
 assert "observed ? text(stmt, 3) : NSNull()" in src
 assert "query_only = ON" in src

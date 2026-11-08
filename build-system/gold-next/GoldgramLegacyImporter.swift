@@ -27,7 +27,7 @@ enum GoldgramLegacyImporter {
         channelKinds: [Int64: Int32],
         completion: @escaping (Result<Report, Error>) -> Void
     ) {
-        GoldgramHistoryStore.storageQueue.async {
+        GoldgramHistoryStore.enqueueArchiveWork {
             let outcome: Result<Report, Error>
             do {
                 guard accountId > 0, validatedLegacyOwner == accountId else {

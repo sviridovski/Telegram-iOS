@@ -2132,3 +2132,29 @@ public func goldgramMonitorDiscussions(account: Account) -> Signal<Never, NoErro
         return ActionDisposable { impl.with { $0.stop() } }
     }
 }
+
+// These symbols live in the injected archive module. Stock hosts have no
+// independent queue to drain. Never run a synchronous flush on the main queue.
+private typealias GoldgramAdmission = @convention(c) (Int32) -> Void
+private typealias GoldgramBarrierDone = @convention(c) (UnsafeMutableRawPointer) -> Void
+private typealias GoldgramBarrier = @convention(c) (UnsafeMutableRawPointer, GoldgramBarrierDone) -> Void
+private final class GoldgramBarrierContext {
+    let done: () -> Void
+    init(_ done: @escaping () -> Void) { self.done = done }
+}
+public func goldgramSetArchiveAdmission(_ open: Bool, immediately: Bool = false) {
+    guard let handle = dlopen(nil, RTLD_NOW) else { return }
+    defer { dlclose(handle) }
+    guard let symbol = dlsym(handle, "goldgram_archive_admission_v1") else { return }
+    unsafeBitCast(symbol, to: GoldgramAdmission.self)(open ? 1 : (immediately ? -1 : 0))
+}
+
+public func goldgramArchiveBarrier(_ done: @escaping () -> Void) {
+    guard let handle = dlopen(nil, RTLD_NOW) else { done(); return }
+    defer { dlclose(handle) }
+    guard let symbol = dlsym(handle, "goldgram_archive_barrier_v1") else { done(); return }
+    let context = Unmanaged.passRetained(GoldgramBarrierContext(done)).toOpaque()
+    unsafeBitCast(symbol, to: GoldgramBarrier.self)(context, { raw in
+        Unmanaged<GoldgramBarrierContext>.fromOpaque(raw).takeRetainedValue().done()
+    })
+}

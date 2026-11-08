@@ -23,6 +23,50 @@ enum GoldgramHistoryStore {
         label: "goldgram.history.sqlite.setup",
         qos: .userInitiated
     )
+    // Closing admission never waits for SQLite. Only the serial queue owns
+    // the FIFO and runs its work. A later close invalidates a queued reopen.
+    private static let admissionLock = NSLock()
+    private static var generation: UInt64 = 0
+    private static var admitted = true
+    private static var deferred: [() -> Void] = []
+
+    fileprivate static var archiveIsOpen: Bool {
+        admissionLock.lock()
+        defer { admissionLock.unlock() }
+        return admitted
+    }
+
+    static func enqueueArchiveWork(_ work: @escaping () -> Void) {
+        storageQueue.async {
+            if archiveIsOpen { work() } else { deferred.append(work) }
+        }
+    }
+
+    fileprivate static func setAdmission(_ open: Bool, immediate: Bool) {
+        admissionLock.lock()
+        generation &+= 1
+        let requested = generation
+        if !open && immediate { admitted = false }
+        admissionLock.unlock()
+        if !open && immediate { return }
+        storageQueue.async {
+            admissionLock.lock()
+            guard requested == generation else {
+                admissionLock.unlock()
+                return
+            }
+            admitted = open
+            admissionLock.unlock()
+            guard open else { return }
+            let pending = deferred
+            deferred.removeAll()
+            for work in pending {
+                if archiveIsOpen { work() } else { deferred.append(work) }
+            }
+            if archiveIsOpen { restoreDeferredOriginals() }
+        }
+    }
+
     private static let currentSchemaVersion: Int32 = 2
 
     // Account-specific DB, with peer type + peer ID + message ID scoping inside.
@@ -31,7 +75,7 @@ enum GoldgramHistoryStore {
         accountId: Int64,
         completion: @escaping (Result<URL, Error>) -> Void
     ) {
-        storageQueue.async {
+        enqueueArchiveWork {
             let result: Result<URL, Error>
             do {
                 result = .success(try createOrOpen(accountId: accountId))
@@ -419,6 +463,7 @@ private extension GoldgramHistoryStore {
         archiveTrimScheduled = true
         storageQueue.asyncAfter(deadline: lastArchiveAccess + .seconds(10)) {
             archiveTrimScheduled = false
+            guard archiveIsOpen else { return }
             if DispatchTime.now() < lastArchiveAccess + .seconds(10) {
                 scheduleArchiveTrim()
                 return
@@ -613,7 +658,7 @@ private extension GoldgramHistoryStore {
         guard peerKind >= 0, peerKind <= 3,
               accountId > 0, peerId > 0, messageId > 0,
               !text.isEmpty, text.utf8.count <= 65536 else { return }
-        storageQueue.async {
+        enqueueArchiveWork {
             guard UserDefaults.standard.bool(forKey: "GoldgramSQLiteCaptureEnabled") else {
                 return
             }
@@ -760,7 +805,7 @@ private extension GoldgramHistoryStore {
         guard peerKind >= 0, peerKind <= 3,
               accountId > 0, peerId > 0, messageId > 0,
               !text.isEmpty, text.utf8.count <= 65536 else { return }
-        storageQueue.async {
+        enqueueArchiveWork {
             guard UserDefaults.standard.bool(forKey: "GoldgramSQLiteCaptureEnabled") else {
                 return
             }
@@ -945,7 +990,7 @@ public final class GoldgramArchiveReader: NSObject {
             completion(["status": "account_changed"])
             return
         }
-        GoldgramHistoryStore.storageQueue.async {
+        GoldgramHistoryStore.enqueueArchiveWork {
             guard self.isSelected(accountId) else {
                 DispatchQueue.main.async { completion(["status": "account_changed"]) }
                 return
@@ -1135,7 +1180,7 @@ public final class GoldgramArchiveReader: NSObject {
         // Only accept bounded UUIDs from this same selected account/test.
         let attemptTokens = Array(Set((request["attemptTokens"] as? [String] ?? [])
             .filter { UUID(uuidString: $0) != nil })).prefix(24)
-        GoldgramHistoryStore.storageQueue.async {
+        GoldgramHistoryStore.enqueueArchiveWork {
             let response = self.read(
                 accountId: accountId, mode: mode,
                 kinds: kinds, peerId: peerId, peerKind: scopedPeerKind, sources: sources, deletedOnly: category == 3,
@@ -1638,7 +1683,46 @@ public func goldgramRegisterNativeNavigationV1(_ rawCallback: UnsafeMutableRawPo
 private extension GoldgramHistoryStore {
     static var nativeWriteFailed = false
 
-    static func nativeEvent(_ payload: [String: Any]) -> Bool {
+    private static var pendingDirectory: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("GoldgramPendingOriginals", isDirectory: true)
+    }
+
+    // An original arriving after admission closes can outlive the process.
+    // The first body for its account/peer/message wins, just as in SQLite.
+    private static func stageOriginal(_ payload: [String: Any], key: String, observed: Int64) throws -> URL {
+        let directory = pendingDirectory
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent(key).appendingPathExtension("pending")
+        if !FileManager.default.fileExists(atPath: url.path) {
+            var entry = payload
+            entry["pendingObservedAt"] = observed
+            let data = try JSONSerialization.data(withJSONObject: entry)
+            #if os(iOS)
+            try data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            #else
+            try data.write(to: url, options: .atomic)
+            #endif
+        }
+        return url
+    }
+
+    private static func restoreDeferredOriginals() {
+        guard let files = try? FileManager.default.contentsOfDirectory(at: pendingDirectory,
+            includingPropertiesForKeys: nil) else { return }
+        for file in files where file.pathExtension == "pending" {
+            guard archiveIsOpen else { return }
+            guard let data = try? Data(contentsOf: file),
+                  var payload = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            else { continue }
+            // Repair only the baseline when a newer edit is already committed.
+            payload["baselineOnly"] = true
+            payload["originalText"] = payload["originalText"] ?? payload["text"]
+            _ = nativeEvent(payload, replayFile: file)
+        }
+    }
+
+    static func nativeEvent(_ payload: [String: Any], replayFile: URL? = nil) -> Bool {
         guard let account = (payload["accountId"] as? NSNumber)?.int64Value, account > 0,
               let kind = (payload["peerKind"] as? NSNumber)?.int32Value,
               let peer = (payload["peerId"] as? NSNumber)?.int64Value,
@@ -1646,9 +1730,10 @@ private extension GoldgramHistoryStore {
               let id = Int32(exactly: rawId), id > 0,
               let event = (payload["eventKind"] as? NSNumber)?.int32Value, (0...2).contains(event),
               UserDefaults.standard.bool(forKey: "GoldgramSQLiteCaptureEnabled") else { return false }
-        let now = Int64(Date().timeIntervalSince1970 * 1000)
+        let now = (replayFile == nil ? nil : (payload["pendingObservedAt"] as? NSNumber)?.int64Value)
+            ?? Int64(Date().timeIntervalSince1970 * 1000)
         if kind == -1 && peer == 0 && event == 2 {
-            storageQueue.async {
+            enqueueArchiveWork {
                 do {
                     let db = try archiveConnection(for: account)
                     try archiveSQL("INSERT OR IGNORE INTO unresolved_deletions(message_id, observed_at, update_key) VALUES(?, ?, ?);", db: db, ints: [Int64(id), now], text: "native.global")
@@ -1680,7 +1765,7 @@ private extension GoldgramHistoryStore {
         for byte in identity.utf8 { hash = (hash ^ UInt64(byte)) &* 1099511628211 }
         let enqueueState = lifecycleState()
         let key = event == 2 ? "native.delete.\(kind).\(peer).\(id)" : "native.edit.\(kind).\(peer).\(id).\(hash)"
-        storageQueue.async {
+        let write: (URL?) -> Void = { pendingFile in
             do {
                 let db = try archiveConnection(for: account)
                 try archiveSQL("BEGIN IMMEDIATE;", db: db, ints: [])
@@ -1729,6 +1814,7 @@ private extension GoldgramHistoryStore {
                             outcome: alreadyKnown ? "existing" : "new")
                     }
                     try archiveSQL("COMMIT;", db: db, ints: [])
+                    if let pendingFile { try? FileManager.default.removeItem(at: pendingFile) }
                     if event != 0 { DispatchQueue.main.async { NotificationCenter.default.post(name: Notification.Name("GoldgramArchiveChanged"), object: NSNumber(value: account)) } }
                 } catch {
                     try? archiveSQL("ROLLBACK;", db: db, ints: [])
@@ -1743,6 +1829,22 @@ private extension GoldgramHistoryStore {
                     throw error
                 }
             } catch { nativeWriteFailed = true /* Keep the durable extension handoff for retry. */ }
+        }
+        if let replayFile {
+            // Called exclusively by restoreDeferredOriginals on storageQueue.
+            if archiveIsOpen { write(replayFile) }
+        } else {
+            storageQueue.async {
+                if archiveIsOpen { write(nil); return }
+                if event == 0 && known {
+                    do {
+                        let file = try stageOriginal(payload, key: "\(account)_\(kind)_\(peer)_\(id)", observed: now)
+                        deferred.append { write(file) }
+                        return
+                    } catch { nativeWriteFailed = true }
+                }
+                deferred.append { write(nil) }
+            }
         }
         return true // enqueued, not a synchronous claim of SQLite commit
     }
@@ -1763,7 +1865,7 @@ public func goldgramCaptureEventV1(_ raw: UnsafePointer<CChar>?) -> Int32 {
 public func goldgramHasOriginalV1(_ account: Int64, _ kind: Int32, _ peer: Int64, _ id: Int32) -> Int32 {
     guard account > 0, (0...3).contains(kind), peer > 0, id > 0 else { return -1 }
     return GoldgramHistoryStore.storageQueue.sync {
-        guard let db = try? GoldgramHistoryStore.archiveConnection(for: account),
+        guard GoldgramHistoryStore.archiveIsOpen, let db = try? GoldgramHistoryStore.archiveConnection(for: account),
               let known = try? GoldgramHistoryStore.originalIsKnown(db: db,
                   scope: [Int64(kind), peer, Int64(id)]) else { return -1 }
         return known ? 1 : 0
@@ -1773,6 +1875,7 @@ public func goldgramHasOriginalV1(_ account: Int64, _ kind: Int32, _ peer: Int64
 @_cdecl("goldgram_flush_capture_v1")
 public func goldgramFlushCaptureV1() -> Int32 {
     return GoldgramHistoryStore.storageQueue.sync {
+        guard GoldgramHistoryStore.archiveIsOpen else { return 0 }
         let failed = GoldgramHistoryStore.nativeWriteFailed
         GoldgramHistoryStore.nativeWriteFailed = false
         return failed ? 0 : 1
@@ -1785,7 +1888,7 @@ public func goldgramFlushCaptureV1() -> Int32 {
 public func goldgramReadOriginalV1(_ account: Int64, _ kind: Int32, _ peer: Int64, _ id: Int32) -> UnsafeMutablePointer<CChar>? {
     guard account > 0, (0...3).contains(kind), peer > 0, id > 0 else { return nil }
     return GoldgramHistoryStore.storageQueue.sync {
-        guard let db = try? GoldgramHistoryStore.archiveConnection(for: account) else { return nil }
+        guard GoldgramHistoryStore.archiveIsOpen, let db = try? GoldgramHistoryStore.archiveConnection(for: account) else { return nil }
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, "SELECT original_text FROM messages WHERE peer_kind=? AND peer_id=? AND message_id=? AND original_observed=1 AND original_text IS NOT NULL;", -1, &statement, nil) == SQLITE_OK, let stmt = statement else {
             if let statement { sqlite3_finalize(statement) }; return nil
@@ -1797,4 +1900,16 @@ public func goldgramReadOriginalV1(_ account: Int64, _ kind: Int32, _ peer: Int6
         guard let data = try? JSONSerialization.data(withJSONObject: ["text": text]), let json = String(data: data, encoding: .utf8) else { return nil }
         return strdup(json)
     }
+}
+
+
+@_cdecl("goldgram_archive_admission_v1")
+public func goldgramArchiveAdmissionV1(_ open: Int32) {
+    GoldgramHistoryStore.setAdmission(open > 0, immediate: open < 0)
+}
+
+@_cdecl("goldgram_archive_barrier_v1")
+public func goldgramArchiveBarrierV1(_ context: UnsafeMutableRawPointer,
+                                     _ done: @escaping @convention(c) (UnsafeMutableRawPointer) -> Void) {
+    GoldgramHistoryStore.storageQueue.async { done(context) }
 }

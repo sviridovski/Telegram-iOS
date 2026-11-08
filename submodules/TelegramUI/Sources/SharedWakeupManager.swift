@@ -67,13 +67,30 @@ public final class SharedWakeupManager {
     private let backgroundTimeRemaining: () -> Double
     private let acquireIdleExtension: () -> Disposable?
     
+    // One object per UIKit assertion; a stale timer/expiration can only
+    // consume its own identifier, even if UIKit reuses its numeric value.
+    private final class BackgroundWindow {
+        var id: UIBackgroundTaskIdentifier?
+        var timer: SwiftSignalKit.Timer?
+        func end(using end: (UIBackgroundTaskIdentifier) -> Void) {
+            guard let id else { return }
+            self.id = nil
+            end(id)
+        }
+    }
+    private var retiring: [BackgroundWindow] = []
+    private var pendingExternalCompletions: [() -> Void] = []
+    private var archiveAdmission: Bool?
+    private var closeGeneration: UInt64 = 0
+    private let postboxDrains = DispatchGroup()
+    private var gatedAccounts = Set<ObjectIdentifier>()
+
     private var enableBackgroundTasks: Bool = false
     private let presentationData: () -> PresentationData?
     
     private var inForeground: Bool = false
     private var hasActiveAudioSession: Bool = false
-    private var activeExplicitExtensionTimer: SwiftSignalKit.Timer?
-    private var activeExplicitExtensionTask: UIBackgroundTaskIdentifier?
+    private var explicitWindow: BackgroundWindow?
     private var allowBackgroundTimeExtensionDeadline: Double?
     private var allowBackgroundTimeExtensionDeadlineTimer: SwiftSignalKit.Timer?
     private var isInBackgroundExtension: Bool = false
@@ -84,7 +101,7 @@ public final class SharedWakeupManager {
     private var tasksDisposable: Disposable?
     private var pendingMediaUploadsDisposable: Disposable?
     private var pendingStoryUploadsDisposable: Disposable?
-    private var currentTask: (UIBackgroundTaskIdentifier, Double, SwiftSignalKit.Timer)?
+    private var currentTask: BackgroundWindow?
     private var currentExternalCompletion: (() -> Void, SwiftSignalKit.Timer)?
     private var currentExternalCompletionValidationTimer: SwiftSignalKit.Timer?
     
@@ -215,11 +232,8 @@ public final class SharedWakeupManager {
                 strongSelf.allowBackgroundTimeExtension(timeout: 20.0, extendNow: true)
             }
             if value {
-                strongSelf.activeExplicitExtensionTimer?.invalidate()
-                strongSelf.activeExplicitExtensionTimer = nil
-                if let activeExplicitExtensionTask = strongSelf.activeExplicitExtensionTask {
-                    strongSelf.activeExplicitExtensionTask = nil
-                    strongSelf.endBackgroundTask(activeExplicitExtensionTask)
+                if let window = strongSelf.explicitWindow {
+                    strongSelf.retire(window)
                 }
                 strongSelf.allowBackgroundTimeExtensionDeadlineTimer?.invalidate()
                 strongSelf.allowBackgroundTimeExtensionDeadlineTimer = nil
@@ -430,9 +444,9 @@ public final class SharedWakeupManager {
         self.keepIdleDisposable?.dispose()
         self.pendingBackgroundProcessingTaskTimer?.invalidate()
         self.pendingBackgroundStoryProcessingTaskTimer?.invalidate()
-        if let (taskId, _, timer) = self.currentTask {
-            timer.invalidate()
-            self.endBackgroundTask(taskId)
+        for window in self.retiring + [self.currentTask, self.explicitWindow].compactMap({ $0 }) {
+            window.timer?.invalidate()
+            window.end(using: self.endBackgroundTask)
         }
     }
     
@@ -621,6 +635,7 @@ public final class SharedWakeupManager {
                 }
                 if self.backgroundProcessingTaskId == task.identifier {
                     self.backgroundProcessingTaskLaunched = true
+                    self.checkTasks()
                 }
             }
             
@@ -797,6 +812,7 @@ public final class SharedWakeupManager {
                 }
                 if self.backgroundStoryProcessingTaskId == task.identifier {
                     self.backgroundStoryProcessingTaskLaunched = true
+                    self.checkTasks()
                 }
             }
             
@@ -970,38 +986,8 @@ public final class SharedWakeupManager {
         }, queue: .mainQueue())
         self.allowBackgroundTimeExtensionDeadlineTimer?.start()
         
-        if extendNow {
-            if self.activeExplicitExtensionTimer == nil {
-                let activeExplicitExtensionTimer = SwiftSignalKit.Timer(timeout: 20.0, repeat: false, completion: { [weak self] in
-                    guard let strongSelf = self else {
-                        return
-                    }
-                    strongSelf.activeExplicitExtensionTimer?.invalidate()
-                    strongSelf.activeExplicitExtensionTimer = nil
-                    if let activeExplicitExtensionTask = strongSelf.activeExplicitExtensionTask {
-                        strongSelf.activeExplicitExtensionTask = nil
-                        strongSelf.endBackgroundTask(activeExplicitExtensionTask)
-                    }
-                    strongSelf.checkTasks()
-                }, queue: .mainQueue())
-                self.activeExplicitExtensionTimer = activeExplicitExtensionTimer
-                activeExplicitExtensionTimer.start()
-                
-                self.activeExplicitExtensionTask = self.beginBackgroundTask("explicit-extension") { [weak self, weak activeExplicitExtensionTimer] in
-                    guard let self, let activeExplicitExtensionTimer else {
-                        return
-                    }
-                    if self.activeExplicitExtensionTimer === activeExplicitExtensionTimer {
-                        self.activeExplicitExtensionTimer?.invalidate()
-                        self.activeExplicitExtensionTimer = nil
-                        if let activeExplicitExtensionTask = self.activeExplicitExtensionTask {
-                            self.activeExplicitExtensionTask = nil
-                            self.endBackgroundTask(activeExplicitExtensionTask)
-                        }
-                        self.checkTasks()
-                    }
-                }
-            }
+        if extendNow && self.explicitWindow == nil {
+            self.explicitWindow = self.startWindow("explicit-extension", timeout: 20.0)
         }
         if shouldCheckTasks || extendNow {
             self.checkTasks()
@@ -1010,7 +996,7 @@ public final class SharedWakeupManager {
     
     func replaceCurrentExtensionWithExternalTime(completion: @escaping () -> Void, timeout: Double) {
         if let (currentCompletion, timer) = self.currentExternalCompletion {
-            currentCompletion()
+            self.pendingExternalCompletions.append(currentCompletion)
             timer.invalidate()
             self.currentExternalCompletion = nil
         }
@@ -1023,7 +1009,7 @@ public final class SharedWakeupManager {
             if let (completion, timer) = strongSelf.currentExternalCompletion {
                 strongSelf.currentExternalCompletion = nil
                 timer.invalidate()
-                completion()
+                strongSelf.pendingExternalCompletions.append(completion)
             }
             strongSelf.checkTasks()
         }, queue: Queue.mainQueue())
@@ -1044,6 +1030,42 @@ public final class SharedWakeupManager {
         self.checkTasks()
     }
     
+    private func startWindow(_ name: String, timeout: @autoclosure () -> Double) -> BackgroundWindow? {
+        let window = BackgroundWindow()
+        guard let id = self.beginBackgroundTask(name, { [weak self, window] in
+            guard let self, window.id != nil else { return }
+            let wasActive = self.retire(window)
+            if wasActive { self.allowBackgroundTimeExtensionDeadline = nil }
+            // The OS deadline cannot wait for either queue. Previously queued
+            // drain callbacks lose ownership when this consumes the identifier.
+            self.checkTasks()
+            if self.archiveAdmission != true { goldgramSetArchiveAdmission(false, immediately: true) }
+            window.end(using: self.endBackgroundTask)
+        }) else { return nil }
+        window.id = id
+        let timer = SwiftSignalKit.Timer(timeout: timeout(), repeat: false, completion: { [weak self, weak window] in
+            guard let self, let window, self.retire(window) else { return }
+            if name == "background-wakeup" { self.allowBackgroundTimeExtensionDeadline = nil }
+            self.checkTasks()
+        }, queue: .mainQueue())
+        window.timer = timer
+        timer.start()
+        return window
+    }
+
+    @discardableResult
+    private func retire(_ window: BackgroundWindow) -> Bool {
+        if self.explicitWindow === window { self.explicitWindow = nil }
+        else if self.currentTask === window {
+            self.currentTask = nil
+            self.isInBackgroundExtension = false
+        } else { return false }
+        window.timer?.invalidate()
+        window.timer = nil
+        self.retiring.append(window)
+        return true
+    }
+
     func checkTasks() {
         var hasTasksForBackgroundExtension = false
         
@@ -1056,21 +1078,16 @@ public final class SharedWakeupManager {
             pendingMessageCount += tasks.importantTasks.pendingMessageCount
         }
         
-        var endTaskAfterTransactionsComplete: UIBackgroundTaskIdentifier?
+
         
         if self.inForeground || self.hasActiveAudioSession || hasActiveCalls {
             if let (completion, timer) = self.currentExternalCompletion {
                 self.currentExternalCompletion = nil
-                completion()
+                self.pendingExternalCompletions.append(completion)
                 timer.invalidate()
             }
             
-            if let (taskId, _, timer) = self.currentTask {
-                self.currentTask = nil
-                timer.invalidate()
-                self.endBackgroundTask(taskId)
-                self.isInBackgroundExtension = false
-            }
+            if let window = self.currentTask { self.retire(window) }
         } else {
             for (_, _, tasks) in self.accountsAndTasks {
                 if !tasks.isEmpty {
@@ -1082,72 +1099,21 @@ public final class SharedWakeupManager {
             if !hasTasksForBackgroundExtension && self.currentExternalCompletionValidationTimer == nil {
                 if let (completion, timer) = self.currentExternalCompletion {
                     self.currentExternalCompletion = nil
-                    completion()
+                    self.pendingExternalCompletions.append(completion)
                     timer.invalidate()
                 }
             }
             
-            if self.activeExplicitExtensionTimer != nil {
+            if self.explicitWindow != nil {
                 hasTasksForBackgroundExtension = true
             }
             
             let canBeginBackgroundExtensionTasks = self.allowBackgroundTimeExtensionDeadline.flatMap({ CFAbsoluteTimeGetCurrent() < $0 }) ?? false
-            if hasTasksForBackgroundExtension {
-                if canBeginBackgroundExtensionTasks {
-                    var endTaskId: UIBackgroundTaskIdentifier?
-                    
-                    let currentTime = CFAbsoluteTimeGetCurrent()
-                    if let (taskId, startTime, timer) = self.currentTask {
-                        if startTime < currentTime + 1.0 {
-                            self.currentTask = nil
-                            timer.invalidate()
-                            endTaskId = taskId
-                        }
-                    }
-                    
-                    if self.currentTask == nil {
-                        var actualTaskId: UIBackgroundTaskIdentifier?
-                        let handleExpiration: () -> Void = { [weak self] in
-                            guard let strongSelf = self else {
-                                return
-                            }
-                            
-                            if let actualTaskId {
-                                strongSelf.endBackgroundTask(actualTaskId)
-                                
-                                if let (taskId, _, timer) = strongSelf.currentTask, taskId == actualTaskId {
-                                    timer.invalidate()
-                                    strongSelf.currentTask = nil
-                                }
-                            }
-                            
-                            strongSelf.isInBackgroundExtension = false
-                            strongSelf.checkTasks()
-                        }
-                        if let taskId = self.beginBackgroundTask("background-wakeup", {
-                            handleExpiration()
-                        }) {
-                            actualTaskId = taskId
-                            let timer = SwiftSignalKit.Timer(timeout: min(30.0, max(0.0, self.backgroundTimeRemaining() - 5.0)), repeat: false, completion: {
-                                handleExpiration()
-                            }, queue: Queue.mainQueue())
-                            self.currentTask = (taskId, currentTime, timer)
-                            timer.start()
-                            
-                            endTaskId.flatMap(self.endBackgroundTask)
-                            
-                            self.isInBackgroundExtension = true
-                        }
-                    }
-                }
-            } else if let (taskId, _, timer) = self.currentTask {
-                self.currentTask = nil
-                
-                timer.invalidate()
-                
-                endTaskAfterTransactionsComplete = taskId
-                
-                self.isInBackgroundExtension = false
+            if hasTasksForBackgroundExtension && canBeginBackgroundExtensionTasks && self.currentTask == nil {
+                self.currentTask = self.startWindow("background-wakeup", timeout: min(30.0, max(0.0, self.backgroundTimeRemaining() - 5.0)))
+                self.isInBackgroundExtension = self.currentTask != nil
+            } else if !hasTasksForBackgroundExtension, let window = self.currentTask {
+                self.retire(window)
             }
         }
         
@@ -1162,7 +1128,7 @@ public final class SharedWakeupManager {
             }
         }
         
-        self.updateAccounts(hasTasks: hasTasksForBackgroundExtension, endTaskAfterTransactionsComplete: endTaskAfterTransactionsComplete)
+        self.updateAccounts()
         
         /*if !self.inForeground && pendingMessageCount != 0 && !self.hasActiveAudioSession {
             if self.silenceAudioRenderer == nil {
@@ -1197,16 +1163,38 @@ public final class SharedWakeupManager {
         }*/
     }
     
-    private func updateAccounts(hasTasks: Bool, endTaskAfterTransactionsComplete: UIBackgroundTaskIdentifier?) {
+    private func finishRetiringWindows() {
+        let windows = self.retiring
+        let completions = self.pendingExternalCompletions
+        self.retiring.removeAll()
+        self.pendingExternalCompletions.removeAll()
+        for window in windows { window.end(using: self.endBackgroundTask) }
+        for completion in completions { completion() }
+    }
+
+    private func updateAccounts() {
         let hasBackgroundLocationTask = self.accountsAndTasks.contains(where: { $0.2.backgroundLocation })
         
-        if self.inForeground || self.hasActiveAudioSession || self.isInBackgroundExtension || self.backgroundProcessingTaskId != nil || self.backgroundStoryProcessingTaskId != nil || hasBackgroundLocationTask || (hasTasks && self.currentExternalCompletion != nil) || self.activeExplicitExtensionTimer != nil || self.goldgramRefreshLeaseToken != nil || self.goldgramLocationLeaseAccountId != nil || self.silenceAudioRenderer != nil {
+        let active = self.inForeground || self.accountsAndTasks.contains(where: { $0.2.activeCalls }) || self.hasActiveAudioSession || self.isInBackgroundExtension || self.backgroundProcessingTaskLaunched || self.backgroundStoryProcessingTaskLaunched || hasBackgroundLocationTask || self.currentExternalCompletion != nil || self.explicitWindow != nil || self.goldgramRefreshLeaseToken != nil || self.goldgramLocationLeaseAccountId != nil || self.silenceAudioRenderer != nil
+
+        let accounts = Set(self.accountsAndTasks.map { ObjectIdentifier($0.0.postbox) })
+        let accountsChanged = self.gatedAccounts != accounts
+        self.gatedAccounts = accounts
+        let changed = self.archiveAdmission != active
+        self.archiveAdmission = active
+        // Replacing a drain with a newer one transfers all its pending
+        // completions. An older fence can never end the last live assertion.
+        let needsDrain = changed || accountsChanged
+        if needsDrain { self.closeGeneration &+= 1 }
+        let generation = self.closeGeneration
+        if active {
+            if changed { goldgramSetArchiveAdmission(true) }
             Logger.shared.log("Wakeup", "enableBeginTransactions: true (active)")
             
             for (account, primary, tasks) in self.accountsAndTasks {
                 account.postbox.setCanBeginTransactions(true)
                 
-                if (self.inForeground && primary) || !tasks.isEmpty || (self.activeExplicitExtensionTimer != nil && primary) || (self.goldgramRefreshLeaseToken != nil && self.goldgramRefreshLeaseAccountId == account.id) || self.goldgramLocationLeaseAccountId == account.id {
+                if (self.inForeground && primary) || !tasks.isEmpty || (self.explicitWindow != nil && primary) || (self.goldgramRefreshLeaseToken != nil && self.goldgramRefreshLeaseAccountId == account.id) || self.goldgramLocationLeaseAccountId == account.id {
                     account.shouldBeServiceTaskMaster.set(.single(.always))
                 } else {
                     account.shouldBeServiceTaskMaster.set(.single(.never))
@@ -1216,54 +1204,33 @@ public final class SharedWakeupManager {
                 account.shouldKeepBackgroundDownloadConnections.set(.single(tasks.backgroundDownloads))
             }
             
-            if let endTaskAfterTransactionsComplete {
-                self.endBackgroundTask(endTaskAfterTransactionsComplete)
-            }
+            self.finishRetiringWindows()
         } else {
-            var enableBeginTransactions = false
-            if self.allowBackgroundTimeExtensionDeadlineTimer != nil {
-                enableBeginTransactions = true
-            }
-            Logger.shared.log("Wakeup", "enableBeginTransactions: \(enableBeginTransactions)")
-            
-            final class CompletionObservationState {
-                var isCompleted: Bool = false
-                var remainingAccounts: [AccountRecordId]
-                
-                init(remainingAccounts: [AccountRecordId]) {
-                    self.remainingAccounts = remainingAccounts
-                }
-            }
-            let completionState = Atomic<CompletionObservationState>(value: CompletionObservationState(remainingAccounts: self.accountsAndTasks.map(\.0.id)))
-            let checkCompletionState: (AccountRecordId?) -> Void = { id in
-                Queue.mainQueue().async {
-                    var shouldComplete = false
-                    completionState.with { state in
-                        if let id {
-                            state.remainingAccounts.removeAll(where: { $0 == id })
-                        }
-                        if state.remainingAccounts.isEmpty && !state.isCompleted {
-                            state.isCompleted = true
-                            shouldComplete = true
-                        }
-                    }
-                    if shouldComplete, let endTaskAfterTransactionsComplete {
-                        self.endBackgroundTask(endTaskAfterTransactionsComplete)
-                    }
-                }
-            }
-            
+            let group = self.postboxDrains
             for (account, _, _) in self.accountsAndTasks {
-                let accountId = account.id
-                account.postbox.setCanBeginTransactions(enableBeginTransactions, afterTransactionIfRunning: {
-                    checkCompletionState(accountId)
-                })
+                if needsDrain {
+                    group.enter()
+                    account.postbox.setCanBeginTransactions(false, afterTransactionIfRunning: { group.leave() })
+                }
                 account.shouldBeServiceTaskMaster.set(.single(.never))
                 account.shouldKeepOnlinePresence.set(.single(false))
                 account.shouldKeepBackgroundDownloadConnections.set(.single(false))
             }
             
-            checkCompletionState(nil)
+            if needsDrain {
+                group.notify(queue: .main) {
+                    // In-flight Postbox transactions can hand their originals
+                    // to the archive before we close its FIFO.
+                    guard generation == self.closeGeneration else { return }
+                    goldgramSetArchiveAdmission(false)
+                    goldgramArchiveBarrier {
+                        DispatchQueue.main.async {
+                            guard generation == self.closeGeneration else { return }
+                            self.finishRetiringWindows()
+                        }
+                    }
+                }
+            }
         }
     }
 }

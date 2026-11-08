@@ -107,6 +107,8 @@ jobs:
           python3 build-system/gold-next/run_background_residency.py
           python3 build-system/gold-next/run_fast_resume.py
           python3 build-system/gold-next/run_background_completion.py
+          python3 build-system/gold-next/run_window_drain.py
+          python3 build-system/gold-next/test_collect_dsyms.py
           python3 build-system/gold-next/run_retention_guard.py
           python3 build-system/gold-next/run_notification_handoff.py
           swiftc build-system/gold-next/GoldgramHistoryStore.swift build-system/gold-next/test_native_capture.swift -o "$RUNNER_TEMP/goldgram-native-capture-test"
@@ -375,6 +377,22 @@ jobs:
           python3 build-system/gold-next/verify_mx.py "$APP"
           cd /Users/Shared/telegram-ios/build/artifacts
           shasum -a 256 Swiftgram.ipa > SHA256.txt
+
+      - name: Validate symbols against the patched IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          apps=(verify-sideload/Payload/*.app)
+          python3 build-system/gold-next/collect_dsyms.py "${apps[0]}" \
+            /Users/Shared/telegram-ios/bazel-out "$RUNNER_TEMP/Swiftgram-dSYMs.zip"
+
+      - name: Upload UUID-verified debugging symbols
+        uses: actions/upload-artifact@v4
+        with:
+          name: Swiftgram-dSYMs-${{ github.sha }}
+          path: ${{ runner.temp }}/Swiftgram-dSYMs.zip
+          if-no-files-found: error
+          compression-level: 0
 
       - name: Upload Mx IPA
         uses: actions/upload-artifact@v4

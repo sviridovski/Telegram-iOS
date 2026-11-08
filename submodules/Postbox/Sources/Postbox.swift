@@ -1880,7 +1880,8 @@ final class PostboxImpl {
     var installedMessageActionsByPeerId: [PeerId: Bag<([StoreMessage], Transaction) -> Void>] = [:]
     var installedStoreOrUpdateMessageActionsByPeerId: [PeerId: Bag<StoreOrUpdateMessageAction>] = [:]
     
-    init(queue: Queue, basePath: String, seedConfiguration: SeedConfiguration, valueBox: SqliteValueBox, timestampForAbsoluteTimeBasedOperations: Int32, isTemporary: Bool, tempDir: TempBoxDirectory?, useCaches: Bool, isInTransaction: Atomic<Bool>) {
+    init(queue: Queue, basePath: String, seedConfiguration: SeedConfiguration, valueBox: SqliteValueBox, timestampForAbsoluteTimeBasedOperations: Int32, isTemporary: Bool, tempDir: TempBoxDirectory?, useCaches: Bool, isInTransaction: Atomic<Bool>, admissionRequested: Atomic<Bool>) {
+        self.admissionRequested = admissionRequested
         assert(queue.isCurrent())
         
         let startTime = CFAbsoluteTimeGetCurrent()
@@ -3226,6 +3227,7 @@ final class PostboxImpl {
         return result
     }
     
+    private let admissionRequested: Atomic<Bool>
     let canBeginTransactionsValue = Atomic<Bool>(value: true)
     public func setCanBeginTransactions(_ value: Bool, afterTransactionIfRunning: @escaping () -> Void) {
         self.queue.async {
@@ -3233,7 +3235,7 @@ final class PostboxImpl {
             if previous != value && value {
                 let fs = self.queuedInternalTransactions.swap([])
                 for f in fs {
-                    f()
+                    self.beginInternalTransaction(f)
                 }
             }
             afterTransactionIfRunning()
@@ -3244,7 +3246,7 @@ final class PostboxImpl {
     
     private func beginInternalTransaction(ignoreDisabled: Bool = false, _ f: @escaping () -> Void) {
         assert(self.queue.isCurrent())
-        if ignoreDisabled || self.canBeginTransactionsValue.with({ $0 }) {
+        if self.admissionRequested.with({ $0 }) && (ignoreDisabled || self.canBeginTransactionsValue.with({ $0 })) {
             f()
         } else {
             let _ = self.queuedInternalTransactions.modify { fs in
@@ -4638,6 +4640,7 @@ public class Postbox {
     public static let sharedQueue = Queue(name: "org.telegram.postbox.Postbox")
     
     let queue: Queue
+    private let admissionRequested = Atomic<Bool>(value: true)
     private let impl: QueueLocalObject<PostboxImpl>
 
     public let seedConfiguration: SeedConfiguration
@@ -4664,6 +4667,7 @@ public class Postbox {
         self.mediaBox = MediaBox(basePath: basePath + "/media", isMainProcess: isMainProcess)
 
         let isInTransaction = self.isInTransaction
+        let admissionRequested = self.admissionRequested
         
         self.impl = QueueLocalObject(queue: queue, generate: {
             let impl = PostboxImpl(
@@ -4675,7 +4679,8 @@ public class Postbox {
                 isTemporary: isTemporary,
                 tempDir: tempDir,
                 useCaches: useCaches,
-                isInTransaction: isInTransaction
+                isInTransaction: isInTransaction,
+                admissionRequested: admissionRequested
             )
             return impl
         })
@@ -4699,6 +4704,7 @@ public class Postbox {
     }
 
     public func setCanBeginTransactions(_ value: Bool, afterTransactionIfRunning: @escaping () -> Void = {}) {
+        _ = self.admissionRequested.swap(value)
         let storageBox = self.mediaBox.storageBox
         self.impl.with { impl in
             impl.setCanBeginTransactions(value, afterTransactionIfRunning: {
