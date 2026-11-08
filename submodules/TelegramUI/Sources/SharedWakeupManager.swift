@@ -634,6 +634,7 @@ public final class SharedWakeupManager {
                     return
                 }
                 if self.backgroundProcessingTaskId == task.identifier {
+                    GoldgramProcessJournal.record("iOS запустила BGProcessing")
                     self.backgroundProcessingTaskLaunched = true
                     self.checkTasks()
                 }
@@ -811,6 +812,7 @@ public final class SharedWakeupManager {
                     return
                 }
                 if self.backgroundStoryProcessingTaskId == task.identifier {
+                    GoldgramProcessJournal.record("iOS запустила BGProcessing для историй")
                     self.backgroundStoryProcessingTaskLaunched = true
                     self.checkTasks()
                 }
@@ -1043,9 +1045,11 @@ public final class SharedWakeupManager {
             if self.archiveAdmission != true { goldgramSetArchiveAdmission(false, immediately: true) }
             window.end(using: self.endBackgroundTask)
         }) else { return nil }
+        GoldgramProcessJournal.record("Получено фоновое окно: \(name)")
         window.id = id
         let timer = SwiftSignalKit.Timer(timeout: timeout(), repeat: false, completion: { [weak self, weak window] in
             guard let self, let window, self.retire(window) else { return }
+            GoldgramProcessJournal.record("Таймер фонового окна: \(name)")
             if name == "background-wakeup" { self.allowBackgroundTimeExtensionDeadline = nil }
             self.checkTasks()
         }, queue: .mainQueue())
@@ -1208,7 +1212,6 @@ public final class SharedWakeupManager {
                 account.shouldKeepBackgroundDownloadConnections.set(.single(tasks.backgroundDownloads))
             }
             
-            GoldgramProcessJournal.record("Барьер очереди архива пройден")
             self.finishRetiringWindows()
         } else {
             if needsDrain { GoldgramProcessJournal.record("Закрытие очередей запрошено") }
@@ -1234,7 +1237,7 @@ public final class SharedWakeupManager {
                         DispatchQueue.main.async {
                             guard generation == self.closeGeneration else { return }
                             GoldgramProcessJournal.record("Барьер очереди архива пройден")
-            self.finishRetiringWindows()
+                            self.finishRetiringWindows()
                         }
                     }
                 }

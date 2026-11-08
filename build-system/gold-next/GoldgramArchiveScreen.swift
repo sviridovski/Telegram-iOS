@@ -211,12 +211,18 @@ public final class GoldgramArchiveScreen: UITableViewController {
                 let pid = run["pid"] as? Int ?? 0
                 let build = run["build"] as? String ?? "?"
                 var lines = ["\(label) · \(formatter.string(from: start)) · PID \(pid) · сборка \(build)"]
+                if let os = run["os"] as? String { lines.append("ОС: \(os)") }
                 for entry in run["events"] as? [[String: Any]] ?? [] {
                     if let date = entry["time"] as? Date, let event = entry["event"] as? String {
                         lines.append("\(formatter.string(from: date))  \(event)")
                     }
                 }
                 sections.append(lines.joined(separator: "\n"))
+            }
+            for interval in (defaults.array(forKey: "GoldgramExitIntervalsV1") as? [[String: Any]] ?? []).reversed() {
+                guard let start = interval["start"] as? Date, let end = interval["end"] as? Date,
+                      let summary = interval["summary"] as? String else { continue }
+                sections.append("MetricKit · фоновые завершения за период \(formatter.string(from: start)) — \(formatter.string(from: end))\n\(summary)")
             }
             let report = sections.joined(separator: "\n\n")
             let alert = UIAlertController(title: "Журнал запусков", message: report.isEmpty ? "Пока нет записей" : report, preferredStyle: .alert)

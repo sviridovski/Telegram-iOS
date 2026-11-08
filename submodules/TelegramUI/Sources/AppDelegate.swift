@@ -1,4 +1,5 @@
 // MARK: Swiftgram
+import MetricKit
 import StoreKit
 import SGIAP
 import SGAPI
@@ -533,6 +534,7 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
         self.goldgramLocationPollBusy = true
         self.goldgramLocationLastPoll = Date()
         self.goldgramLocationActiveToken = token
+        GoldgramProcessJournal.record("Начат геоопрос: \(source)")
         GoldgramLocationLabTrace.accepted(token)
         let work = self.sharedContextPromise.get()
         |> take(1)
@@ -574,6 +576,7 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
         }
         let disposable = work.start(completed: { [weak self] in
             guard let self, self.goldgramLocationActiveToken == token else { return }
+            GoldgramProcessJournal.record("Цепочка геоопроса завершена")
             GoldgramLocationLabTrace.finish(token, reason: "poll_chain_completed")
             self.goldgramLocationPollBusy = false
             self.goldgramLocationActiveToken = nil
@@ -582,6 +585,7 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
         DispatchQueue.main.asyncAfter(deadline: .now() + 18.0) { [weak self] in
             guard let self, self.goldgramLocationActiveToken == token else { return }
             // No extrapolation from deferred wall-clock callbacks to CPU time.
+            GoldgramProcessJournal.record("Геоопрос остановлен по таймеру")
             GoldgramLocationLabTrace.finish(token, reason: "own_18s_limit")
             self.goldgramLocationActiveToken = nil
             self.goldgramLocationWork.set(nil)
@@ -604,6 +608,7 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
 
     @available(iOS 13.0, *)
     private func goldgramRunRefresh(_ task: BGAppRefreshTask) {
+        GoldgramProcessJournal.record("iOS запустила BGAppRefresh")
         // The entry record exists even if Telegram's account context never loads.
         let token = GoldgramBackgroundRefreshTrace.begin(
             excludingActiveToken: self.goldgramRefreshActiveToken)
@@ -619,6 +624,7 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
         guard !self.goldgramRefreshActive, goldgramNativeHistoryEnabled() else {
             GoldgramBackgroundRefreshTrace.finish(token,
                 reason: self.goldgramRefreshActive ? "already_running" : "capture_disabled")
+            GoldgramProcessJournal.record(self.goldgramRefreshActive ? "Опрос пропущен: уже выполняется" : "Опрос пропущен: захват выключен")
             task.setTaskCompleted(success: true)
             return
         }
@@ -656,6 +662,7 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
                 }
                 UserDefaults.standard.set(Date().timeIntervalSince1970,
                     forKey: success ? "GoldgramLastRefreshFinishedV1" : "GoldgramLastRefreshExpiredV1")
+                GoldgramProcessJournal.record("BGAppRefresh завершён: \(reason), success=\(success)")
                 task?.setTaskCompleted(success: success)
             }
             if Thread.isMainThread {
@@ -783,6 +790,9 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
         precondition(!testIsLaunched)
         testIsLaunched = true
         GoldgramProcessJournal.record("Запуск процесса")
+        if #available(iOS 14.0, *) {
+            MXMetricManager.shared.add(GoldgramExitSubscriber.shared)
+        }
         
         let _ = voipTokenPromise.get().start(next: { token in
             self.voipDeviceToken.set(.single(token))
@@ -2627,6 +2637,7 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
     }
     
     func application(_ application: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable : Any], fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void) {
+        GoldgramProcessJournal.record("Получен push, состояние приложения: \(application.applicationState.rawValue)")
         let _ = (self.sharedContextPromise.get()
         |> take(1)
         |> deliverOnMainQueue).start(next: { sharedApplicationContext in
@@ -4098,6 +4109,7 @@ enum GoldgramProcessJournal {
 
     static func record(_ event: String) {
         let time = Date()
+        let uptime = Int(ProcessInfo.processInfo.systemUptime)
         queue.async {
             let defaults = UserDefaults.standard
             var histories = defaults.array(forKey: key) as? [[String: Any]] ?? []
@@ -4108,9 +4120,37 @@ enum GoldgramProcessJournal {
             }
             let index = histories.count - 1
             var events = histories[index]["events"] as? [[String: Any]] ?? []
-            events.append(["time": time, "event": event])
-            histories[index]["events"] = Array(events.suffix(24))
+            let footprint = getMemoryConsumption()
+            let memory = footprint > 0 ? String(footprint / 1_048_576) + " МиБ" : "нет замера"
+            let detail = "\(event) · память \(memory) · uptime \(uptime) с"
+            histories[index]["os"] = ProcessInfo.processInfo.operatingSystemVersionString
+            events.append(["time": time, "event": detail])
+            histories[index]["events"] = Array(events.suffix(64))
             defaults.set(Array(histories.suffix(4)), forKey: key)
+        }
+    }
+}
+
+@available(iOS 14.0, *)
+private final class GoldgramExitSubscriber: NSObject, MXMetricManagerSubscriber {
+    static let shared = GoldgramExitSubscriber()
+    private let queue = DispatchQueue(label: "goldgram.metric.exit", qos: .utility)
+
+    func didReceive(_ payloads: [MXMetricPayload]) {
+        queue.async {
+            let defaults = UserDefaults.standard
+            let key = "GoldgramExitIntervalsV1"
+            var rows = defaults.array(forKey: key) as? [[String: Any]] ?? []
+            for payload in payloads {
+                guard let data = payload.applicationExitMetrics?.backgroundExitData else { continue }
+                let start = payload.timeStampBegin
+                let end = payload.timeStampEnd
+                rows.removeAll { $0["start"] as? Date == start && $0["end"] as? Date == end }
+                let summary = "Давление памяти \(data.cumulativeMemoryPressureExitCount), лимит памяти \(data.cumulativeMemoryResourceLimitExitCount), заблокированный файл \(data.cumulativeSuspendedWithLockedFileExitCount), тайм-аут фоновой задачи \(data.cumulativeBackgroundTaskAssertionTimeoutExitCount), watchdog \(data.cumulativeAppWatchdogExitCount)"
+                rows.append(["start": start, "end": end, "summary": summary])
+            }
+            rows.sort { ($0["end"] as? Date ?? .distantPast) < ($1["end"] as? Date ?? .distantPast) }
+            defaults.set(Array(rows.suffix(7)), forKey: key)
         }
     }
 }
