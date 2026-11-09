@@ -9,7 +9,6 @@ import Foundation
 import UIKit
 import Display
 import SwiftSignalKit
-import Postbox
 import TelegramCore
 import MtProtoKit
 import MessageUI
@@ -106,6 +105,8 @@ private enum SGBoolSetting: String {
     case nyStyleSnow
     case nyStyleLightning
     case tabBarSearchEnabled
+    case videoControlsInFooter
+    case hideAccountInNotifications
 }
 
 private enum SGOneFromManySetting: String {
@@ -305,6 +306,7 @@ private func SGControllerEntries(presentationData: PresentationData, callListSet
     
     id.increment(10000)
     entries.append(.header(id: id.count, section: .other, text: strings.Appearance_Other.uppercased(), badge: nil))
+    entries.append(.toggle(id: id.count, section: .other, settingName: .videoControlsInFooter, value: SGSimpleSettings.shared.videoControlsInFooter, text: i18n("Settings.videoControlsInFooter", lang), enabled: true))
     entries.append(.toggle(id: id.count, section: .other, settingName: .swipeForVideoPIP, value: SGSimpleSettings.shared.videoPIPSwipeDirection == SGSimpleSettings.VideoPIPSwipeDirection.up.rawValue, text: i18n("Settings.swipeForVideoPIP", lang), enabled: true))
     entries.append(.notice(id: id.count, section: .other, text: i18n("Settings.swipeForVideoPIP.Notice", lang)))
     entries.append(.toggle(id: id.count, section: .other, settingName: .hideChannelBottomButton, value: !SGSimpleSettings.shared.hideChannelBottomButton, text: i18n("Settings.showChannelBottomButton", lang), enabled: true))
@@ -328,6 +330,7 @@ private func SGControllerEntries(presentationData: PresentationData, callListSet
     entries.append(.notice(id: id.count, section: .other, text: i18n("Settings.DefaultEmojisFirst.Notice", lang)))
     entries.append(.toggle(id: id.count, section: .other, settingName: .hidePhoneInSettings, value: SGSimpleSettings.shared.hidePhoneInSettings, text: i18n("Settings.HidePhoneInSettingsUI", lang), enabled: true))
     entries.append(.notice(id: id.count, section: .other, text: i18n("Settings.HidePhoneInSettingsUI.Notice", lang)))
+    entries.append(.toggle(id: id.count, section: .other, settingName: .hideAccountInNotifications, value: SGSimpleSettings.shared.hideAccountInNotifications, text: i18n("Settings.HideAccountInNotifications", lang), enabled: true))
     
     return filterSGItemListUIEntrires(entries: entries, by: state.searchQuery)
 }
@@ -521,6 +524,11 @@ public func sgSettingsController(context: AccountContext/*, focusOnItemTag: Int?
         case .nyStyleLightning:
             SGSimpleSettings.shared.nyStyle = value ? SGSimpleSettings.NYStyle.lightning.rawValue : SGSimpleSettings.NYStyle.default.rawValue
             simplePromise.set(true) // Trigger update for 'enabled' field of other toggles
+        case .videoControlsInFooter:
+            SGSimpleSettings.shared.videoControlsInFooter = value
+        case .hideAccountInNotifications:
+            SGSimpleSettings.shared.hideAccountInNotifications = value
+            SGSimpleSettings.shared.synchronizeShared()
         }
     }, updateSliderValue: { setting, value in
         switch (setting) {
@@ -680,7 +688,10 @@ public func sgSettingsController(context: AccountContext/*, focusOnItemTag: Int?
             })
         ])])
         presentControllerImpl?(actionSheet, ViewControllerPresentationArguments(presentationAnimation: .modalSheet))
-    }, openDisclosureLink: { link in
+    }, openDisclosureLink: { [weak context] link in
+        guard let context else {
+            return
+        }
         switch (link) {
             case .languageSettings:
                 pushControllerImpl?(context.sharedContext.makeLocalizationListController(context: context))
@@ -701,7 +712,7 @@ public func sgSettingsController(context: AccountContext/*, focusOnItemTag: Int?
     })
     
     let sharedData = context.sharedContext.accountManager.sharedData(keys: [ApplicationSpecificSharedDataKeys.callListSettings, ApplicationSpecificSharedDataKeys.experimentalUISettings])
-    let preferences = context.account.postbox.preferencesView(keys: [PreferencesKeys.appConfiguration])
+    let preferences = context.engine.data.subscribe(TelegramEngine.EngineData.Item.Configuration.App())
     let updatedContentSettingsConfiguration = contentSettingsConfiguration(network: context.account.network)
     |> map(Optional.init)
     let contentSettingsConfiguration = Promise<ContentSettingsConfiguration?>()
@@ -712,9 +723,8 @@ public func sgSettingsController(context: AccountContext/*, focusOnItemTag: Int?
         context.engine.accountData.observeAvailableColorOptions(scope: .replies),
         context.engine.accountData.observeAvailableColorOptions(scope: .profile)
     )
-    |> map { _, /*sliderValue,*/ state, presentationData, sharedData, view, contentSettingsConfiguration, availableReplyColors, availableProfileColors ->  (ItemListControllerState, (ItemListNodeState, Any)) in
+    |> map { _, /*sliderValue,*/ state, presentationData, sharedData, appConfiguration, contentSettingsConfiguration, availableReplyColors, availableProfileColors ->  (ItemListControllerState, (ItemListNodeState, Any)) in
         
-        let appConfiguration: AppConfiguration = view.values[PreferencesKeys.appConfiguration]?.get(AppConfiguration.self) ?? AppConfiguration.defaultValue
         let callListSettings: CallListSettings = sharedData.entries[ApplicationSpecificSharedDataKeys.callListSettings]?.get(CallListSettings.self) ?? CallListSettings.defaultSettings
         let experimentalUISettings: ExperimentalUISettings = sharedData.entries[ApplicationSpecificSharedDataKeys.experimentalUISettings]?.get(ExperimentalUISettings.self) ?? ExperimentalUISettings.defaultSettings
         

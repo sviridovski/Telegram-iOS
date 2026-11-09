@@ -1,3 +1,6 @@
+load(":framework_exported_symbols.bzl", "framework_exported_symbols")
+load("@rules_cc//cc:objc_library.bzl", "objc_library")
+
 load("@bazel_skylib//rules:common_settings.bzl",
     "bool_flag",
 )
@@ -10,6 +13,7 @@ load("@build_bazel_rules_apple//apple:ios.bzl",
     "ios_framework",
     "ios_ui_test",
     "ios_ui_test_suite",
+    "ios_unit_test",
 )
 
 load(
@@ -22,6 +26,7 @@ load("@build_bazel_rules_apple//apple:watchos.bzl",
     "watchos_application",
     "watchos_extension",
 )
+#
 
 load("@build_bazel_rules_apple//apple:resources.bzl",
     "swift_intent_library",
@@ -30,6 +35,8 @@ load("@build_bazel_rules_apple//apple:resources.bzl",
 load("@build_bazel_rules_swift//swift:swift.bzl",
     "swift_library",
 )
+
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 
 load(
     "@rules_xcodeproj//xcodeproj:defs.bzl",
@@ -62,10 +69,6 @@ load(
 
 load("@build_bazel_rules_apple//apple:resources.bzl",
     "swift_intent_library",
-)
-
-load("//build-system/bazel-utils:spm.bzl",
-    "generate_spm",
 )
 
 config_setting(
@@ -164,13 +167,13 @@ genrule(
         "GeneratedPresentationStrings/Sources/PresentationStrings.m",
         "GeneratedPresentationStrings/Resources/PresentationStrings.data",
     ],
-    # MARK: Swiftgram
-    visibility = [
-        "//visibility:public",
-    ],
+    # //Tests/ComposerHarness bundles the .data output. `-[_PresentationStrings
+    # initWithPrimaryComponent:…]` asserts when it cannot load it, so a standalone app that builds
+    # a PresentationData dies at launch without it.
+    visibility = ["//visibility:public"], # MARK: Swiftgram
 )
 
-minimum_os_version = "13.0"
+minimum_os_version = "15.0"
 minimum_watchos_version="7.0" # MARK: Swiftgram
 
 notificationServiceExtensionVersion = "v1"
@@ -280,12 +283,14 @@ filegroup(
     name = "AppStringResources",
     srcs = [
         "Telegram-iOS/en.lproj/Localizable.strings",
-        "//Swiftgram/SGStrings:SGLocalizableStrings",
+        "//Swiftgram/SGStrings:SGLocalizableStrings", # MARK: Swiftgram
     ] + [
         "{}.lproj/Localizable.strings".format(language) for language in empty_languages
     ],
-    # MARK: Swiftgram
-    visibility = ["//visibility:public",],
+    # //Tests/ComposerHarness bundles these. `defaultPresentationStrings` FORCE-UNWRAPS
+    # `getAppBundle().path(forResource: "Localizable" …)`, so any standalone app that builds a
+    # PresentationData traps at launch without them.
+    visibility = ["//visibility:public"], # MARK: Swiftgram
 )
 
 filegroup(
@@ -336,8 +341,9 @@ alternate_icon_folders = [
     "SGDucky",
     "SGDay"
 ]
+#
 
-composer_icon_folders = ["Swiftgram"]
+composer_icon_folders = ["Swiftgram"] # MARK: Swiftgram
 
 [
     filegroup(
@@ -372,7 +378,7 @@ objc_library(
     ],
 )
 
-SGRESOURCES = ["//Swiftgram/SGSettingsUI:SGUIAssets", "//Swiftgram/SGPayWall:SGPayWallAssets", "//Swiftgram/SGAppBadgeAssets:SGAppBadgeAssets", "//Swiftgram/SGNY:SGNYAssets"]
+SGRESOURCES = ["//Swiftgram/SGSettingsUI:SGUIAssets", "//Swiftgram/SGPayWall:SGPayWallAssets", "//Swiftgram/SGAppBadgeAssets:SGAppBadgeAssets", "//Swiftgram/SGNY:SGNYAssets"] # MARK: Swiftgram
 
 swift_library(
     name = "Lib",
@@ -380,7 +386,7 @@ swift_library(
     srcs = glob([
         "Telegram-iOS/Application.swift",
     ]),
-    data = SGRESOURCES + [
+    data = SGRESOURCES + [ # MARK: Swiftgram
         ":Icons",
         ":AppResources",
         ":AppIntentVocabularyResources",
@@ -414,6 +420,7 @@ plist_fragment(
     defaults = {"buildNumber": "1"},
 )
 
+# MARK: Swiftgram
 plist_fragment(
     name = "UrlTypesInfoPlist",
     extension = "plist",
@@ -440,6 +447,8 @@ plist_fragment(
             <array>
                 <string>tg</string>
                 <string>tonsite</string>
+                <string>ton</string>
+                <string>tc</string>
             </array>
         </dict>
         <dict>
@@ -457,6 +466,7 @@ plist_fragment(
         telegram_bundle_id = telegram_bundle_id,
     )
 )
+#
 
 official_apple_pay_merchants = [
     "merchant.ph.telegra.Telegraph",
@@ -532,6 +542,7 @@ icloud_fragment = "" if not telegram_enable_icloud else """
     telegram_icloud_environment="Production" if telegram_aps_environment == "production" else "Development"
 )
 
+# MARK: Swiftgram
 associated_domains_fragment = "" if telegram_bundle_id not in official_bundle_ids else """
 <key>com.apple.developer.associated-domains</key>
 <array>
@@ -544,6 +555,7 @@ associated_domains_fragment = "" if telegram_bundle_id not in official_bundle_id
     <string>webcredentials:telegram.org</string>
 </array>
 """
+#
 
 siri_fragment = "" if not telegram_enable_siri else """
 <key>com.apple.developer.siri</key>
@@ -571,13 +583,13 @@ official_communication_notifications_fragment = """
 <key>com.apple.developer.usernotifications.communication</key>
 <true/>
 """
-communication_notifications_fragment = official_communication_notifications_fragment # if telegram_bundle_id in official_bundle_ids else ""
+communication_notifications_fragment = official_communication_notifications_fragment # MARK: Swiftgram if telegram_bundle_id in official_bundle_ids else ""
 
 official_notification_filtering_fragment = """
 <key>com.apple.developer.usernotifications.filtering</key>
 <true/>
 """
-notification_filtering_fragment = official_notification_filtering_fragment if telegram_bundle_id == "app.swiftgram.ios" else ""
+notification_filtering_fragment = official_notification_filtering_fragment if telegram_bundle_id == "app.swiftgram.ios" else "" # MARK: Swiftgram
 
 store_signin_fragment = """
 <key>com.apple.developer.applesignin</key>
@@ -591,7 +603,7 @@ official_background_gpu_fragment = """
 <key>com.apple.developer.background-tasks.continued-processing.gpu</key>
 <true/>
 """
-background_gpu_fragment = official_background_gpu_fragment if telegram_bundle_id == "app.swiftgram.ios" else ""
+background_gpu_fragment = official_background_gpu_fragment if telegram_bundle_id == "app.swiftgram.ios" else "" # MARK: Swiftgram
 
 plist_fragment(
     name = "TelegramEntitlements",
@@ -643,6 +655,7 @@ plist_fragment(
     """
 )
 
+# MARK: Swiftgram
 plist_fragment(
     name = "AppNameInfoPlist",
     extension = "plist",
@@ -652,6 +665,7 @@ plist_fragment(
     <string>Swiftgram</string>
     """
 )
+#
 
 plist_fragment(
     name = "MtProtoKitInfoPlist",
@@ -815,6 +829,31 @@ plist_fragment(
     )
 )
 
+# TelegramCoreFramework exports only what its clients use: TelegramUI (linked into
+# TelegramUIFramework), the app binary and every extension. See framework_exported_symbols.bzl.
+framework_exported_symbols(
+    name = "TelegramCoreFrameworkExportedSymbols",
+    framework_deps = [
+        "//submodules/TelegramCore:TelegramCore",
+    ],
+    provided_by_frameworks = [
+        "//submodules/MtProtoKit:MtProtoKit",
+        "//submodules/SSignalKit/SwiftSignalKit:SwiftSignalKit",
+        "//submodules/Postbox:Postbox",
+    ],
+    clients = [
+        "//submodules/TelegramUI:TelegramUI",
+        ":Main",
+        ":Lib",
+        ":ShareExtensionLib",
+        ":NotificationContentExtensionLib",
+        ":BroadcastUploadExtensionLib",
+        ":WidgetExtensionLib",
+        ":IntentsExtensionLib",
+        "//Telegram/NotificationService:NotificationServiceExtensionLib",
+    ],
+)
+
 ios_framework(
     name = "TelegramCoreFramework",
     bundle_id = "{telegram_bundle_id}.TelegramCore".format(
@@ -838,6 +877,13 @@ ios_framework(
     minimum_os_version = minimum_os_version,
     extension_safe = True,
     ipa_post_processor = strip_framework,
+    # Exports only what TelegramUI, the app binary and the extensions use. TelegramApi, private to
+    # TelegramCore, is therefore never exported (it used to need -unexported_symbol patterns).
+    # Release only: debug keeps every symbol exported (debugger, faster edit-build cycle).
+    exported_symbols_lists = select({
+        ":debug": [],
+        "//conditions:default": [":TelegramCoreFrameworkExportedSymbols"],
+    }),
     deps = [
         "//submodules/TelegramCore:TelegramCore",
     ],
@@ -887,14 +933,6 @@ genrule(
     cmd_bash =
 """
     echo 'for f in $$1/*.framework; do binary_name=`echo $$(basename $$f) | sed -e "s/\\\\.framework//"`; strip -ST $$f/$$binary_name; done;' > $(location StripFramework.sh)
-    # MARK: Swiftgram
-    echo 'find "$$1" -type f \\( -perm +111 -o -name "*.dylib" \\) | while read -r bin; do \
-        if otool -L "$$bin" | grep -q "/usr/lib/swift/libswift_Concurrency.dylib"; then \
-            echo "Patching concurrency backport in: $$bin"; \
-            chmod +w "$$(dirname $$bin)/"; \
-            install_name_tool -change /usr/lib/swift/libswift_Concurrency.dylib @rpath/libswift_Concurrency.dylib "$$bin"; \
-        fi; \
-    done;' >> $(location StripFramework.sh)
     echo '' >> $(location StripFramework.sh)
 """,
     outs = [
@@ -951,8 +989,34 @@ plist_fragment(
     )
 )
 
+# TelegramUIFramework exports only what the app binary and the extensions that link it use:
+# 194 of its 161,496 public symbols at the time of writing. See framework_exported_symbols.bzl.
+framework_exported_symbols(
+    name = "TelegramUIFrameworkExportedSymbols",
+    framework_deps = [
+        "//submodules/TelegramUI:TelegramUI",
+    ],
+    provided_by_frameworks = [
+        "//submodules/MtProtoKit:MtProtoKit",
+        "//submodules/SSignalKit/SwiftSignalKit:SwiftSignalKit",
+        "//submodules/Postbox:Postbox",
+        "//submodules/TelegramCore:TelegramCore",
+    ],
+    clients = [
+        ":Main",
+        ":Lib",
+        ":ShareExtensionLib",
+        ":NotificationContentExtensionLib",
+        ":BroadcastUploadExtensionLib",
+        "//Telegram/NotificationService:NotificationServiceExtensionLib",
+    ],
+)
+
 ios_framework(
     name = "TelegramUIFramework",
+    additional_linker_inputs = [
+        "//third-party/boringssl:crypto",
+    ],
     bundle_id = "{telegram_bundle_id}.TelegramUI".format(
         telegram_bundle_id = telegram_bundle_id,
     ),
@@ -975,11 +1039,20 @@ ios_framework(
     minimum_os_version = minimum_os_version,
     extension_safe = True,
     ipa_post_processor = strip_framework,
+    # Release only: debug keeps every symbol exported (debugger, faster edit-build cycle).
+    exported_symbols_lists = select({
+        ":debug": [],
+        "//conditions:default": [":TelegramUIFrameworkExportedSymbols"],
+    }),
+    linkopts = [
+        "$(location //third-party/boringssl:crypto)",
+    ],
     deps = [
         "//submodules/TelegramUI:TelegramUI",
     ] + debug_deps,
 )
 
+# MARK: Swiftgram
 plist_fragment(
     name = "ShareInfoPlist",
     extension = "plist",
@@ -1029,6 +1102,7 @@ plist_fragment(
         telegram_bundle_id = telegram_bundle_id,
     )
 )
+#
 
 swift_library(
     name = "ShareExtensionLib",
@@ -1041,12 +1115,25 @@ swift_library(
     ],
     deps = [
         "//submodules/TelegramUI",
+        "//submodules/PasscodeCore",
         "//submodules/TelegramUI/Components/ShareExtensionContext"
     ],
 )
 
+plist_fragment(
+    name = "ShareExtensionEntitlements",
+    extension = "entitlements",
+    template = """
+<key>com.apple.security.application-groups</key>
+<array>
+    <string>group.{telegram_bundle_id}</string>
+</array>
+""".format(telegram_bundle_id = telegram_bundle_id),
+)
+
 ios_extension(
     name = "ShareExtension",
+    entitlements = ":ShareExtensionEntitlements.entitlements",
     bundle_id = "{telegram_bundle_id}.Share".format(
         telegram_bundle_id = telegram_bundle_id,
     ),
@@ -1072,6 +1159,7 @@ ios_extension(
     ],
 )
 
+# MARK: Swiftgram
 plist_fragment(
     name = "NotificationContentInfoPlist",
     extension = "plist",
@@ -1106,6 +1194,7 @@ plist_fragment(
         telegram_bundle_id = telegram_bundle_id,
     )
 )
+#
 
 objc_library(
     name = "NotificationContentExtensionLink",
@@ -1128,6 +1217,7 @@ swift_library(
     ],
     deps = [
         "//submodules/TelegramUI:TelegramUI",
+        "//submodules/PasscodeCore",
         ":NotificationContentExtensionLink",
     ],
 )
@@ -1179,6 +1269,7 @@ ios_extension(
     ],
 )
 
+# MARK: Swiftgram
 plist_fragment(
     name = "WidgetInfoPlist",
     extension = "plist",
@@ -1205,6 +1296,7 @@ plist_fragment(
         telegram_bundle_id = telegram_bundle_id,
     )
 )
+#
 
 filegroup(
     name = "WidgetAssets",
@@ -1230,8 +1322,8 @@ swift_library(
         "//submodules/WidgetItemsUtils:WidgetItemsUtils",
         "//submodules/AppLockState:AppLockState",
         "//submodules/SSignalKit/SwiftSignalKit:SwiftSignalKit",
-        "//submodules/Postbox:Postbox",
         "//submodules/TelegramCore:TelegramCore",
+        "//submodules/PasscodeCore",
         "//submodules/OpenSSLEncryptionProvider:OpenSSLEncryptionProvider",
         "//Telegram:GeneratedSources",
     ],
@@ -1273,7 +1365,11 @@ ios_extension(
         ":AppNameInfoPlist",
     ],
     minimum_os_version = minimum_os_version, # maintain the same minimum OS version across extensions
-    ipa_post_processor = ":SetMinOsVersionWidgetExtension",
+    # Deliberately NOT patched down: this used to stamp MinimumOSVersion=14.0 so a WidgetKit
+    # extension could ship while the app min was 13.0. Now that the app min is >= 14, stamping
+    # a plist minimum *below* the binary's minos makes App Store validation reject the bundle
+    # (error 90208). Same reason the other extensions' patches are commented out.
+    #ipa_post_processor = ":SetMinOsVersionWidgetExtension",
     #provides_main = True,
     provisioning_profile = select({
         ":disableProvisioningProfilesSetting": None,
@@ -1292,6 +1388,7 @@ ios_extension(
     ]
 )
 
+# MARK: Swiftgram
 plist_fragment(
     name = "IntentsInfoPlist",
     extension = "plist",
@@ -1333,6 +1430,7 @@ plist_fragment(
         telegram_bundle_id = telegram_bundle_id,
     )
 )
+#
 
 swift_intent_library(
     name = "GeneratedSources",
@@ -1364,13 +1462,45 @@ swift_library(
     deps = [
         "//submodules/SSignalKit/SwiftSignalKit:SwiftSignalKit",
         "//submodules/Postbox:Postbox",
-        "//submodules/TelegramApi:TelegramApi",
         "//submodules/TelegramCore:TelegramCore",
         "//submodules/BuildConfig:BuildConfig",
         "//submodules/OpenSSLEncryptionProvider:OpenSSLEncryptionProvider",
         "//submodules/AppLockState:AppLockState",
+        "//submodules/PasscodeCore",
         "//Telegram:GeneratedSources",
         "//submodules/WidgetItems:WidgetItems",
+    ],
+)
+
+swift_library(
+    name = "IntentsExtensionTestsLib",
+    testonly = True,
+    srcs = glob([
+        "SiriIntentsTests/**/*.swift",
+    ]),
+    deps = [
+        ":IntentsExtensionLib",
+        "//submodules/Postbox:Postbox",
+        "//submodules/TelegramCore:TelegramCore",
+        "//submodules/SSignalKit/SwiftSignalKit:SwiftSignalKit",
+    ],
+)
+
+ios_test_runner(
+    name = "IntentsExtensionTestRunner",
+    device_type = "iPhone 17",
+    os_version = "26.5",
+)
+
+ios_unit_test(
+    name = "IntentsExtensionTests",
+    minimum_os_version = minimum_os_version,
+    runner = ":IntentsExtensionTestRunner",
+    deps = [
+        ":IntentsExtensionTestsLib",
+    ],
+    visibility = [
+        "//visibility:public",
     ],
 )
 
@@ -1564,6 +1694,7 @@ ios_extension(
 )
 #
 
+# MARK: Swiftgram
 plist_fragment(
     name = "BroadcastUploadInfoPlist",
     extension = "plist",
@@ -1590,6 +1721,7 @@ plist_fragment(
         telegram_bundle_id = telegram_bundle_id,
     )
 )
+#
 
 swift_library(
     name = "BroadcastUploadExtensionLib",
@@ -1658,6 +1790,7 @@ ios_extension(
     ],
 )
 
+# MARK: Swiftgram
 plist_fragment(
     name = "NotificationServiceInfoPlist",
     extension = "plist",
@@ -1689,6 +1822,7 @@ plist_fragment(
         telegram_bundle_id = telegram_bundle_id
     )
 )
+#
 
 ios_extension(
     name = "NotificationServiceExtension" + notificationServiceExtensionVersion,
@@ -1721,6 +1855,7 @@ ios_extension(
     ],
 )
 
+# MARK: Swiftgram
 plist_fragment(
     name = "TelegramInfoPlist",
     extension = "plist",
@@ -1828,6 +1963,23 @@ plist_fragment(
         <string>AremacFS-Regular.otf</string>
         <string>AremacFS-Semibold.otf</string>
     </array>
+    <key>UIApplicationSceneManifest</key>
+    <dict>
+        <key>UIApplicationSupportsMultipleScenes</key>
+        <false/>
+        <key>UISceneConfigurations</key>
+        <dict>
+            <key>UIWindowSceneSessionRoleApplication</key>
+            <array>
+                <dict>
+                    <key>UISceneConfigurationName</key>
+                    <string>Default Configuration</string>
+                    <key>UISceneDelegateClassName</key>
+                    <string>SceneDelegate</string>
+                </dict>
+            </array>
+        </dict>
+    </dict>
     <key>UIBackgroundModes</key>
     <array>
         <string>audio</string>
@@ -1901,6 +2053,7 @@ plist_fragment(
         telegram_bundle_id = telegram_bundle_id,
     )
 )
+#
 
 local_provisioning_profile(
     name = "Telegram_local_profile",
@@ -1915,7 +2068,7 @@ xcode_provisioning_profile(
 )
 
 apple_prebuilt_watchos_application(
-    name = "SwiftgramWatchApp",
+    name = "SwiftgramWatchApp", # MARK: Swiftgram
     # Watch bundle id tracks the host config ("<host>.watchkitapp"). The rule passes it
     # to xcodebuild as PRODUCT_BUNDLE_IDENTIFIER (baked + signed); the watch Info.plist
     # derives WKCompanionAppBundleIdentifier from it via $(PRODUCT_BUNDLE_IDENTIFIER:base),
@@ -1928,7 +2081,7 @@ apple_prebuilt_watchos_application(
 )
 
 ios_application(
-    name = "Swiftgram",
+    name = "Swiftgram", # MARK: Swiftgram
     bundle_id = "{telegram_bundle_id}".format(
         telegram_bundle_id = telegram_bundle_id,
     ),
@@ -1969,7 +2122,7 @@ ios_application(
     extensions = select({
         ":disableExtensionsSetting": [],
         "//conditions:default": [
-            # ":SGActionRequestHandler", # UX sucks https://t.me/swiftgramchat/7335
+            # ":SGActionRequestHandler", # UX sucks https://t.me/swiftgramchat/7335 # MARK: Swiftgram
             ":ShareExtension",
             ":NotificationContentExtension",
             ":NotificationServiceExtension" + notificationServiceExtensionVersion,
@@ -1982,7 +2135,7 @@ ios_application(
     # --//Telegram:embedWatchApp is set (Make.py sets it for device configs when
     # --embedWatchApp is passed). Off by default, so simulator/dev builds are unaffected.
     watch_application = select({
-        ":embedWatchAppSetting": ":SwiftgramWatchApp",
+        ":embedWatchAppSetting": ":SwiftgramWatchApp", # MARK: Swiftgram
         "//conditions:default": None,
     }),
     deps = [
@@ -1996,10 +2149,10 @@ xcodeproj(
     name = "Telegram_xcodeproj",
     bazel_path = telegram_bazel_path,
     bazel_env = {"LANG": "en_US.UTF-8","PATH": "/opt/homebrew/bin:/usr/local/bin:/bin:/usr/bin"}, # MARK: Swiftgram, otherwise Bazel through xcode does not see ccache
-    project_name = "Swiftgram",
+    project_name = "Swiftgram", # MARK: Swiftgram
     tags = ["manual"],
     top_level_targets = [
-        top_level_target(":Swiftgram", target_environments = ["device", "simulator"]),
+        top_level_target(":Swiftgram", target_environments = ["device", "simulator"]), # MARK: Swiftgram
         ":iOSAppUITestSuite",
     ],
     xcode_configurations = {
@@ -2049,49 +2202,6 @@ ios_ui_test_suite(
 # Temporary targets used to simplify build tests
 
 ios_application(
-    name = "spm_build_app",
-    bundle_id = "{telegram_bundle_id}".format(
-        telegram_bundle_id = telegram_bundle_id,
-    ),
-    families = ["iphone", "ipad"],
-    minimum_os_version = minimum_os_version,
-    provisioning_profile = select({
-        ":disableProvisioningProfilesSetting": None,
-        "//conditions:default": "@build_configuration//provisioning:Telegram.mobileprovision",
-    }),
-    entitlements = ":TelegramEntitlements.entitlements",
-    infoplists = [
-        ":TelegramInfoPlist",
-        ":BuildNumberInfoPlist",
-        ":VersionInfoPlist",
-        ":RequiredDeviceCapabilitiesPlist",
-        ":UrlTypesInfoPlist",
-    ],
-    deps = [
-        #"//submodules/Display",
-        #"//submodules/TelegramCore",
-        #"//submodules/FFMpegBinding",
-        #"//third-party/webrtc",
-        #"//third-party/webrtc:webrtc_objc",
-        #"//submodules/AsyncDisplayKit",
-        #"//submodules/ObjCRuntimeUtils",
-        #"//submodules/OpusBinding",
-        #"//third-party/boringssl:ssl",
-        #"//third-party/boringssl:crypto",
-        #"//submodules/TelegramVoip",
-        #"//third-party/recaptcha:RecaptchaEnterprise",
-        "//submodules/TelegramUI",
-    ],
-)
-
-generate_spm(
-    name = "spm_build_root",
-    deps = [
-        ":spm_build_app",
-    ]
-)
-
-ios_application(
     name = "webrtc_build_test",
     bundle_id = "{telegram_bundle_id}".format(
         telegram_bundle_id = telegram_bundle_id,
@@ -2138,4 +2248,15 @@ ios_application(
     deps = [
         "//third-party/libvpx:vpx",
     ],
+)
+
+# Actual generated localization resources for unhosted preview integration tests.
+filegroup(
+    name = "InstantPagePreviewTestStrings",
+    testonly = True,
+    srcs = [
+        ":GeneratedPresentationStrings/Resources/PresentationStrings.data",
+        "Telegram-iOS/en.lproj/Localizable.strings",
+    ],
+    visibility = ["//submodules/ChatListUI:__pkg__"],
 )

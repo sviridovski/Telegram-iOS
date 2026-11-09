@@ -1,33 +1,32 @@
 import Foundation
-import Postbox
 import TelegramCore
 import WatchCommon
 import TelegramPresentationData
 import LegacyUI
 import PhoneNumberFormat
 
-private func legacyImageLocationUri(resource: MediaResource) -> String? {
+private func legacyImageLocationUri(resource: EngineRawMediaResource) -> String? {
     if let resource = resource as? CloudPeerPhotoSizeMediaResource {
         return resource.id.stringRepresentation
     }
     return nil
 }
 
-func makePeerIdFromBridgeIdentifier(_ identifier: Int64) -> PeerId? {
+func makePeerIdFromBridgeIdentifier(_ identifier: Int64) -> EnginePeer.Id? {
     if identifier < 0 && identifier > Int32.min {
-        return PeerId(namespace: Namespaces.Peer.CloudGroup, id: PeerId.Id._internalFromInt64Value(-identifier))
+        return EnginePeer.Id(namespace: Namespaces.Peer.CloudGroup, id: EnginePeer.Id.Id._internalFromInt64Value(-identifier))
     } else if identifier < Int64(Int32.min) * 2 && identifier > Int64(Int32.min) * 3 {
-        return PeerId(namespace: Namespaces.Peer.CloudChannel, id: PeerId.Id._internalFromInt64Value(Int64(Int32.min) &* 2 &- identifier))
+        return EnginePeer.Id(namespace: Namespaces.Peer.CloudChannel, id: EnginePeer.Id.Id._internalFromInt64Value(Int64(Int32.min) &* 2 &- identifier))
     // MARK: Swiftgram
     // supports 52 bits
     } else if identifier > 0 && identifier < (1 << 52) {
-        return PeerId(namespace: Namespaces.Peer.CloudUser, id: PeerId.Id._internalFromInt64Value(identifier))
+        return EnginePeer.Id(namespace: Namespaces.Peer.CloudUser, id: EnginePeer.Id.Id._internalFromInt64Value(identifier))
     } else {
         return nil
     }
 }
 
-func makeBridgeIdentifier(_ peerId: PeerId) -> Int64 {
+func makeBridgeIdentifier(_ peerId: EnginePeer.Id) -> Int64 {
     switch peerId.namespace {
         case Namespaces.Peer.CloudGroup:
             return -Int64(peerId.id._internalGetInt64Value())
@@ -38,7 +37,7 @@ func makeBridgeIdentifier(_ peerId: PeerId) -> Int64 {
     }
 }
 
-func makeBridgeDeliveryState(_ message: Message?) -> TGBridgeMessageDeliveryState {
+func makeBridgeDeliveryState(_ message: EngineRawMessage?) -> TGBridgeMessageDeliveryState {
     if let message = message {
         if message.flags.contains(.Failed) {
             return .failed
@@ -94,7 +93,7 @@ func makeBridgeDocument(_ file: TelegramMediaFile?) -> TGBridgeDocumentMediaAtta
     return nil
 }
 
-func makeBridgeMedia(message: Message, strings: PresentationStrings, chatPeer: Peer? = nil, filterUnsupportedActions: Bool = true) -> [TGBridgeMediaAttachment] {
+func makeBridgeMedia(message: EngineRawMessage, strings: PresentationStrings, chatPeer: EngineRawPeer? = nil, filterUnsupportedActions: Bool = true) -> [TGBridgeMediaAttachment] {
     var bridgeMedia: [TGBridgeMediaAttachment] = []
     
     if let forward = message.forwardInfo {
@@ -326,19 +325,18 @@ func makeBridgeMedia(message: Message, strings: PresentationStrings, chatPeer: P
     return bridgeMedia
 }
 
-func makeBridgeChat(_ entry: ChatListEntry, strings: PresentationStrings) -> (TGBridgeChat, [Int64 : TGBridgeUser])? {
-    if case let .MessageEntry(entryData) = entry {
-        let index = entryData.index
-        let messages = entryData.messages
-        let readState = entryData.readState
-        let renderedPeer = entryData.renderedPeer
-        let hasFailed = entryData.hasFailed
+func makeBridgeChat(_ entry: EngineChatList.Item, strings: PresentationStrings) -> (TGBridgeChat, [Int64 : TGBridgeUser])? {
+    if case let .chatList(index) = entry.index {
+        let messages = entry.messages
+        let readState = entry.readCounters
+        let renderedPeer = entry.renderedPeer
+        let hasFailed = entry.hasFailed
         
         guard index.messageIndex.id.peerId.namespace != Namespaces.Peer.SecretChat else {
             return nil
         }
-        let message = messages.last
-        let (bridgeChat, participants) = makeBridgeChat(renderedPeer.peer)
+        let message = messages.last?._asMessage()
+        let (bridgeChat, participants) = makeBridgeChat(renderedPeer.peer?._asPeer())
         bridgeChat.date = TimeInterval(index.messageIndex.timestamp)
         if let message = message {
             if let author = message.author {
@@ -350,14 +348,14 @@ func makeBridgeChat(_ entry: ChatListEntry, strings: PresentationStrings) -> (TG
             bridgeChat.deliveryError = hasFailed
             bridgeChat.media = makeBridgeMedia(message: message, strings: strings, filterUnsupportedActions: false)
         }
-        bridgeChat.unread = readState?.state.isUnread ?? false
-        bridgeChat.unreadCount = readState?.state.count ?? 0
+        bridgeChat.unread = readState?.isUnread ?? false
+        bridgeChat.unreadCount = readState?.count ?? 0
         
         var bridgeUsers: [Int64 : TGBridgeUser] = participants
         if let bridgeUser = makeBridgeUser(message?.author, presence: nil) {
             bridgeUsers[bridgeUser.identifier] = bridgeUser
         }
-        if let user = renderedPeer.peer as? TelegramUser, user.id != message?.author?.id, let bridgeUser = makeBridgeUser(user, presence: nil) {
+        if let user = renderedPeer.peer?._asPeer() as? TelegramUser, user.id != message?.author?.id, let bridgeUser = makeBridgeUser(user, presence: nil) {
             bridgeUsers[bridgeUser.identifier] = bridgeUser
         }
         
@@ -366,7 +364,7 @@ func makeBridgeChat(_ entry: ChatListEntry, strings: PresentationStrings) -> (TG
     return nil
 }
 
-func makeBridgeChat(_ peer: Peer?, view: PeerView? = nil) -> (TGBridgeChat, [Int64 : TGBridgeUser]) {
+func makeBridgeChat(_ peer: EngineRawPeer?, view: EngineRawPeerView? = nil) -> (TGBridgeChat, [Int64 : TGBridgeUser]) {
     let bridgeChat = TGBridgeChat()
     var bridgeUsers: [Int64 : TGBridgeUser] = [:]
     if let peer = peer {
@@ -419,7 +417,7 @@ func makeBridgeChat(_ peer: Peer?, view: PeerView? = nil) -> (TGBridgeChat, [Int
     return (bridgeChat, bridgeUsers)
 }
 
-func makeBridgeUser(_ peer: Peer?, presence: PeerPresence? = nil, cachedData: CachedPeerData? = nil) -> TGBridgeUser? {
+func makeBridgeUser(_ peer: EngineRawPeer?, presence: EngineRawPeerPresence? = nil, cachedData: EngineCachedPeerData? = nil) -> TGBridgeUser? {
     if let user = peer as? TelegramUser {
         let bridgeUser = TGBridgeUser()
         bridgeUser.identifier = makeBridgeIdentifier(user.id)
@@ -468,7 +466,7 @@ func makeBridgeUser(_ peer: Peer?, presence: PeerPresence? = nil, cachedData: Ca
     }
 }
 
-func makeBridgePeers(_ message: Message) -> [Int64 : Any] {
+func makeBridgePeers(_ message: EngineRawMessage) -> [Int64 : Any] {
     var bridgeUsers: [Int64 : Any] = [:]
     for (_, peer) in message.peers {
         if peer is TelegramUser, let bridgeUser = makeBridgeUser(peer, presence: nil) {
@@ -484,7 +482,7 @@ func makeBridgePeers(_ message: Message) -> [Int64 : Any] {
     return bridgeUsers
 }
 
-func makeBridgeMessage(_ entry: MessageHistoryEntry, strings: PresentationStrings) -> (TGBridgeMessage, [Int64 : TGBridgeUser])? {
+func makeBridgeMessage(_ entry: EngineRawMessageHistoryEntry, strings: PresentationStrings) -> (TGBridgeMessage, [Int64 : TGBridgeUser])? {
     guard let bridgeMessage = makeBridgeMessage(entry.message, strings: strings) else {
         return nil
     }
@@ -507,7 +505,7 @@ func makeBridgeMessage(_ entry: MessageHistoryEntry, strings: PresentationString
     return (bridgeMessage, bridgeUsers)
 }
 
-func makeBridgeMessage(_ message: Message, strings: PresentationStrings, chatPeer: Peer? = nil) -> TGBridgeMessage? {
+func makeBridgeMessage(_ message: EngineRawMessage, strings: PresentationStrings, chatPeer: EngineRawPeer? = nil) -> TGBridgeMessage? {
     var chatPeer = chatPeer
     if chatPeer == nil {
         chatPeer = message.peers[message.id.peerId]

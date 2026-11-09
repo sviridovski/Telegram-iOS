@@ -336,7 +336,8 @@ private final class UniversalVideoGalleryItemOverlayNode: GalleryOverlayContentN
             if livePhotoButton.superview == nil {
                 self.view.addSubview(livePhotoButton)
             }
-            transition.updateFrame(view: livePhotoButton, frame: CGRect(origin: CGPoint(x: 16.0, y: insets.top + 10.0), size: livePhotoButtonSize))
+            // Clear of a side strip on the left (iPhone Duo, folded landscape-right) and the back button in it.
+            transition.updateFrame(view: livePhotoButton, frame: CGRect(origin: CGPoint(x: (insets.left != insets.right ? insets.left : 0.0) + 16.0, y: insets.top + 10.0), size: livePhotoButtonSize))
         }
 
         let currentTime = Int32(CFAbsoluteTimeGetCurrent())
@@ -362,6 +363,8 @@ private final class UniversalVideoGalleryItemOverlayNode: GalleryOverlayContentN
             if case .regular = metrics.widthClass {
                 maxWidth = 414.0
             }
+            // In the band beside a side strip (iPhone Duo), like the footer below it.
+            maxWidth = min(maxWidth, size.width - insets.left - insets.right - sideInset * 2.0)
             
             let presentationData = context.sharedContext.currentPresentationData.with { $0 }
             let adSize = self.adView.update(
@@ -413,7 +416,7 @@ private final class UniversalVideoGalleryItemOverlayNode: GalleryOverlayContentN
                     adView.layer.animateAlpha(from: 0.0, to: 1.0, duration: 0.25)
                     adView.layer.animatePosition(from: CGPoint(x: 0.0, y: 64.0), to: .zero, duration: 0.4, timingFunction: kCAMediaTimingFunctionSpring, additive: true)
                 }
-                transition.updateFrame(view: adView, frame: CGRect(origin: CGPoint(x: floor((size.width - adSize.width) / 2.0), y: size.height - adSize.height - insets.bottom), size: adSize))
+                transition.updateFrame(view: adView, frame: CGRect(origin: CGPoint(x: insets.left + floor((size.width - insets.left - insets.right - adSize.width) / 2.0), y: size.height - adSize.height - insets.bottom), size: adSize))
             }
         } else if let adView = self.adView.view, !self.isAnimatingOut {
             self.isAnimatingOut = true
@@ -1278,6 +1281,7 @@ final class UniversalVideoGalleryItemNode: ZoomableContentGalleryItemNode {
         if !self.controlsVisibility() || hideControls {
             playbackControlsIsVisible = false
         }
+        playbackControlsIsVisible = playbackControlsIsVisible && !sgVideoControlsInFooterEnabled // MARK: Swiftgram
         
         let playbackControlsSize = self.playbackControls.update(
             transition: ComponentTransition(transition),
@@ -1305,7 +1309,8 @@ final class UniversalVideoGalleryItemNode: ZoomableContentGalleryItemNode {
                     } else {
                         self.footerContentNode.seekBackward?(15.0)
                     }
-                }
+                },
+                accessibilityStrings: self.presentationData.strings
             )),
             environment: {},
             containerSize: CGSize(width: 1000.0, height: 1000.0)
@@ -1346,9 +1351,10 @@ final class UniversalVideoGalleryItemNode: ZoomableContentGalleryItemNode {
                     displayTooltip: self.presentationData.strings.Gallery_ToastVideoSpeedSwipe
                 )),
                 environment: {},
-                containerSize: CGSize(width: layout.size.width - layout.safeInsets.left * 2.0, height: 100.0)
+                containerSize: CGSize(width: layout.size.width - layout.safeInsets.left - layout.safeInsets.right, height: 100.0)
             )
-            let activeEdgeRateIndicatorFrame = CGRect(origin: CGPoint(x: floor((layout.size.width - activeEdgeRateIndicatorSize.width) * 0.5), y: max(navigationBarHeight, layout.statusBarHeight ?? 0.0) + 8.0), size: activeEdgeRateIndicatorSize)
+            // Centered in the band between the side insets (the screen's center unless one is iPhone Duo's strip).
+            let activeEdgeRateIndicatorFrame = CGRect(origin: CGPoint(x: layout.safeInsets.left + floor((layout.size.width - layout.safeInsets.left - layout.safeInsets.right - activeEdgeRateIndicatorSize.width) * 0.5), y: max(navigationBarHeight, layout.statusBarHeight ?? 0.0) + 8.0), size: activeEdgeRateIndicatorSize)
             if let activeEdgeRateIndicatorView = activeEdgeRateIndicator.view {
                 if activeEdgeRateIndicatorView.superview == nil {
                     self.view.addSubview(activeEdgeRateIndicatorView)
@@ -1382,6 +1388,11 @@ final class UniversalVideoGalleryItemNode: ZoomableContentGalleryItemNode {
             }
             let scrubberView = ChatVideoGalleryItemScrubberView(chapters: chapters)
             self.scrubberView = scrubberView
+            let accessibilityStrings = self.presentationData.strings
+            scrubberView.accessibilityTitle = accessibilityStrings.VoiceOver_Gallery_PlaybackPosition
+            scrubberView.accessibilityValueFormat = { position, duration in
+                return accessibilityStrings.Items_NOfM(position, duration).string
+            }
             scrubberView.seek = { [weak self] timecode in
                 self?.videoNode?.seek(timecode)
             }
@@ -3050,7 +3061,7 @@ final class UniversalVideoGalleryItemNode: ZoomableContentGalleryItemNode {
                         
                         baseNavigationController?.view.endEditing(true)
                         
-                        (baseNavigationController?.topViewController as? ViewController)?.present(gallery, in: .window(.root), with: GalleryControllerPresentationArguments(transitionArguments: { [weak overlayNode] id, media in
+                        (baseNavigationController?.topViewController as? ViewController)?.present(gallery, in: .window(.root), with: GalleryControllerPresentationArguments(transitionArguments: { [weak overlayNode, context] id, media in
                             if let overlayNode = overlayNode, let overlaySupernode = overlayNode.supernode {
                                 return GalleryTransitionArguments(transitionNode: (overlayNode, overlayNode.bounds, { [weak overlayNode] in
                                     return (overlayNode?.view.snapshotContentTree(), nil)
@@ -3072,7 +3083,7 @@ final class UniversalVideoGalleryItemNode: ZoomableContentGalleryItemNode {
                         }))
                     case let .webPage(_, _, expandFromPip):
                         if let expandFromPip = expandFromPip, let baseNavigationController = baseNavigationController {
-                            expandFromPip({ [weak overlayNode] in
+                            expandFromPip({ [weak overlayNode, context] in
                                 if let overlayNode = overlayNode, let overlaySupernode = overlayNode.supernode {
                                     return GalleryTransitionArguments(transitionNode: (overlayNode, overlayNode.bounds, { [weak overlayNode] in
                                         return (overlayNode?.view.snapshotContentTree(), nil)
@@ -3690,7 +3701,26 @@ final class UniversalVideoGalleryItemNode: ZoomableContentGalleryItemNode {
                     }
                 }
             } else {
+                // MARK: Swiftgram
+                let sgVideoControlItems = sgVideoControlsInFooterMenuItems(
+                    displayPictureInPicture: strongSelf.hasPictureInPicture,
+                    displaySettings: strongSelf.settingsButtonState != nil,
+                    displayFullscreen: strongSelf.footerContentNode.sgDisplayFullscreenButtonInItems,
+                    isLandscape: strongSelf.bounds.width > strongSelf.bounds.height,
+                    pictureInPicture: { [weak self] in self?.pictureInPictureButtonPressed() },
+                    openSettings: { [weak self] in
+                        guard let self else { return }
+                        self.openMoreMenu(sourceView: self.moreBarButton.referenceNode.view, gesture: nil, adMessage: nil, isSettings: true, actionsOnTop: false)
+                    },
+                    toggleFullscreen: { [weak self] in self?.footerContentNode.fullscreenButtonPressed() }
+                )
+                items.append(contentsOf: sgVideoControlItems)
+                //
+
                 if let (message, maybeFile, _) = strongSelf.contentInfo(), let file = maybeFile, !message.isCopyProtected() && !item.peerIsCopyProtected && message.paidContent == nil {
+                    if !sgVideoControlItems.isEmpty { // MARK: Swiftgram
+                        items.append(.separator)
+                    }
                     items.append(.action(ContextMenuActionItem(text: strongSelf.presentationData.strings.Gallery_MenuSaveToGallery, icon: { theme in generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Download"), color: theme.actionSheet.primaryTextColor) }, action: { [weak self] c, _ in
                         guard let self else {
                             c?.dismiss(result: .default, completion: nil)
@@ -3733,7 +3763,7 @@ final class UniversalVideoGalleryItemNode: ZoomableContentGalleryItemNode {
                                     c?.popItems()
                                 })))
                                 
-                                let addItem: (Int?, FileMediaReference) -> Void = { quality, qualityFile in
+                                let addItem: (Int?, FileMediaReference) -> Void = { [self] quality, qualityFile in
                                     guard let qualityFileSize = qualityFile.media.size else {
                                         return
                                     }
@@ -4255,7 +4285,7 @@ final class HeaderContextReferenceContentSource: ContextReferenceContentSource {
     }
 
     func transitionInfo() -> ContextControllerReferenceViewInfo? {
-        return ContextControllerReferenceViewInfo(referenceView: self.sourceView, contentAreaInScreenSpace: UIScreen.main.bounds, actionsPosition: self.actionsOnTop ? .top : .bottom)
+        return ContextControllerReferenceViewInfo(referenceView: self.sourceView, contentAreaInScreenSpace: mainWindowScreenBounds, actionsPosition: self.actionsOnTop ? .top : .bottom)
     }
 }
 

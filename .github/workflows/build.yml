@@ -2,7 +2,7 @@ name: Gold Next CI
 
 on:
   push:
-    branches: [ gold-next ]
+    branches: [ gold-next, port/telegram-13.2 ]
   workflow_dispatch:
 
 permissions:
@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: xcode-27
 
     steps:
       - uses: actions/checkout@v4
@@ -46,9 +46,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: /private/var/tmp/goldgram-bazel-action-cache
-          key: gold-next-bazel-macos15-${{ hashFiles('versions.json', '.bazelrc', 'MODULE.bazel.lock') }}-${{ github.sha }}
+          key: gold-next-bazel-xcode27-${{ hashFiles('versions.json', '.bazelrc', 'MODULE.bazel.lock') }}-${{ github.sha }}
           restore-keys: |
-            gold-next-bazel-macos15-${{ hashFiles('versions.json', '.bazelrc', 'MODULE.bazel.lock') }}-
+            gold-next-bazel-xcode27-${{ hashFiles('versions.json', '.bazelrc', 'MODULE.bazel.lock') }}-
       - name: Fetch pinned Mx 1.0.0 source
         uses: actions/checkout@v4
         with:
@@ -116,9 +116,9 @@ jobs:
           python3 build-system/gold-next/run_postbox_snapshot_codec.py
           swiftc submodules/TelegramCore/Sources/State/GoldgramEventPolicy.swift build-system/gold-next/test_native_event_policy.swift -o "$RUNNER_TEMP/goldgram-event-policy-test"
           "$RUNNER_TEMP/goldgram-event-policy-test"
-          xcrun swiftc -typecheck -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -target arm64-apple-ios14.0 build-system/gold-next/GoldgramHistoryStore.swift
+          xcrun swiftc -typecheck -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -target arm64-apple-ios15.0 build-system/gold-next/GoldgramHistoryStore.swift
 
-      - name: Build Mx 1.0.0 for Swiftgram 12.9.2
+      - name: Build Mx 1.0.0 for Swiftgram 13.2
         shell: bash
         run: |
           set -euo pipefail
@@ -252,7 +252,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: /private/var/tmp/goldgram-bazel-action-cache
-          key: gold-next-bazel-macos15-${{ hashFiles('versions.json', '.bazelrc', 'MODULE.bazel.lock') }}-${{ github.sha }}
+          key: gold-next-bazel-xcode27-${{ hashFiles('versions.json', '.bazelrc', 'MODULE.bazel.lock') }}-${{ github.sha }}
       - name: Inject Mx into the host only
         shell: bash
         run: |
@@ -397,9 +397,8 @@ jobs:
       - name: Upload Mx IPA
         uses: actions/upload-artifact@v4
         with:
-          name: Swiftgram-12.9.2-gold-next-Mx-1.0.0
+          name: Swiftgram-13.2-gold-next-Mx-1.0.0
           path: |
             /Users/Shared/telegram-ios/build/artifacts/Swiftgram.ipa
             /Users/Shared/telegram-ios/build/artifacts/SHA256.txt
           if-no-files-found: error
-

@@ -1,6 +1,5 @@
 import Foundation
 import SwiftSignalKit
-import Postbox
 import TelegramCore
 import WatchCommon
 import SSignalKit
@@ -18,10 +17,10 @@ public final class WatchCommunicationManagerContext {
 
 public final class WatchManagerArguments {
     public let appInstalled: Signal<Bool, NoError>
-    public let navigateToMessageRequested: Signal<MessageId, NoError>
+    public let navigateToMessageRequested: Signal<EngineMessage.Id, NoError>
     public let runningTasks: Signal<WatchRunningTasks?, NoError>
     
-    public init(appInstalled: Signal<Bool, NoError>, navigateToMessageRequested: Signal<MessageId, NoError>, runningTasks: Signal<WatchRunningTasks?, NoError>) {
+    public init(appInstalled: Signal<Bool, NoError>, navigateToMessageRequested: Signal<EngineMessage.Id, NoError>, runningTasks: Signal<WatchRunningTasks?, NoError>) {
         self.appInstalled = appInstalled
         self.navigateToMessageRequested = navigateToMessageRequested
         self.runningTasks = runningTasks
@@ -39,7 +38,7 @@ public final class WatchCommunicationManager {
     
     let accountContext = Promise<AccountContext?>(nil)
     private let presets = Promise<WatchPresetSettings?>(nil)
-    private let navigateToMessagePipe = ValuePipe<MessageId>()
+    private let navigateToMessagePipe = ValuePipe<EngineMessage.Id>()
     
     public init(queue: Queue, context: Signal<WatchCommunicationManagerContext?, NoError>, allowBackgroundTimeExtension: @escaping (Double) -> Void) {
         self.queue = queue
@@ -150,7 +149,7 @@ public final class WatchCommunicationManager {
         return WatchManagerArguments(appInstalled: self.watchAppInstalled, navigateToMessageRequested: self.navigateToMessagePipe.signal(), runningTasks: self.runningTasks)
     }
     
-    public func requestNavigateToMessage(messageId: MessageId) {
+    public func requestNavigateToMessage(messageId: EngineMessage.Id) {
         self.navigateToMessagePipe.putNext(messageId)
     }
     

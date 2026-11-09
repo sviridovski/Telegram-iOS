@@ -6,6 +6,7 @@ import sqlite3, re
 base = Path(__file__).parent
 source = (base / "GoldgramHistoryStore.swift").read_text()
 host = (base.parents[1] / "submodules/TelegramCore/Sources/State/AccountStateManagementUtils.swift").read_text()
+host += (base.parents[1] / "submodules/TelegramCore/Sources/State/Sync/UpdateInterpreter+Channels.swift").read_text()
 
 def ddl(name):
     match = re.search(r"private static let " + name + r' = """\n(.*?)\n    """', source, re.S)

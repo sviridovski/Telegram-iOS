@@ -1,5 +1,4 @@
 import Foundation
-import Postbox
 import TelegramCore
 
 public extension EngineRawMessage {
@@ -40,7 +39,7 @@ public extension RestrictedContentMessageAttribute {
             if rule.reason == "sensitive" {
                 continue
             }
-            if rule.platform == "all" || rule.platform == "ios" || contentSettings.addContentRestrictionReasons.contains(rule.platform) {
+            if rule.appliesTo(platform: platform, contentSettings: contentSettings) {
                 if !contentSettings.ignoreContentRestrictionReasons.contains(rule.reason) {
                     return rule.text + "\n" + "\(rule.reason)-\(rule.platform)"
                 }
@@ -51,7 +50,7 @@ public extension RestrictedContentMessageAttribute {
 }
 
 // MARK: Swiftgram
-public extension Message {
+public extension EngineRawMessage {
     func canRevealContent(contentSettings: ContentSettings) -> Bool {
         if contentSettings.appConfiguration.sgWebSettings.global.canViewMessages && self.flags.contains(.CopyProtected) {
             let messageContentWasUnblocked = self.restrictedContentAttribute != nil && self.isRestricted(platform: "ios", contentSettings: ContentSettings.default) && !self.isRestricted(platform: "ios", contentSettings: contentSettings)
@@ -64,3 +63,4 @@ public extension Message {
         return false
     }
 }
+//
