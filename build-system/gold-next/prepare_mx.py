@@ -482,3 +482,52 @@ if mx_ui_source.count(anchor) != 1:
 mx_ui_source = mx_ui_source.replace(anchor, summary_methods + anchor)
 mx_ui_path.write_text(mx_ui_source)
 print('Goldgram #91: selected-account total edited/deleted messages in Privacy & Functions')
+
+
+# Telegram 13.2 request-ID reconciliation (Gold Next #163).
+# Mx 1.0.0 is pinned to a 12.9.2 source snapshot. These three request
+# constructor identifiers drifted. Verify the host schema and Mx's pinned
+# expected values before updating them; never guess constructor IDs.
+import re as _mx_re
+
+_host_schema_path = pathlib.Path(__file__).resolve().parents[2] / "submodules/TelegramApi/swift_scheme.tl"
+if not _host_schema_path.is_file():
+    raise SystemExit("Mx compatibility: Telegram host TL schema missing")
+_host_schema = _host_schema_path.read_text()
+_mx_constants_path = root / "Sources/tgapi/Constants.h"
+_mx_constants = _mx_constants_path.read_text()
+_mx_method_updates = {
+    "kMessagesReadMessageContents": ("messages.readMessageContents", 917472119),
+    "kGetSponsoredMessages": ("messages.getSponsoredMessages", -1680673735),
+    "kUploadGetCdnFile": ("upload.getCdnFile", -1691921240),
+}
+for _macro, (_method, _expected_old) in _mx_method_updates.items():
+    _schema_match = _mx_re.search(
+        rf"(?m)^{_mx_re.escape(_method)}#([0-9a-f]+)\b", _host_schema
+    )
+    if _schema_match is None:
+        raise SystemExit(f"Mx compatibility: missing TL method {_method}")
+    _host_id = int(_schema_match.group(1), 16)
+    if _host_id >= (1 << 31):
+        _host_id -= 1 << 32
+    _matches = list(_mx_re.finditer(
+        rf"(?m)^(#define[ \t]+{_mx_re.escape(_macro)}[ \t]+)(-?\d+)(?=[ \t]*(?:$|//))",
+        _mx_constants
+    ))
+    if len(_matches) != 1 or int(_matches[0].group(2)) != _expected_old:
+        raise SystemExit(f"Mx compatibility: unexpected pinned constant {_macro}")
+    _m = _matches[0]
+    _mx_constants = (
+        _mx_constants[:_m.start(2)] + str(_host_id) + _mx_constants[_m.end(2):]
+    )
+# These synthetic responses must still be parseable by the 13.2 host.
+for _response in ("messages.affectedMessages#84d19185",
+                  "messages.sponsoredMessagesEmpty#1839490f"):
+    if _response not in _host_schema:
+        raise SystemExit("Mx compatibility: synthetic response changed: " + _response)
+# Do not leave the stale CDN method identifier in the source comment.
+_mx_constants = _mx_constants.replace(
+    "upload.getCdnFile#2000bcc3", "upload.getCdnFile#395f69da"
+)
+_mx_constants_path.write_text(_mx_constants)
+print("Mx 13.2: updated 3 verified request IDs; synthetic response TL constructors verified")
