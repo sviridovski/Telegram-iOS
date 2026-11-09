@@ -6,6 +6,7 @@ import SGSimpleSettings
 //
 import Foundation
 import Darwin
+import Postbox
 
 // Native selected Telegram account only; never cached MxLastKnownUserId.
 private func goldgramPublishSelectedAccount(_ accountId: Int64) {

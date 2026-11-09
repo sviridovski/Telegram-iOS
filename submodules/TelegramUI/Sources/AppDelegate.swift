@@ -280,8 +280,7 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
     }
 
     private func status() -> CLAuthorizationStatus {
-        if #available(iOS 14.0, *) { return self.manager.authorizationStatus }
-        return CLLocationManager.authorizationStatus()
+        return self.manager.authorizationStatus
     }
 
     func start() {
