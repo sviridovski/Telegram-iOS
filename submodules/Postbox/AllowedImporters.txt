@@ -86,6 +86,7 @@ submodules/TelegramUI/Sources/CreateGroupController.swift
 submodules/TelegramUI/Sources/DocumentPreviewController.swift
 submodules/TelegramUI/Sources/FetchCachedRepresentations.swift
 submodules/TelegramUI/Sources/InChatPrefetchManager.swift
+submodules/TelegramUI/Sources/SharedAccountContext.swift
 submodules/TelegramUI/Sources/StoreDownloadedMedia.swift
 submodules/TelegramUI/Sources/TransformOutgoingMessageMedia.swift
 submodules/TelegramUniversalVideoContent/Sources/HLSVideoContent.swift
