@@ -27,6 +27,7 @@ private struct GoldgramForegroundUISample: Decodable {
 }
 
 private struct GoldgramBackgroundRunReport: Decodable {
+    let token: String?
     let startedAt: Double
     let endedAt: Double?
     let accountId: Int64?
@@ -190,6 +191,63 @@ public final class GoldgramArchiveScreen: UITableViewController {
               let peer = (item["peerId"] as? NSNumber)?.int64Value, peer > 0 else { return nil }
         let ns = kind == 0 ? "u" : kind == 1 ? "g" : "c"
         return "\(ns):\(peer)"
+    }
+
+    @objc private func showProcessDiagnostics() {
+        let defaults = UserDefaults.standard
+        let history = defaults.array(forKey: "GoldgramProcessHistoryV1") as? [[String: Any]] ?? []
+        var sections: [String] = []
+        for run in history.reversed() {
+            guard let start = run["start"] as? Date else { continue }
+            let next = run["nextStart"] as? Date
+            let pid = run["pid"] as? Int ?? 0
+            var lines = ["PID \(pid) · \(dateFormatter.string(from: start)) · сборка \(run["build"] as? String ?? "?")"]
+            if let os = run["os"] as? String { lines.append(os) }
+            let events = run["events"] as? [[String: Any]] ?? []
+            if let next, let last = events.last?["time"] as? Date {
+                lines.append("Последняя запись \(dateFormatter.string(from: last)), следующий запуск \(dateFormatter.string(from: next)). Причина завершения по смене PID неизвестна.")
+            }
+            if let peak = run["peakSampleMiB"] as? Int { lines.append("Наибольший замер памяти: \(peak) МиБ") }
+            let data = run["refreshSnapshot"] as? Data ?? (next == nil ? defaults.data(forKey: "GoldgramBackgroundRefreshRunsV1") : nil)
+            if let data, let polls = try? PropertyListDecoder().decode([GoldgramBackgroundRunReport].self, from: data) {
+                let tokens = run["refreshTokens"] as? [String]
+                for poll in polls.reversed() {
+                    if let tokens {
+                        guard let token = poll.token, tokens.contains(token) else { continue }
+                    } else {
+                        guard let next, poll.startedAt >= start.timeIntervalSince1970, poll.startedAt < next.timeIntervalSince1970 else { continue }
+                    }
+                    let time = dateFormatter.string(from: Date(timeIntervalSince1970: poll.startedAt))
+                    lines.append("Опрос \(time) · \(poll.outcome) · последний этап: \(poll.phase ?? "не записан")")
+                    lines.append("Сеть: \(poll.networkStatus ?? "?") · целей \(poll.targets), запросов \(poll.requests), завершено \(poll.completed), в очередь оригиналов \(poll.originalsQueued)")
+                }
+            }
+            for e in events {
+                if let t = e["time"] as? Date, let event = e["event"] as? String { lines.append("\(dateFormatter.string(from: t))  \(event)") }
+            }
+            sections.append(lines.joined(separator: "\n"))
+        }
+        for row in (defaults.array(forKey: "GoldgramExitIntervalsV1") as? [[String: Any]] ?? []).reversed() {
+            if let start = row["start"] as? Date, let end = row["end"] as? Date, let summary = row["summary"] as? String {
+                sections.append("MetricKit за период \(dateFormatter.string(from: start)) — \(dateFormatter.string(from: end))\n\(summary)")
+            }
+        }
+        let report = sections.isEmpty ? "Пока нет записей" : sections.joined(separator: "\n\n")
+        let controller = UIViewController()
+        controller.title = "Выгрузки"
+        let view = UITextView()
+        view.isEditable = false
+        view.font = .preferredFont(forTextStyle: .body)
+        view.text = report
+        controller.view = view
+        controller.navigationItem.rightBarButtonItem = UIBarButtonItem(title: "Скопировать", style: .plain, target: self, action: #selector(copyProcessDiagnostics))
+        navigationController?.pushViewController(controller, animated: true)
+    }
+
+    @objc private func copyProcessDiagnostics() {
+        if let report = navigationController?.topViewController?.view as? UITextView {
+            UIPasteboard.general.string = report.text
+        }
     }
 
     @objc private func captureDiagnosticMenu() {
@@ -871,8 +929,9 @@ public final class GoldgramArchiveScreen: UITableViewController {
 
     public override func viewDidLoad() {
         super.viewDidLoad()
-        navigationItem.rightBarButtonItem = UIBarButtonItem(
+        let testButton = UIBarButtonItem(
             title: "Тест", style: .plain, target: self, action: #selector(captureDiagnosticMenu))
+        navigationItem.rightBarButtonItems = [testButton, UIBarButtonItem(title: "Выгрузки", style: .plain, target: self, action: #selector(showProcessDiagnostics))]
         title = displayName ?? (category == 0 ? "Личные сообщения" :
              category == 1 ? "Группы и чаты" : category == 3 ? "Удалённые сообщения" : "Каналы")
         tableView.rowHeight = UITableView.automaticDimension

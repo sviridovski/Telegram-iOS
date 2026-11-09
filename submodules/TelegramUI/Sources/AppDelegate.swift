@@ -608,10 +608,10 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
 
     @available(iOS 13.0, *)
     private func goldgramRunRefresh(_ task: BGAppRefreshTask) {
-        GoldgramProcessJournal.record("iOS запустила BGAppRefresh")
         // The entry record exists even if Telegram's account context never loads.
         let token = GoldgramBackgroundRefreshTrace.begin(
             excludingActiveToken: self.goldgramRefreshActiveToken)
+        GoldgramProcessJournal.record("iOS запустила BGAppRefresh", refreshToken: token)
         self.goldgramScheduleRefresh()
 
         // On a suspended/resumed process a deadline callback can itself have
@@ -644,6 +644,7 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
                     guard !systemTaskCompleted else { return }
                     systemTaskCompleted = true
                     task?.setTaskCompleted(success: success)
+                    GoldgramProcessJournal.record("Возвращено фоновое время, success=\(success), сеанс \(token.prefix(8))")
                 }
                 if finished && reason == "ios_expiration" { finishSystemTask() }
                 guard let self, !finished else { return }
@@ -803,6 +804,7 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
         precondition(!testIsLaunched)
         testIsLaunched = true
         GoldgramProcessJournal.record("Запуск процесса")
+        GoldgramProcessJournal.monitorPressure()
         if #available(iOS 14.0, *) {
             MXMetricManager.shared.add(GoldgramExitSubscriber.shared)
         }
@@ -1692,11 +1694,13 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
                 let id = application.beginBackgroundTask(withName: name, expirationHandler: expiration)
                 Logger.shared.log("App \(self.episodeId)", "Begin background task \(name): \(id)")
                 print("App \(self.episodeId)", "Begin background task \(name): \(id)")
+                GoldgramProcessJournal.record("Окно \(name): ID \(id.rawValue), выдано=\(id != .invalid)")
                 return id == .invalid ? nil : id
             }, endBackgroundTask: { id in
                 print("App \(self.episodeId)", "End background task \(id)")
                 Logger.shared.log("App \(self.episodeId)", "End background task \(id)")
                 application.endBackgroundTask(id)
+                GoldgramProcessJournal.record("Вызван endBackgroundTask: ID \(id.rawValue)")
             }, backgroundTimeRemaining: { application.backgroundTimeRemaining }, acquireIdleExtension: {
                 return applicationBindings.pushIdleTimerExtension()
             }, activeAccounts: sharedContext.activeAccountContexts |> map { ($0.0?.account, $0.1.map { ($0.0, $0.1.account) }) }, liveLocationPolling: liveLocationPolling, watchTasks: .single(nil), inForeground: applicationBindings.applicationInForeground, hasActiveAudioSession: self.hasActiveAudioSession.get(), notificationManager: notificationManager, mediaManager: sharedContext.mediaManager, callManager: sharedContext.callManager, accountUserInterfaceInUse: { id in
@@ -2456,6 +2460,7 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
     }
 
     func applicationWillResignActive(_ application: UIApplication) {
+        GoldgramProcessJournal.record("Приложение теряет активность")
         GoldgramForegroundSyncTrace.lifecycle(active: false)
         self.isActiveValue = false
         self.isActivePromise.set(false)
@@ -2484,7 +2489,7 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
     }
 
     func applicationDidEnterBackground(_ application: UIApplication) {
-        GoldgramProcessJournal.record("Уход в фон")
+        GoldgramProcessJournal.record("Уход в фон · доступ к защищённым данным \(application.isProtectedDataAvailable) · энергосбережение \(ProcessInfo.processInfo.isLowPowerModeEnabled) · тепловое состояние \(ProcessInfo.processInfo.thermalState.rawValue)")
         self.goldgramScheduleRefresh()
         if goldgramLocationLabIsActive(UserDefaults.standard) {
             DispatchQueue.main.async { [weak self] in self?.goldgramLocationPoll(source: "minimized") }
@@ -4119,26 +4124,48 @@ enum GoldgramProcessJournal {
     private static let session = UUID().uuidString
     private static let key = "GoldgramProcessHistoryV1"
 
-    static func record(_ event: String) {
+    private static let pressure = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: queue)
+
+    static func monitorPressure() {
+        pressure.setEventHandler {
+            record(pressure.data.contains(.critical) ? "Системное давление памяти: критическое" : "Системное давление памяти: предупреждение")
+        }
+        pressure.resume()
+    }
+
+    static func record(_ event: String, refreshToken: String? = nil) {
         let time = Date()
         let uptime = Int(ProcessInfo.processInfo.systemUptime)
         queue.async {
             let defaults = UserDefaults.standard
             var histories = defaults.array(forKey: key) as? [[String: Any]] ?? []
             if histories.last?["session"] as? String != session {
+                // Pin the previous process's refresh evidence before subsequent polls rotate the live ring.
+                if let previous = histories.indices.last {
+                    histories[previous]["nextStart"] = time
+                    if let data = defaults.data(forKey: "GoldgramBackgroundRefreshRunsV1") {
+                        histories[previous]["refreshSnapshot"] = data
+                    }
+                }
                 histories.append(["session": session, "start": time,
                     "pid": Int(ProcessInfo.processInfo.processIdentifier),
                     "build": Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"])
             }
             let index = histories.count - 1
+            if let refreshToken {
+                var tokens = histories[index]["refreshTokens"] as? [String] ?? []
+                tokens.append(refreshToken)
+                histories[index]["refreshTokens"] = Array(tokens.suffix(8))
+            }
             var events = histories[index]["events"] as? [[String: Any]] ?? []
             let footprint = getMemoryConsumption()
             let memory = footprint > 0 ? String(footprint / 1_048_576) + " МиБ" : "нет замера"
             let detail = "\(event) · память \(memory) · uptime \(uptime) с"
+            histories[index]["peakSampleMiB"] = max(histories[index]["peakSampleMiB"] as? Int ?? 0, footprint / 1_048_576)
             histories[index]["os"] = ProcessInfo.processInfo.operatingSystemVersionString
             events.append(["time": time, "event": detail])
             histories[index]["events"] = Array(events.suffix(64))
-            defaults.set(Array(histories.suffix(4)), forKey: key)
+            defaults.set(Array(histories.suffix(8)), forKey: key)
         }
     }
 }
