@@ -12,9 +12,11 @@ root = Path(__file__).resolve().parents[2]
 wakeup = (root / 'submodules/TelegramUI/Sources/SharedWakeupManager.swift').read_text()
 app = (root / 'submodules/TelegramUI/Sources/AppDelegate.swift').read_text()
 cache = (root / 'submodules/TelegramPresentationData/Sources/PresentationsResourceCache.swift').read_text()
-lease = wakeup.split('    func acquireGoldgramLocationLease(', 1)[1].split(
-    '    // #111:', 1)[0]
-lease = '    func acquireGoldgramLocationLease(' + lease
+# Extract just this class method, independently of the declaration that follows it.
+start = wakeup.index("    func acquireGoldgramLocationLease(")
+method_end = "\n    }"
+end = wakeup.index(method_end, start) + len(method_end)
+lease = wakeup[start:end] + "\n"
 # Production gates must keep this account active independently of short polls.
 assert '|| self.goldgramLocationLeaseAccountId != nil ||' in wakeup
 assert wakeup.count('|| self.goldgramLocationLeaseAccountId == account.id') == 2
