@@ -136,6 +136,15 @@ public final class SharedWakeupManager {
         }
     }
 
+    // Register before disposing the lease: checkTasks may finish the handoff inline
+    // if another window already protects the databases.
+    func onRefreshLeaseRelease(token: String, completion: @escaping () -> Void) -> Bool {
+        assert(Queue.mainQueue().isCurrent())
+        guard self.goldgramRefreshLeaseToken == token else { return false }
+        self.pendingExternalCompletions.append(completion)
+        return true
+    }
+
     // #111: Only BGAppRefreshTask's actual system-granted execution may hold
     // this scoped lease. It does not schedule or extend background runtime.
     // The same wakeup manager that pauses Postbox now permits its own

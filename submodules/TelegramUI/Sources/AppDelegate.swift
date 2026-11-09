@@ -635,10 +635,19 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
         UserDefaults.standard.set(Date().timeIntervalSince1970,
             forKey: "GoldgramLastRefreshStartedV1")
 
+        weak var leaseManager: SharedWakeupManager?
         var finished = false
+        var systemTaskCompleted = false
         let complete: (String, Bool) -> Void = { [weak self, weak task] reason, success in
             let apply = {
+                let finishSystemTask = { [task] in
+                    guard !systemTaskCompleted else { return }
+                    systemTaskCompleted = true
+                    task?.setTaskCompleted(success: success)
+                }
+                if finished && reason == "ios_expiration" { finishSystemTask() }
                 guard let self, !finished else { return }
+                var waitingForQueues = false
                 finished = true
                 // A delayed callback from an old task MUST NOT cancel a newer one.
                 if self.goldgramRefreshActiveToken == token {
@@ -648,6 +657,9 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
                     self.goldgramRefreshWork.set(nil)
                     GoldgramBackgroundRefreshTrace.finish(token, reason: reason)
                     let hadLease = self.goldgramRefreshLease != nil
+                    if reason != "ios_expiration", hadLease {
+                        waitingForQueues = leaseManager?.onRefreshLeaseRelease(token: token, completion: finishSystemTask) ?? false
+                    }
                     self.goldgramRefreshLease?.dispose()
                     self.goldgramRefreshLease = nil
                     if hadLease {
@@ -663,7 +675,7 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
                 UserDefaults.standard.set(Date().timeIntervalSince1970,
                     forKey: success ? "GoldgramLastRefreshFinishedV1" : "GoldgramLastRefreshExpiredV1")
                 GoldgramProcessJournal.record("BGAppRefresh завершён: \(reason), success=\(success)")
-                task?.setTaskCompleted(success: success)
+                if !waitingForQueues { finishSystemTask() }
             }
             if Thread.isMainThread {
                 apply()
@@ -703,6 +715,7 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
                 guard self.goldgramRefreshActiveToken == token else {
                     return .complete()
                 }
+                leaseManager = applicationContext.wakeupManager
                 self.goldgramRefreshLease = applicationContext.wakeupManager.acquireGoldgramRefreshLease(
                     token: token, accountId: account.id)
                 GoldgramBackgroundRefreshTrace.phase(token, "wakeup_lease_active")
