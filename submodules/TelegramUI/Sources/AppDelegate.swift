@@ -1853,13 +1853,6 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
                     if firstTime {
                         let milliseconds = Int((CFAbsoluteTimeGetCurrent() - launchStartTime) * 1000)
                         GoldgramProcessJournal.record("Первый экран аккаунта установлен через \(milliseconds) мс после начала инициализации")
-                        let layer = context.rootController.view.layer
-                        layer.allowsGroupOpacity = true
-                        layer.animateAlpha(from: 0.0, to: 1.0, duration: 0.2, completion: { [weak layer] _ in
-                            if let layer = layer {
-                                layer.allowsGroupOpacity = false
-                            }
-                        })
                     }
                     self.mainWindow.topLevelOverlayControllers = [context.sharedApplicationContext.overlayMediaController, context.notificationController]
                     (context.context.sharedContext as? SharedAccountContextImpl)?.notificationController = context.notificationController
