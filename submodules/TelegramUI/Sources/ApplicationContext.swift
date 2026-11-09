@@ -175,6 +175,7 @@ final class AuthorizedApplicationContext {
         
         self.showContactsTab = showContactsTab // MARK: Swiftgram
         
+
         self.showCallsTab = showCallsTab
         self.showNewsTab = isNewsFeedEnabled(appConfiguration: context.currentAppConfiguration.with { $0 })
         

@@ -34,6 +34,8 @@ swift_library(
         "//submodules/UndoUI:UndoUI",
         "//submodules/ContextUI:ContextUI",
         "//submodules/AccountContext:AccountContext",
+        "//submodules/TelegramUI/Components/MessageWidget/MessageWidget",
+        "//submodules/TelegramUI/Components/MessageWidget/MessageWidgetStress",
         "//submodules/AppBundle:AppBundle",
         "//submodules/GZip:GZip",
         "//third-party/ZipArchive:ZipArchive",
@@ -44,6 +46,9 @@ swift_library(
         "//submodules/TelegramUI/Components/AlertComponent/AlertCheckComponent",
         "//submodules/WalletContext",
         "//submodules/CpuProfiler:CpuProfiler",
+        "//submodules/TelegramUI/Components/MediaEditor/ImageObjectSeparation",
+        "//submodules/TelegramUI/Components/MediaEditor/ImageInpainting",
+        "//submodules/TelegramUI/Components/FaceScanScreen",
     ],
     visibility = [
         "//visibility:public",

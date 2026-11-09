@@ -20,7 +20,6 @@ swift_library(
     ],
     deps = sgdeps + [
         "//submodules/AsyncDisplayKit",
-        "//submodules/LottieSettings:LottieSettings",
         "//submodules/Display",
     	"//submodules/SSignalKit/SwiftSignalKit",
         "//submodules/AnimatedStickerNode",
