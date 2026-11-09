@@ -1188,17 +1188,6 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
             return true
         }
         
-        let legacyLogs: [String] = [
-            "broadcast-logs",
-            "siri-logs",
-            "widget-logs",
-            "notificationcontent-logs",
-            "notification-logs"
-        ]
-        for item in legacyLogs {
-            let _ = try? FileManager.default.removeItem(atPath: "\(rootPath)/\(item)")
-        }
-        
         let logsPath = rootPath + "/logs/app-logs"
         let _ = try? FileManager.default.createDirectory(atPath: logsPath, withIntermediateDirectories: true, attributes: nil)
         Logger.setSharedLogger(Logger(rootPath: rootPath, basePath: logsPath))
@@ -1208,25 +1197,40 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
             Logger.shared.shortLog("ManagedAudioSession", s)
         })
         
-        if let contents = try? FileManager.default.contentsOfDirectory(at: URL(fileURLWithPath: rootPath + "/accounts-metadata"), includingPropertiesForKeys: nil, options: [.skipsSubdirectoryDescendants]) {
-            for url in contents {
-                Logger.shared.log("App \(self.episodeId)", "metadata: \(url.path)")
+        // Directory cleanup and diagnostic listings can perform unbounded disk I/O.
+        let episodeId = self.episodeId
+        DispatchQueue.global(qos: .utility).async {
+            let legacyLogs: [String] = [
+                "broadcast-logs",
+                "siri-logs",
+                "widget-logs",
+                "notificationcontent-logs",
+                "notification-logs"
+            ]
+            for item in legacyLogs {
+                let _ = try? FileManager.default.removeItem(atPath: "\(rootPath)/\(item)")
             }
-        }
-        
-        if let contents = try? FileManager.default.contentsOfDirectory(at: URL(fileURLWithPath: rootPath), includingPropertiesForKeys: nil, options: [.skipsSubdirectoryDescendants]) {
-            for url in contents {
-                Logger.shared.log("App \(self.episodeId)", "root: \(url.path)")
-                if url.lastPathComponent.hasPrefix("account-") {
-                    if let subcontents = try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil, options: [.skipsSubdirectoryDescendants]) {
-                        for suburl in subcontents {
-                            Logger.shared.log("App \(self.episodeId)", "account \(url.lastPathComponent): \(suburl.path)")
+
+            if let contents = try? FileManager.default.contentsOfDirectory(at: URL(fileURLWithPath: rootPath + "/accounts-metadata"), includingPropertiesForKeys: nil, options: [.skipsSubdirectoryDescendants]) {
+                for url in contents {
+                    Logger.shared.log("App \(episodeId)", "metadata: \(url.path)")
+                }
+            }
+
+            if let contents = try? FileManager.default.contentsOfDirectory(at: URL(fileURLWithPath: rootPath), includingPropertiesForKeys: nil, options: [.skipsSubdirectoryDescendants]) {
+                for url in contents {
+                    Logger.shared.log("App \(episodeId)", "root: \(url.path)")
+                    if url.lastPathComponent.hasPrefix("account-") {
+                        if let subcontents = try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil, options: [.skipsSubdirectoryDescendants]) {
+                            for suburl in subcontents {
+                                Logger.shared.log("App \(episodeId)", "account \(url.lastPathComponent): \(suburl.path)")
+                            }
                         }
                     }
                 }
             }
         }
-        
+
         //ASDisableLogging()
         
         initializeLegacyComponents(application: application, currentSizeClassGetter: {
@@ -1847,6 +1851,8 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
                     self.mainWindow.viewController = context.rootController
                     
                     if firstTime {
+                        let milliseconds = Int((CFAbsoluteTimeGetCurrent() - launchStartTime) * 1000)
+                        GoldgramProcessJournal.record("Первый экран аккаунта установлен через \(milliseconds) мс после начала инициализации")
                         let layer = context.rootController.view.layer
                         layer.allowsGroupOpacity = true
                         layer.animateAlpha(from: 0.0, to: 1.0, duration: 0.2, completion: { [weak layer] _ in
