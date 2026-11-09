@@ -2093,10 +2093,8 @@ public class ChatListControllerImpl: TelegramBaseController, ChatListController 
         }
         
         if case .chatList(.root) = self.location {
-            self.ready.set(combineLatest([self.mainReady.get(), self.storiesReady.get()])
-            |> map { values -> Bool in
-                return !values.contains(where: { !$0 })
-            }
+            // Show the local chat list as soon as its rows are ready. Stories update independently.
+            self.ready.set(self.mainReady.get()
             |> filter { $0 }
             |> take(1))
         } else {
