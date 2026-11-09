@@ -36,6 +36,12 @@ struct TestArchiveGrouping {
         var deletedPost = post; deletedPost["lastMessageAt"] = 300
         var deletedComment = comment; deletedComment["lastMessageAt"] = 400
         var deletedOther = unlinked; deletedOther["lastMessageAt"] = 500
+        for category in 0...2 {
+            var older = alpha
+            older["lastMessageAt"] = 350
+            let folders = GoldgramArchiveGrouping.folders([deletedPost, older, deletedComment], category: category)
+            precondition(folders.first?["displayName"] as? String == "Бета", "Newest event across linked sources wins")
+        }
         let deleted = GoldgramArchiveGrouping.folders([deletedPost, deletedComment, deletedOther], category: 3)
         precondition(deleted.count == 2)
         precondition(deleted[0]["displayName"] as? String == "Обычная группа", "Latest deletion first")

@@ -9,7 +9,7 @@ enum GoldgramArchiveGrouping {
     }
 
     // Group by canonical peer identity, not by title: equal channel names are
-    // distinct folders. Merge sources across pages and sort by visible name.
+    // distinct folders. Merge sources across pages and sort by the newest archived event.
     static func folders(_ items: [[String: Any]], category: Int) -> [[String: Any]] {
         var groups: [String: [String: Any]] = [:]
         for entry in items {
@@ -45,11 +45,9 @@ enum GoldgramArchiveGrouping {
             groups[key] = group
         }
         return groups.keys.sorted { a, b in
-            if category == 3 {
-                let left = (groups[a]?["lastEventAt"] as? NSNumber)?.int64Value ?? 0
-                let right = (groups[b]?["lastEventAt"] as? NSNumber)?.int64Value ?? 0
-                if left != right { return left > right }
-            }
+            let left = (groups[a]?["lastEventAt"] as? NSNumber)?.int64Value ?? 0
+            let right = (groups[b]?["lastEventAt"] as? NSNumber)?.int64Value ?? 0
+            if left != right { return left > right }
             let lhs = groups[a]?["displayName"] as? String ?? a
             let rhs = groups[b]?["displayName"] as? String ?? b
             let order = lhs.localizedCaseInsensitiveCompare(rhs)
