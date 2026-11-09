@@ -5,8 +5,8 @@
 #       The defined external (or the undefined) symbol names of one static archive, one per line.
 #       One action per archive, so an edit rescans only the archive it changed.
 #   framework_exported_symbols.sh merge <output> <defined lists file> <undefined lists file>
-#       The intersection of the framework's defined names and its clients' undefined names. Each
-#       lists file names one `scan` output per line (see framework_exported_symbols.bzl).
+#       Client-referenced exports plus the defined versioned Goldgram C ABI used by dlsym.
+#       Each lists file names one `scan` output per line (see framework_exported_symbols.bzl).
 set -euo pipefail
 
 mode="$1"
@@ -43,7 +43,12 @@ merge)
         echo "framework_exported_symbols: no undefined symbols in the clients' archives" >&2
         exit 1
     fi
-    comm -12 "$scratch/defined" "$scratch/undefined" > "$output"
+    # Goldgram exposes a versioned C ABI to Mx through dlsym. These runtime-only
+    # references are absent from the clients' undefined-symbol tables.
+    {
+        comm -12 "$scratch/defined" "$scratch/undefined"
+        grep -E '^_goldgram_.*_v[0-9]+$' "$scratch/defined" || true
+    } | sort -u > "$output"
     ;;
 *)
     echo "framework_exported_symbols: unknown mode $mode" >&2

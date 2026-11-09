@@ -8,9 +8,10 @@ There is no build cycle although the clients link against the framework: this ru
 clients' compiled archives, which need only the framework's module interfaces, not its binary.
 The order is: clients compile -> this list -> framework link -> clients link.
 
-A symbol missing from the list is an undefined-symbol error when the client links, never a
-runtime failure. Nothing in the app resolves its own symbols by name at runtime (`dlsym`);
-NSClassFromString and Swift type/conformance lookup use runtime metadata, not exports.
+Ordinary client references are checked at link time. Goldgram also exposes versioned C ABI
+symbols (`_goldgram_*_vN`) to Mx through `dlsym`; the merge worker retains these defined exports
+even without a static client reference. NSClassFromString and Swift type/conformance lookup
+use runtime metadata.
 """
 
 load("@rules_cc//cc/common:cc_info.bzl", "CcInfo")
