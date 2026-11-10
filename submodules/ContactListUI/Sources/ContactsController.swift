@@ -93,6 +93,13 @@ public class ContactsController: ViewController {
         self.statusBar.statusBarStyle = self.presentationData.theme.rootController.statusBarStyle.style
         
         self.title = self.presentationData.strings.Contacts_Title
+        // Swiftgram can still place Contacts in the root tab bar. Its readiness
+        // gate requires every tab image before presenting the account screen.
+        let tabIcon = UIImage(bundleImageName: "Chat List/Tabs/IconContacts")
+            ?? UIImage(systemName: "person.crop.circle")
+        self.tabBarItem.image = tabIcon
+        self.tabBarItem.selectedImage = tabIcon
+        self.updateTabBarPresentation()
         
         self.navigationItem.backBarButtonItem = UIBarButtonItem(title: self.presentationData.strings.Common_Back, style: .plain, target: nil, action: nil)
         
@@ -134,10 +141,16 @@ public class ContactsController: ViewController {
         self.selectionDisposable?.dispose()
     }
     
+    private func updateTabBarPresentation() {
+        self.tabBarItem.title = self.presentationData.strings.Contacts_Title
+        self.tabBarItem.animationName = self.presentationData.reduceMotion ? nil : "TabContacts"
+    }
+
     private func updateThemeAndStrings() {
         self.statusBar.statusBarStyle = self.presentationData.theme.rootController.statusBarStyle.style
         
         self.title = self.presentationData.strings.Contacts_Title
+        self.updateTabBarPresentation()
         self.navigationItem.backBarButtonItem = UIBarButtonItem(title: self.presentationData.strings.Common_Back, style: .plain, target: nil, action: nil)
     }
     
