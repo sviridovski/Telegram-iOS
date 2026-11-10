@@ -249,7 +249,7 @@ jobs:
               config.write(
                   "\n# Gold Next CI unsigned archive for re-signing\n"
                   "build --features=disable_legacy_signing\n"
-                  "build --disk_cache_gc_max_size=10G --disk_cache_gc_idle_delay=1s\n"
+                  "build --experimental_disk_cache_gc_max_size=10G --experimental_disk_cache_gc_idle_delay=1s\n"
               )
           PY
 
