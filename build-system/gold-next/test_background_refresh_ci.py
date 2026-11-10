@@ -14,7 +14,9 @@ assert "BGAppRefreshTask" in app and "goldgramRunRefresh(refresh)" in app
 assert 'goldgramScheduleRefresh()' in app
 assert 'task.expirationHandler = { complete("ios_expiration", false) }' in app
 assert 'complete("goldgram_deadline", false)' in app
-assert 'guard let self, !finished else { return }' in app
+assert 'guard !finished else { return }' in app
+assert '[weak self, task] reason, success in' in app
+assert 'task?.setTaskCompleted' not in app
 assert 'self.goldgramRefreshWork.set(nil)' in app
 assert 'goldgramRefreshPriorityDiscussions(' in app
 assert 'account: account, diagnosticToken: token' in app

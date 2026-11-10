@@ -693,16 +693,29 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
         weak var leaseManager: SharedWakeupManager?
         var finished = false
         var systemTaskCompleted = false
-        let complete: (String, Bool) -> Void = { [weak self, weak task] reason, success in
+        let complete: (String, Bool) -> Void = { [weak self, task] reason, success in
             let apply = {
-                let finishSystemTask = { [task] in
+                let finishSystemTask = { [weak self, task] in
                     guard !systemTaskCompleted else { return }
                     systemTaskCompleted = true
-                    task?.setTaskCompleted(success: success)
+                    // Retain the BGTask through its queue drain, then break the
+                    // expiration-handler cycle before completing it exactly once.
+                    task.expirationHandler = nil
+                    if let self, self.goldgramRefreshActiveToken == token {
+                        self.goldgramRefreshActive = false
+                        self.goldgramRefreshActiveToken = nil
+                        self.goldgramRefreshActiveSince = nil
+                        self.goldgramRefreshFinish = nil
+                    }
+                    task.setTaskCompleted(success: success)
                     GoldgramProcessJournal.record("Возвращено фоновое время, success=\(success), сеанс \(token.prefix(8))")
                 }
                 if finished && reason == "ios_expiration" { finishSystemTask() }
-                guard let self, !finished else { return }
+                guard let self else {
+                    finishSystemTask()
+                    return
+                }
+                guard !finished else { return }
                 var waitingForQueues = false
                 finished = true
                 // A delayed callback from an old task MUST NOT cancel a newer one.
@@ -721,16 +734,17 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
                     if hadLease {
                         GoldgramBackgroundRefreshTrace.leaseReleased(token)
                     }
-                    self.goldgramRefreshActive = false
-                    self.goldgramRefreshActiveToken = nil
-                    self.goldgramRefreshActiveSince = nil
-                    self.goldgramRefreshFinish = nil
+                    // Keep this token active until finishSystemTask: a new
+                    // refresh must not reopen queues while this drain is pending.
                 } else {
                     GoldgramBackgroundRefreshTrace.finish(token, reason: reason)
                 }
                 UserDefaults.standard.set(Date().timeIntervalSince1970,
                     forKey: success ? "GoldgramLastRefreshFinishedV1" : "GoldgramLastRefreshExpiredV1")
                 GoldgramProcessJournal.record("BGAppRefresh завершён: \(reason), success=\(success)")
+                if waitingForQueues && !systemTaskCompleted {
+                    GoldgramProcessJournal.record("BGAppRefresh ожидает закрытия очередей, сеанс \(token.prefix(8))")
+                }
                 if !waitingForQueues { finishSystemTask() }
             }
             if Thread.isMainThread {
@@ -768,7 +782,7 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
                 }
                 // Only a still-live BG task may activate the network for
                 // its selected account; completion always disposes this lease.
-                guard self.goldgramRefreshActiveToken == token else {
+                guard !finished, self.goldgramRefreshActiveToken == token else {
                     return .complete()
                 }
                 leaseManager = applicationContext.wakeupManager
@@ -800,14 +814,14 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
         }
         |> deliverOnMainQueue
         |> then(Signal<Never, NoError> { [weak self] subscriber in
-            guard let self, self.goldgramRefreshActiveToken == token,
+            guard let self, !finished, self.goldgramRefreshActiveToken == token,
                   self.goldgramRefreshCompletionReason(for: token) == "completed" else {
                 subscriber.putCompletion()
                 return EmptyDisposable
             }
             return (goldgramFlushOriginalCaptureAsync()
             |> deliverOnMainQueue).start(next: { [weak self] confirmed in
-                guard self?.goldgramRefreshActiveToken == token else { return }
+                guard !finished, self?.goldgramRefreshActiveToken == token else { return }
                 GoldgramBackgroundRefreshTrace.phase(token,
                     confirmed ? "sqlite_queue_drained" : "sqlite_queue_not_confirmed")
             }, completed: subscriber.putCompletion)
@@ -819,7 +833,7 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
         })
         // Some paths complete synchronously (e.g. no active account).
         // Do not re-install a finished disposable after completing the task.
-        if self.goldgramRefreshActiveToken == token {
+        if !finished && self.goldgramRefreshActiveToken == token {
             self.goldgramRefreshWork.set(work)
         } else {
             work.dispose()

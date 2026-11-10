@@ -32,6 +32,10 @@ jobs:
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
 
+      - name: Test refresh task lifecycle
+        shell: bash
+        run: python3 build-system/gold-next/test_refresh_task_lifecycle.py --require-swift
+
       - name: Create canonical source directory
         shell: bash
         run: |
