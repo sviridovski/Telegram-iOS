@@ -271,14 +271,28 @@ jobs:
         run: |
           cache=/private/var/tmp/goldgram-bazel-action-cache
           cap_kib=$((10 * 1024 * 1024))
-          size=$(du -sk "$cache" | cut -f1)
-          initial=$size
+          initial=unavailable
+          size=unavailable
+          echo "save=false" >> "$GITHUB_OUTPUT"
           for attempt in 1 2 3 4 5; do
-            (( size <= cap_kib )) && break
-            sleep 2
-            size=$(du -sk "$cache" | cut -f1)
+            # Native idle GC can unlink an entry while du walks the cache.
+            # A failed walk is incomplete and must never authorize a cache save.
+            if measurement=$(du -sk "$cache" 2>"$RUNNER_TEMP/goldgram-cache-size.err"); then
+              size=${measurement%%[[:space:]]*}
+              if [[ "$size" =~ ^[0-9]+$ ]]; then
+                [[ "$initial" != unavailable ]] || initial=$size
+                if (( size <= cap_kib )); then
+                  echo "save=true" >> "$GITHUB_OUTPUT"
+                  break
+                fi
+              fi
+            fi
+            if (( attempt < 5 )); then sleep 2; fi
           done
-          if (( size <= cap_kib )); then echo "save=true" >> "$GITHUB_OUTPUT"; fi
+          if ! grep -q '^save=true$' "$GITHUB_OUTPUT"; then
+            echo "::warning::Bazel cache could not be measured within 10 GiB; skipping cache save."
+            cat "$RUNNER_TEMP/goldgram-cache-size.err" >&2
+          fi
           {
             echo "Mx cache validated: ${{ steps.mx.outputs.ready }}"
             echo "Bazel cache before/after idle GC (KiB): $initial / $size"
@@ -286,6 +300,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Save bounded Bazel disk cache
+        continue-on-error: true
         if: steps.bazel_size.outputs.save == 'true' && steps.bazel_restore.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
