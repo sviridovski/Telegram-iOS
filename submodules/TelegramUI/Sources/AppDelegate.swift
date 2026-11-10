@@ -372,6 +372,37 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
     var nativeWindow: (UIWindow & WindowHost)?
     var mainWindow: Window1!
     private var statusBarHost: ApplicationStatusBarHost?
+    // Only show launch progress if a foreground launch takes noticeably long.
+    private var launchStatus: String? = "Открытие данных аккаунта…" {
+        didSet {
+            self.launchStatusLabel?.text = self.launchStatus
+            if self.launchStatus == nil {
+                self.launchStatusLabel?.removeFromSuperview()
+            }
+        }
+    }
+    private weak var launchStatusLabel: UILabel?
+
+    private func showLaunchStatusIfNeeded(in window: UIWindow) {
+        guard let status = self.launchStatus, self.launchStatusLabel == nil,
+              window.windowScene?.activationState == .foregroundActive else { return }
+        let label = UILabel()
+        label.text = status
+        label.textColor = .label
+        label.backgroundColor = .secondarySystemBackground
+        label.font = .preferredFont(forTextStyle: .footnote)
+        label.numberOfLines = 0
+        label.textAlignment = .center
+        label.translatesAutoresizingMaskIntoConstraints = false
+        window.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.centerXAnchor.constraint(equalTo: window.safeAreaLayoutGuide.centerXAnchor),
+            label.bottomAnchor.constraint(equalTo: window.safeAreaLayoutGuide.bottomAnchor, constant: -12),
+            label.widthAnchor.constraint(lessThanOrEqualTo: window.safeAreaLayoutGuide.widthAnchor, constant: -32)
+        ])
+        self.launchStatusLabel = label
+    }
+
     private var dataImportSplash: LegacyDataImportSplash?
     private var memoryUsageOverlayView: UILabel?
     
@@ -1181,6 +1212,7 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
         )
         
         guard let appGroupUrl = maybeAppGroupUrl else {
+            self.launchStatus = "Нет доступа к общему контейнеру. Проверьте App Groups при подписи."
             self.mainWindow?.presentNative(UIAlertController(title: nil, message: "Error 2", preferredStyle: .alert))
             return true
         }
@@ -1244,6 +1276,7 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
         }
         
         if !writeAbilityTestSuccess {
+            self.launchStatus = "Не удалось записать файл в контейнер приложения."
             let alertController = UIAlertController(title: nil, message: "The device does not have sufficient free space.", preferredStyle: .alert)
             alertController.addAction(UIAlertAction(title: "OK", style: .default, handler: { _ in
                 preconditionFailure()
@@ -1626,7 +1659,6 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
         self.pushRegistry = pushRegistry
         pushRegistry.delegate = self
 
-        self.accountManagerState = extractAccountManagerState(records: accountManager._internalAccountRecordsSync())
         let _ = (accountManager.accountRecords()
         |> deliverOnMainQueue).start(next: { view in
             self.accountManagerState = extractAccountManagerState(records: view)
@@ -1645,6 +1677,7 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
         }
         |> deliverOnMainQueue
         |> mapToSignal { [self] accountManager, initialPresentationDataAndSettings -> Signal<(SharedApplicationContext, LoggingSettings), NoError> in
+            if self.launchStatus != nil { self.launchStatus = "Подготовка аккаунта…" }
             self.mainWindow?.hostView.containerView.backgroundColor =  initialPresentationDataAndSettings.presentationData.theme.chatList.backgroundColor
             
             let legacyBasePath = appGroupUrl.path
@@ -1929,6 +1962,7 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
             self.crashReportPromptDisposable.set(nil)
             self.contextValue = context
             if let context = context {
+                if self.launchStatus != nil { self.launchStatus = "Подготовка первого экрана…" }
                 setupLegacyComponents(context: context.context)
                 let isReady = context.isReady.get()
                 contextReadyDisposable.set((isReady
@@ -1942,6 +1976,7 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
                     print("Launch to ready took \((CFAbsoluteTimeGetCurrent() - launchStartTime) * 1000.0) ms")
 
                     self.mainWindow.debugAction = nil
+                    self.launchStatus = nil
                     self.mainWindow.viewController = context.rootController
                     
                     #if DEBUG
@@ -2050,6 +2085,7 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
                 |> take(1)
                 |> deliverOnMainQueue).start(next: { _ in
                     progressDisposable.dispose()
+                    self.launchStatus = nil
                     self.mainWindow.present(context.rootController, on: .root)
                 }))
             } else {
@@ -2747,6 +2783,12 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
     }
 
     func handleDidBecomeActive() {
+        if self.launchStatus != nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+                guard let self, let window = self.window else { return }
+                self.showLaunchStatusIfNeeded(in: window)
+            }
+        }
         GoldgramProcessJournal.record("Приложение открыто")
         GoldgramForegroundSyncTrace.lifecycle(active: true)
         self.isInForegroundValue = true
@@ -2912,7 +2954,11 @@ private final class GoldgramBackgroundLocationLab: NSObject, CLLocationManagerDe
                 completion()
                 return
             }
-            guard let accountManagerState = self.accountManagerState else {
+            // A cold-launch VoIP push can arrive before the first accountRecords emission.
+            let pushState = self.accountManagerState ?? self.accountManager.map {
+                extractAccountManagerState(records: $0._internalAccountRecordsSync())
+            }
+            guard let accountManagerState = pushState else {
                 Logger.shared.log("App \(self.episodeId) PushRegistry", "accountManagerState is nil")
                 completion()
                 return
