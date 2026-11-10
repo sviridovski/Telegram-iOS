@@ -141,7 +141,7 @@ assert bg.index('guard let account = primary?.account') < bg.index('wakeupManage
 assert 'activeAccountContexts\n            |> take(1)\n            |> deliverOnMainQueue' in bg
 assert '"wakeup_lease_active"' in bg and 'менеджеру Telegram разрешена фоновая работа' in ui
 assert 'ignoreDisabled: true' not in refresh, "No unsafe blanket Postbox bypass"
-assert 'Trim Bazel cache to 6 GiB' in workflow and 'cap = 6 * (1024 ** 3)' in workflow
+assert 'Measure Bazel cache after native GC' in workflow and 'cap_kib=$((10 * 1024 * 1024))' in workflow
 assert 'actions/cache/save@v4' in workflow and 'actions/cache/restore@v4' in workflow
 
 print("Goldgram #114: bounded BG gate readiness trace, existing RPC/replay, lease and cache OK")

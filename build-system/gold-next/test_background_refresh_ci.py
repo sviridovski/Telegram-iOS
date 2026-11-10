@@ -32,6 +32,6 @@ assert 'joinChannel(' not in core
 assert "actions/cache/restore@v4" in workflow
 assert "actions/cache/save@v4" in workflow
 assert "--cacheDir=\"/private/var/tmp/goldgram-bazel-action-cache\"" in workflow
-assert "6 * (1024 ** 3)" in workflow
+assert "--disk_cache_gc_max_size=10G" in workflow
 assert "verify_mx.py" in workflow
-print("Goldgram #107–111: scoped BGAppRefresh, distinct expiry reasons and 6 GiB Bazel cache verified")
+print("Goldgram #107–111: scoped BGAppRefresh, distinct expiry reasons and 10 GiB Bazel cache verified")
