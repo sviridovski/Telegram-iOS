@@ -23,7 +23,9 @@ bg = app.split('private func goldgramRunRefresh(', 1)[1].split(
 cleanup = bg.split('let complete: (String, Bool)', 1)[1].split('self.goldgramRefreshFinish = complete', 1)[0]
 assert 'flush' not in cleanup.lower(), 'Expiry cleanup must never wait for the writer'
 assert 'self.goldgramRefreshWork.set(nil)' in cleanup
-assert 'task?.setTaskCompleted(success: success)' in cleanup
+assert 'task.setTaskCompleted(success: success)' in cleanup
+assert 'task?.setTaskCompleted' not in cleanup, 'Retain the system task until completion'
+assert 'guard !systemTaskCompleted else { return }' in cleanup
 assert 'task.expirationHandler = { complete("ios_expiration", false) }' in bg
 assert 'goldgramRefreshActiveToken == token' in bg
 assert 'then(Signal<Never, NoError>' in bg
