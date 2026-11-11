@@ -282,7 +282,7 @@ for before, after in goldgram_capture_patches:
 mx_ui_path.write_text(mx_ui_source)
 print("Goldgram #66: personal-chat SQLite archiving toggle is default OFF")
 
-# Goldgram #71: three read-only history folder entry points (UI atom only).
+# Goldgram history: personal/groups/channels plus an all-chat deleted folder.
 # Keep all existing MX rows, hook symbols, toggles, and account-scoped DB untouched.
 # Do not fabricate archive entries before account-safe SQLite readback is ready.
 mx_history_patches = [
@@ -291,19 +291,19 @@ mx_history_patches = [
     ("  if (!self.goldgramSection) return 7;\n  if (self.goldgramSection.integerValue == MISC) {",
      "  if (self.goldgramHistoryCategory) return 1;\n  if (!self.goldgramSection) return 7;\n  if (self.goldgramSection.integerValue == MISC) {"),
     ("    return [groups[category] count];",
-     "    return [groups[category] count] + (category == 0 ? 3 : 0);"),
+     "    return [groups[category] count] + (category == 0 ? 4 : 0);"),
     ("  if (!self.goldgramSection) return nil;\n  if (self.goldgramSection.integerValue == MISC && self.goldgramMiscCategory) {",
-     "  if (self.goldgramHistoryCategory) {\n    NSInteger kind = self.goldgramHistoryCategory.integerValue;\n    BOOL ru = [[NSLocale preferredLanguages].firstObject hasPrefix:@\"ru\"];\n    NSArray *titles = ru ? @[@\"Личные сообщения\", @\"Группы и чаты\", @\"Каналы\"] : @[@\"Personal messages\", @\"Groups & chats\", @\"Channels\"];\n    return kind >= 0 && kind < (NSInteger)titles.count ? titles[kind] : nil;\n  }\n  if (!self.goldgramSection) return nil;\n  if (self.goldgramSection.integerValue == MISC && self.goldgramMiscCategory) {"),
+     "  if (self.goldgramHistoryCategory) {\n    NSInteger kind = self.goldgramHistoryCategory.integerValue;\n    BOOL ru = [[NSLocale preferredLanguages].firstObject hasPrefix:@\"ru\"];\n    NSArray *titles = ru ? @[@\"Личные сообщения\", @\"Группы и чаты\", @\"Каналы\", @\"Удалённые сообщения\"] : @[@\"Personal messages\", @\"Groups & chats\", @\"Channels\", @\"Deleted messages\"];\n    return kind >= 0 && kind < (NSInteger)titles.count ? titles[kind] : nil;\n  }\n  if (!self.goldgramSection) return nil;\n  if (self.goldgramSection.integerValue == MISC && self.goldgramMiscCategory) {"),
     ("    titleForFooterInSection:(NSInteger)section {\n  if (!self.goldgramSection) return nil;",
      "    titleForFooterInSection:(NSInteger)section {\n  if (self.goldgramHistoryCategory) return nil;\n  if (!self.goldgramSection) return nil;"),
     ("  if (!self.goldgramSection) {\n    // Folder index: original feature rows and setting keys remain untouched.",
      "  if (self.goldgramHistoryCategory) {\n    cell = [self normalCellFromTableView:tableView];\n    BOOL ru = [[NSLocale preferredLanguages].firstObject hasPrefix:@\"ru\"];\n    cell.textLabel.text = ru ? @\"Просмотр архива готовится\" : @\"Archive reader not connected yet\";\n    cell.detailTextLabel.text = ru ? @\"SQLite хранит данные отдельно; чтение добавим следующим атомом\" : @\"SQLite capture is separate; browsing comes in a later atom\";\n    cell.imageView.image = [UIImage systemImageNamed:@\"externaldrive\"];\n    cell.accessoryView = nil;\n    cell.accessoryType = UITableViewCellAccessoryNone;\n    cell.selectionStyle = UITableViewCellSelectionStyleNone;\n    return cell;\n  }\n  if (!self.goldgramSection) {\n    // Folder index: original feature rows and setting keys remain untouched."),
     ("    if (category < 0 || category >= (NSInteger)groups.count ||\n        indexPath.row < 0 || indexPath.row >= (NSInteger)groups[category].count) {\n      return [self normalCellFromTableView:tableView];\n    }\n    NSInteger originalRow = groups[category][indexPath.row].integerValue;",
-     "    if (category == 0 && indexPath.row >= (NSInteger)groups[0].count &&\n        indexPath.row < (NSInteger)groups[0].count + 3) {\n      NSInteger kind = indexPath.row - (NSInteger)groups[0].count;\n      BOOL ru = [[NSLocale preferredLanguages].firstObject hasPrefix:@\"ru\"];\n      NSArray *titles = ru ? @[@\"Личные сообщения\", @\"Группы и чаты\", @\"Каналы\"] : @[@\"Personal messages\", @\"Groups & chats\", @\"Channels\"];\n      NSArray *icons = @[@\"person.crop.circle\", @\"person.3\", @\"megaphone\"];\n      cell = [self normalCellFromTableView:tableView];\n      cell.textLabel.text = titles[kind];\n      cell.detailTextLabel.text = nil;\n      cell.imageView.image = [UIImage systemImageNamed:icons[kind]];\n      cell.imageView.tintColor = [self dynamicColorBW];\n      cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;\n      cell.accessoryView = nil;\n      return cell;\n    }\n    if (category < 0 || category >= (NSInteger)groups.count ||\n        indexPath.row < 0 || indexPath.row >= (NSInteger)groups[category].count) {\n      return [self normalCellFromTableView:tableView];\n    }\n    NSInteger originalRow = groups[category][indexPath.row].integerValue;"),
+     "    if (category == 0 && indexPath.row >= (NSInteger)groups[0].count &&\n        indexPath.row < (NSInteger)groups[0].count + 4) {\n      NSInteger kind = indexPath.row - (NSInteger)groups[0].count;\n      BOOL ru = [[NSLocale preferredLanguages].firstObject hasPrefix:@\"ru\"];\n      NSArray *titles = ru ? @[@\"Личные сообщения\", @\"Группы и чаты\", @\"Каналы\", @\"Удалённые сообщения\"] : @[@\"Personal messages\", @\"Groups & chats\", @\"Channels\", @\"Deleted messages\"];\n      NSArray *icons = @[@\"person.crop.circle\", @\"person.3\", @\"megaphone\", @\"trash\"];\n      cell = [self normalCellFromTableView:tableView];\n      cell.textLabel.text = titles[kind];\n      cell.detailTextLabel.text = nil;\n      cell.imageView.image = [UIImage systemImageNamed:icons[kind]];\n      cell.imageView.tintColor = [self dynamicColorBW];\n      cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;\n      cell.accessoryView = nil;\n      return cell;\n    }\n    if (category < 0 || category >= (NSInteger)groups.count ||\n        indexPath.row < 0 || indexPath.row >= (NSInteger)groups[category].count) {\n      return [self normalCellFromTableView:tableView];\n    }\n    NSInteger originalRow = groups[category][indexPath.row].integerValue;"),
     ("  [tableView deselectRowAtIndexPath:indexPath animated:YES];\n  if (!self.goldgramSection) {",
      "  [tableView deselectRowAtIndexPath:indexPath animated:YES];\n  if (self.goldgramHistoryCategory) return;\n  if (!self.goldgramSection) {"),
     ("    if (category < 0 || category >= (NSInteger)groups.count ||\n        indexPath.row < 0 || indexPath.row >= (NSInteger)groups[category].count) return;",
-     "    if (category == 0 && indexPath.row >= (NSInteger)groups[0].count &&\n        indexPath.row < (NSInteger)groups[0].count + 3) {\n      Mx *folder = [Mx new];\n      folder.goldgramSection = @(MISC);\n      folder.goldgramMiscCategory = @(0);\n      folder.goldgramHistoryCategory = @(indexPath.row - (NSInteger)groups[0].count);\n      [self.navigationController pushViewController:folder animated:YES];\n      return;\n    }\n    if (category < 0 || category >= (NSInteger)groups.count ||\n        indexPath.row < 0 || indexPath.row >= (NSInteger)groups[category].count) return;"),
+     "    if (category == 0 && indexPath.row >= (NSInteger)groups[0].count &&\n        indexPath.row < (NSInteger)groups[0].count + 4) {\n      Mx *folder = [Mx new];\n      folder.goldgramSection = @(MISC);\n      folder.goldgramMiscCategory = @(0);\n      folder.goldgramHistoryCategory = @(indexPath.row - (NSInteger)groups[0].count);\n      [self.navigationController pushViewController:folder animated:YES];\n      return;\n    }\n    if (category < 0 || category >= (NSInteger)groups.count ||\n        indexPath.row < 0 || indexPath.row >= (NSInteger)groups[category].count) return;"),
 ]
 for before, after in mx_history_patches:
     if mx_ui_source.count(before) != 1:
@@ -406,29 +406,9 @@ hooks_path.write_text(hooks_source)
 header_source = metadata_header.read_text()
 metadata_header.write_text(header_source + '\nBOOL goldgramNativeHostPresent(void);\n')
 
-# A fifth subfolder in MISC (Privacy & Functions); original MX row IDs unchanged.
-patches = [
-    ('if (!self.goldgramMiscCategory) return 4;', 'if (!self.goldgramMiscCategory) return 5;'),
-    ('@"Другие инструменты"];', '@"Другие инструменты", @"Удалённые сообщения"];'),
-    ('@"Other tools"];', '@"Other tools", @"Deleted messages"];'),
-    ('@"wand.and.stars"];', '@"wand.and.stars", @"trash"];'),
-    ('      if (indexPath.row < 0 || indexPath.row >= (NSInteger)[Mx goldgramMiscRows].count) return;',
-     '''      if (indexPath.row == 4) {
-        Class browser = NSClassFromString(@"GoldgramArchiveScreen");
-        if (browser && [browser instancesRespondToSelector:@selector(initWithCategory:)]) {
-          id controller = [[browser alloc] initWithCategory:3];
-          if ([controller isKindOfClass:UIViewController.class]) [self.navigationController pushViewController:controller animated:YES];
-        }
-        return;
-      }
-      if (indexPath.row < 0 || indexPath.row >= (NSInteger)[Mx goldgramMiscRows].count) return;'''),
-]
-for before, after in patches:
-    if mx_ui_source.count(before) != 1:
-        raise SystemExit("Goldgram #83 deleted-folder menu anchor mismatch: " + before)
-    mx_ui_source = mx_ui_source.replace(before, after)
-mx_ui_path.write_text(mx_ui_source)
-print("Goldgram #83: native delete events and dedicated deleted folder wired")
+# Deleted history is the fourth archive row inside Deleted & edited. It uses
+# the existing category-3 reader, which covers every cloud peer kind.
+print("Goldgram: deleted archive nested inside Deleted & edited")
 
 # #91: selected-account totals in Privacy & Functions; refresh when reopened.
 summary_interface = '+ (void)presentClearHistoryFromController:(UIViewController *)controller;'
