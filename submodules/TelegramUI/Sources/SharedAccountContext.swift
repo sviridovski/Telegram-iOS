@@ -16,6 +16,64 @@ private func goldgramPublishSelectedAccount(_ accountId: Int64) {
     unsafeBitCast(symbol, to: Callback.self)(max(0, accountId))
 }
 
+// A native back-stack entry keeps the UIKit archive navigation alive while a
+// message is open. Returning to it uses Telegram's normal interactive back swipe.
+private final class GoldgramArchiveReturnController: ViewController {
+    private let archiveNavigation: UINavigationController
+    private weak var archivePresenter: UIViewController?
+    private let accountId: Int64
+    private let snapshot: UIView?
+    private var returning = false
+
+    init(archiveNavigation: UINavigationController, presenter: UIViewController,
+         accountId: Int64, snapshot: UIView?) {
+        self.archiveNavigation = archiveNavigation
+        self.archivePresenter = presenter
+        self.accountId = accountId
+        self.snapshot = snapshot
+        super.init(navigationBarPresentationData: nil)
+        self.title = archiveNavigation.topViewController?.title ?? "Архив"
+        self.displayNavigationBar = false
+        self.navigationItem.backBarButtonItem = UIBarButtonItem(
+            title: "К архиву", style: .plain, target: nil, action: nil)
+    }
+
+    required init(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func loadDisplayNode() {
+        self.displayNode = ASDisplayNode()
+        self.displayNode.backgroundColor = .systemBackground
+        if let snapshot = self.snapshot {
+            snapshot.isUserInteractionEnabled = false
+            self.displayNode.view.addSubview(snapshot)
+        }
+        self.displayNodeDidLoad()
+    }
+
+    override func containerLayoutUpdated(_ layout: ContainerViewLayout, transition: ContainedViewLayoutTransition) {
+        super.containerLayoutUpdated(layout, transition: transition)
+        self.snapshot?.frame = CGRect(origin: .zero, size: layout.size)
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        guard !self.returning, let navigation = self.navigationController as? NavigationController else { return }
+        self.returning = true
+        guard goldgramNativeNavigationContext?.sgPrimaryAccountContextForMigration()?.account.peerId.id._internalGetInt64Value() == self.accountId,
+              let presenter = self.archivePresenter, presenter.viewIfLoaded?.window != nil,
+              presenter.presentedViewController == nil else {
+            navigation.filterController(self, animated: false)
+            return
+        }
+        presenter.present(self.archiveNavigation, animated: false) { [weak self, weak navigation] in
+            guard let self else { return }
+            navigation?.filterController(self, animated: false)
+        }
+    }
+}
+
 // Goldgram #78 — native peer/message jump with authoritative account context.
 // The weak handle never outlives SharedAccountContextImpl.
 private weak var goldgramNativeNavigationContext: SharedAccountContextImpl?
@@ -173,7 +231,28 @@ public final class GoldgramNativeArchiveMetadata: NSObject {
                         completion(["status": "account_changed", "items": []]); return
                     }
                     if request["action"] as? String == "open_message" {
-                        shared.navigateToChat(accountId: recordId, peerId: peer, messageId: id)
+                        if let archiveNavigation = request["returnNavigation"] as? UINavigationController {
+                            guard let presenter = request["returnPresenter"] as? UIViewController,
+                                  archiveNavigation.presentingViewController == nil,
+                                  presenter.viewIfLoaded?.window != nil,
+                                  presenter.presentedViewController == nil,
+                                  let navigation = shared.mainWindow?.viewController as? NavigationController else {
+                                completion(["status": "unavailable", "items": []])
+                                return
+                            }
+                            let back = GoldgramArchiveReturnController(
+                                archiveNavigation: archiveNavigation, presenter: presenter,
+                                accountId: accountId, snapshot: request["returnSnapshot"] as? UIView)
+                            let chat = shared.makeChatController(
+                                context: current, chatLocation: .peer(id: peer),
+                                subject: .message(id: .id(id), highlight: nil, timecode: nil, setupReply: false),
+                                botStart: nil, mode: .standard(.default), params: nil)
+                            navigation.replaceControllersAndPush(
+                                controllers: navigation.viewControllers + [back],
+                                controller: chat, animated: true)
+                        } else {
+                            shared.navigateToChat(accountId: recordId, peerId: peer, messageId: id)
+                        }
                     }
                     completion(["status": "ok", "items": []])
                 }

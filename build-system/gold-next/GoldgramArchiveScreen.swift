@@ -149,6 +149,7 @@ public final class GoldgramArchiveScreen: UITableViewController {
     private var inFlight = false
     private var generation = 0
     private var openingMessage = false
+    private var preserveListOnNextAppearance = false
     private var status = "Загрузка истории…"
     private let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -940,6 +941,12 @@ public final class GoldgramArchiveScreen: UITableViewController {
 
     public override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        if self.preserveListOnNextAppearance,
+           GoldgramArchiveReader.activeAccountId()?.int64Value == self.boundAccount {
+            self.preserveListOnNextAppearance = false
+            return
+        }
+        self.preserveListOnNextAppearance = false
         load(reset: true)
     }
 
@@ -1251,6 +1258,7 @@ public final class GoldgramArchiveScreen: UITableViewController {
             text.leadingAnchor.constraint(equalTo: controller.view.leadingAnchor),
             text.trailingAnchor.constraint(equalTo: controller.view.trailingAnchor)
         ])
+        self.preserveListOnNextAppearance = true
         navigationController?.pushViewController(controller, animated: true)
     }
 
@@ -1260,18 +1268,36 @@ public final class GoldgramArchiveScreen: UITableViewController {
         var request: [AnyHashable: Any] = ["action": "prepare_jump", "accountId": NSNumber(value: accountId), "items": [entry]]
         goldgramResolveNativeMetadata(request) { [weak self] response in
             guard let self else { return }
-            self.openingMessage = false
             let status = (response as NSDictionary)["status"] as? String
             guard status == "ok", self.boundAccount == accountId else {
+                self.openingMessage = false
                 self.showLocalRecord(entry, accountChanged: status == "account_changed"); return
             }
             request["action"] = "open_message"
-            let open = { goldgramResolveNativeMetadata(request) { _ in } }
-            // Finish dismissing UIKit's archive/menu sheet before the native
-            // Telegram navigation mutates its own controller stack.
-            if let presenter = self.navigationController?.presentingViewController ?? self.presentingViewController {
+            if let archiveNavigation = self.navigationController,
+               let presenter = archiveNavigation.presentingViewController {
+                request["returnNavigation"] = archiveNavigation
+                request["returnPresenter"] = presenter
+                request["returnSnapshot"] = archiveNavigation.view.snapshotView(afterScreenUpdates: false)
+                self.preserveListOnNextAppearance = true
+                let open = {
+                    goldgramResolveNativeMetadata(request) { [weak self] answer in
+                        guard let self else { return }
+                        self.openingMessage = false
+                        guard (answer as NSDictionary)["status"] as? String != "ok",
+                              GoldgramArchiveReader.activeAccountId()?.int64Value == accountId,
+                              presenter.viewIfLoaded?.window != nil,
+                              presenter.presentedViewController == nil else { return }
+                        // A failed native handoff returns the same list as well.
+                        presenter.present(archiveNavigation, animated: true) {
+                            self.showLocalRecord(entry, accountChanged: false)
+                        }
+                    }
+                }
                 presenter.dismiss(animated: true, completion: open)
-            } else { open() }
+            } else {
+                goldgramResolveNativeMetadata(request) { [weak self] _ in self?.openingMessage = false }
+            }
         }
     }
 
@@ -1288,6 +1314,7 @@ public final class GoldgramArchiveScreen: UITableViewController {
         let child = GoldgramArchiveScreen(category: category, sources: members,
             displayName: entry["displayName"] as? String)
         child.boundAccount = boundAccount
+        self.preserveListOnNextAppearance = true
         navigationController?.pushViewController(child, animated: true)
     }
 }
