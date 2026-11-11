@@ -1821,6 +1821,10 @@ private let goldgramDeletionScanKey = ItemCacheEntryId(collectionId: -108, key: 
 
 // Pure decisions are extracted and executed by test_deletion_reconciliation.py.
 private enum GoldgramDeletionScanPolicy {
+    // Containment for reported device exits at the first five-second scan.
+    // Keep automatic execution off until the device failure is understood.
+    static let automaticScanEnabled = false
+
     static func nextUpperBound(scanned: [Int32]) -> Int32 {
         guard let oldest = scanned.min(), oldest > 1 else { return Int32.max }
         return oldest - 1
@@ -1971,7 +1975,7 @@ private final class GoldgramDiscussionMonitor {
         self.deletionScanPulse.set((GoldgramForegroundSyncTrace.foregroundActive |> deliverOn(queue)).start(next: { [weak self] active in
             guard let self else { return }
             self.deletionScanWork.set(nil)
-            guard active else { return }
+            guard GoldgramDeletionScanPolicy.automaticScanEnabled, active else { return }
             self.deletionScanWork.set((scanClock |> mapToSignal { _ -> Signal<Never, NoError> in
                 return goldgramReconcileDeletions(account: account)
                     |> timeout(8.0, queue: queue, alternate: .complete())

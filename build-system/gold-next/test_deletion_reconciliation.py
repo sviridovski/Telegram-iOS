@@ -45,7 +45,9 @@ error_path = worker.split('|> `catch`', 1)[1].split('|> mapToSignal', 1)[0]
 assert '.single(nil)' in error_path and 'empty.insert' not in error_path
 assert 'state.upperBounds' not in error_path, 'failed RPC keeps the message cursor'
 assert 'GoldgramForegroundSyncTrace.foregroundActive |> deliverOn(queue)' in monitor
-assert monitor.index('self.deletionScanWork.set(nil)') < monitor.index('guard active else')
+assert 'static let automaticScanEnabled = false' in policy, 'device-crash containment must remain off'
+assert monitor.index('self.deletionScanWork.set(nil)') < monitor.index('guard GoldgramDeletionScanPolicy.automaticScanEnabled, active else')
+assert monitor.index('guard GoldgramDeletionScanPolicy.automaticScanEnabled, active else') < monitor.index('self.deletionScanWork.set((scanClock')
 assert 'timeout(8.0, queue: queue, alternate: .complete())' in monitor
 assert 'delay(5.0, queue: queue)' in monitor and 'delay(10.0, queue: queue)' in monitor
 assert 'self.deletionScanPulse.dispose()' in monitor and 'self.deletionScanWork.dispose()' in monitor
@@ -56,6 +58,7 @@ assert 'python3 build-system/gold-next/test_deletion_reconciliation.py' in workf
 print('Deletion reconciliation: source integration checks passed')
 
 cases = r'''
+precondition(!GoldgramDeletionScanPolicy.automaticScanEnabled, "automatic scanning remains disabled pending device investigation")
 func check(_ requested: Set<Int32>, _ empty: Set<Int32>, _ live: Set<Int32>, _ access: Bool, _ expected: Set<Int32>) {
     precondition(GoldgramDeletionScanPolicy.confirmed(requested: requested, empty: empty,
         live: live, accessible: access) == expected)
@@ -79,7 +82,7 @@ for _ in 0..<3 {
     upper = GoldgramDeletionScanPolicy.nextUpperBound(scanned: batch)
 }
 precondition(visited == saved && upper == Int32.max, "scan old cached history then wrap for new messages")
-print("Deletion reconciliation: 11 production-policy cases passed")
+print("Deletion reconciliation: 12 production-policy cases passed")
 '''
 swiftc = shutil.which('swiftc')
 if swiftc:
