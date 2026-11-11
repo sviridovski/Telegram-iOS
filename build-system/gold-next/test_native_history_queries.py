@@ -79,3 +79,55 @@ db.execute('DELETE FROM dialogs WHERE peer_kind=3')
 assert db.execute('SELECT COUNT(*) FROM events WHERE peer_kind=2 AND peer_id=20 AND message_id=5').fetchone()[0]==1
 assert db.execute('PRAGMA foreign_key_check').fetchall()==[]
 print('Goldgram #140: verified edits only, deleted/media anchors, retained hidden evidence, all peer kinds and paging OK')
+
+# Edited folders and the all-chat deleted folder are mutually exclusive.
+# Read the filter from the shipped Swift source rather than duplicating it.
+match = re.search(r'private static let editedOnlyPredicate = "([^"]+)"', s)
+assert match, 'Missing shipped edited-only filter'
+edited_predicate = match.group(1)
+reader = s.split('var sql = mode == "totals"', 1)[1]
+assert 'if !deletedOnly && mode != "totals"' in reader
+assert 'with: editedOnlyPredicate + anchor' in reader
+assert reader.index('with: editedOnlyPredicate + anchor') < reader.index('sqlite3_prepare_v2')
+
+db = sqlite3.connect(':memory:')
+db.executescript(block('schemaV1'))
+db.executescript(block('schemaV2'))
+for kind in range(4):
+ peer = 100 + kind
+ add(kind, peer, 1, 'goldgram_native_live_v2', original='Original', latest='Edit', time=10+kind)
+ # A message edited and later deleted belongs only to Deleted, retaining its revisions.
+ add(kind, peer, 2, 'goldgram_native_live_v2', original='Original', latest='Edit', deleted=1)
+ db.execute('''INSERT INTO events(peer_kind,peer_id,message_id,event_kind,source,event_key,observed_at)
+     VALUES(?,?,2,2,'goldgram_native_retained_v1',?,1000)''', (kind, peer, f'delete:{kind}'))
+ # Support older data where the flag and deletion event disagree.
+ add(kind, peer, 3, 'goldgram_native_retained_v1', event=2, latest='Deleted body', deleted=0)
+ add(kind, peer, 4, original='Flag-only deletion', latest='Body', deleted=1)
+ add(kind, 900+kind, 1, 'goldgram_native_retained_v1', event=2, latest='Deleted-only dialog', deleted=1)
+
+edited_messages = block('messagesSQL').replace(
+ 'ORDER BY COALESCE(m.sent_at, m.last_seen_at) DESC',
+ edited_predicate+'ORDER BY COALESCE(m.sent_at, m.last_seen_at) DESC')
+edited_dialogs = block('dialogsSQL').replace('GROUP BY d.peer_kind', edited_predicate+'GROUP BY d.peer_kind')
+deleted_messages = block('messagesSQL').replace(
+ 'ORDER BY COALESCE(m.sent_at, m.last_seen_at) DESC',
+ predicate+'ORDER BY COALESCE(m.sent_at, m.last_seen_at) DESC')
+deleted_dialogs = block('dialogsSQL').replace(
+ 'WHERE d.peer_kind IN (?, ?)', 'WHERE d.peer_kind IN (?, ?, ?, ?)').replace(
+ 'GROUP BY d.peer_kind', predicate+'GROUP BY d.peer_kind')
+for kind in range(4):
+ peer = 100+kind
+ assert [row[2] for row in db.execute(edited_messages,(kind,peer,30,0))] == [1]
+ assert {row[2] for row in db.execute(deleted_messages,(kind,peer,30,0))} == {2,3,4}
+ assert db.execute(edited_messages,(kind,peer,1,0)).fetchone()[2] == 1
+ assert db.execute(edited_messages,(kind,peer,1,1)).fetchall() == [], 'Filter before paging'
+ dialogs = db.execute(edited_dialogs,(kind,kind,30,0)).fetchall()
+ assert [(row[1],row[2],row[3]) for row in dialogs] == [(peer,1,10+kind)]
+ assert db.execute('SELECT COUNT(*) FROM revisions WHERE peer_kind=? AND peer_id=? AND message_id=2',
+     (kind,peer)).fetchone()[0] == 1, 'Keep edit history after deletion'
+assert len(db.execute(deleted_dialogs,(0,1,2,3,30,0)).fetchall()) == 8
+combined = edited_messages.replace('WHERE m.peer_kind = ? AND m.peer_id = ?\n',
+ 'WHERE ((m.peer_kind = ? AND m.peer_id = ?) OR (m.peer_kind = ? AND m.peer_id = ?))\n')
+assert {(row[0],row[1],row[2]) for row in db.execute(combined,(3,103,2,102,30,0))} == {
+ (3,103,1),(2,102,1)}
+print('Edited/deleted separation: all peer kinds, legacy flags, combined comments, counts and pagination OK')

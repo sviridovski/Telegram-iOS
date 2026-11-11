@@ -1114,6 +1114,10 @@ public final class GoldgramArchiveReader: NSObject {
     LIMIT ? OFFSET ?;
     """
 
+    // Deleted entries have a dedicated all-chat category. Apply this before
+    // grouping and pagination so edited folders cannot contain empty pages.
+    private static let editedOnlyPredicate = "AND m.is_deleted=0 AND NOT EXISTS (SELECT 1 FROM events de WHERE de.peer_kind=m.peer_kind AND de.peer_id=m.peer_id AND de.message_id=m.message_id AND de.event_kind=2) "
+
     static var countsSQL: String {
         let rows = messagesSQL.components(separatedBy: "ORDER BY COALESCE(m.sent_at, m.last_seen_at) DESC")[0]
             .replacingOccurrences(of: "WHERE m.peer_kind = ? AND m.peer_id = ?", with: "WHERE m.peer_kind IN (0,1,2,3)")
@@ -1555,6 +1559,10 @@ public final class GoldgramArchiveReader: NSObject {
             } else {
                 sql = sql.replacingOccurrences(of: "ORDER BY COALESCE(m.sent_at, m.last_seen_at) DESC", with: deletedPredicate + "ORDER BY COALESCE((SELECT MIN(de.observed_at) FROM events de WHERE de.peer_kind=m.peer_kind AND de.peer_id=m.peer_id AND de.message_id=m.message_id AND de.event_kind=2),m.last_seen_at) DESC")
             }
+        }
+        if !deletedOnly && mode != "totals" {
+            let anchor = mode == "dialogs" ? "GROUP BY d.peer_kind" : "ORDER BY COALESCE(m.sent_at, m.last_seen_at) DESC"
+            sql = sql.replacingOccurrences(of: anchor, with: editedOnlyPredicate + anchor)
         }
         if mode == "combined" {
             let predicate = sources.map { _ in "(m.peer_kind = ? AND m.peer_id = ?)" }.joined(separator: " OR ")
