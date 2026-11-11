@@ -3,6 +3,7 @@ import Darwin
 import Postbox
 import SwiftSignalKit
 internal import TelegramApi
+import MtProtoKit
 
 // #108: bounded diagnostic evidence for system-granted refresh runs.
 // No message text, sender, peer IDs or Telegram session contents are stored.

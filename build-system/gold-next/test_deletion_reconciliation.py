@@ -27,6 +27,7 @@ def extract(start):
 
 policy = extract('private enum GoldgramDeletionScanPolicy')
 worker = extract('private func goldgramReconcileDeletions(')
+assert re.search(r'^import MtProtoKit$', source, re.MULTILINE), 'MTRpcError requires its defining module in this file'
 monitor = source.split('private final class GoldgramDiscussionMonitor', 1)[1].split('// #114:', 1)[0]
 assert 'chatListGetAllPeerIds()' in worker, 'include archived chats, not only recent ten'
 assert 'linkedDiscussionPeerId' in worker and 'goldgramPriorityPeers(' in worker
