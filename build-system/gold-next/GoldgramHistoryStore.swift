@@ -176,6 +176,8 @@ enum GoldgramHistoryStore {
         // #133: additive, backward-compatible: old #131 audits retain unknown
         // commit state/time. No user_version bump and no archive rebuild.
         try ensureOriginalEvidenceColumns(on: db)
+        // Additive transactional read projection; failure must never block capture.
+        GoldgramArchiveReader.ensureFastIndex(on: db)
 
         // Protect DB and existing WAL/SHM sidecars. The account directory
         // sets the inherited protection for sidecars created on later writes.
@@ -1129,6 +1131,227 @@ public final class GoldgramArchiveReader: NSObject {
         return "SELECT COALESCE(SUM(edited),0), COALESCE(SUM(CASE WHEN is_deleted=1 OR delete_event=1 THEN 1 ELSE 0 END),0) FROM (\(rows));"
     }
 
+
+    // #203: A *projection* inside the existing account SQLite, not another
+    // database, and not another source of truth. The projection is rebuilt once
+    // for an old archive, then updated transactionally by source-table triggers.
+    // Only IDs, flags and sort times are indexed: no message bodies duplicated.
+    //
+    // Keep the visibility expression exactly aligned with messagesSQL. A
+    // versioned table name permits a later safe rebuild if the policy changes.
+    private static let fastEditPredicate = """
+    EXISTS (SELECT 1 FROM events e WHERE e.peer_kind=m.peer_kind
+       AND e.peer_id=m.peer_id AND e.message_id=m.message_id
+       AND e.event_kind=1 AND (e.source IN ('goldgram_native_live_v2','goldgram_iphone8_bridge_v1')
+       OR (e.source != 'goldgram_native_v1' AND e.server_time > 0
+       AND m.original_observed=1 AND EXISTS (
+           SELECT 1 FROM revisions vr WHERE vr.peer_kind=m.peer_kind
+           AND vr.peer_id=m.peer_id AND vr.message_id=m.message_id
+           AND vr.content != m.original_text))))
+    """
+
+    private static let fastDeleteEventPredicate = """
+    EXISTS (SELECT 1 FROM events de WHERE de.peer_kind=m.peer_kind
+        AND de.peer_id=m.peer_id AND de.message_id=m.message_id
+        AND de.event_kind=2)
+    """
+
+    private static var fastVisiblePredicate: String {
+        let hasBody = """
+        (NULLIF(TRIM(COALESCE(m.original_text,'')), '') IS NOT NULL
+          AND m.original_text != '[Содержимое не было получено]'
+         OR EXISTS (SELECT 1 FROM revisions body WHERE body.peer_kind=m.peer_kind
+            AND body.peer_id=m.peer_id AND body.message_id=m.message_id
+            AND NULLIF(TRIM(body.content), '') IS NOT NULL
+            AND body.content != '[Содержимое не было получено]'))
+        """
+        let reliable = """
+        (m.original_observed=1 AND NULLIF(TRIM(COALESCE(m.original_text,'')), '') IS NOT NULL
+           AND m.original_text != '[Содержимое не было получено]'
+          OR m.is_deleted=1 OR \(fastDeleteEventPredicate))
+        """
+        return "(\(hasBody) AND \(reliable) AND (m.is_deleted=1 OR \(fastDeleteEventPredicate) OR \(fastEditPredicate)))"
+    }
+
+    private static var fastSelectColumns: String {
+        """
+        m.peer_kind, m.peer_id, m.message_id,
+        CASE WHEN \(fastVisiblePredicate) THEN 1 ELSE 0 END,
+        CASE WHEN \(fastEditPredicate) THEN 1 ELSE 0 END,
+        CASE WHEN m.is_deleted=1 OR \(fastDeleteEventPredicate) THEN 1 ELSE 0 END,
+        COALESCE((SELECT MAX(e.observed_at) FROM events e WHERE
+          e.peer_kind=m.peer_kind AND e.peer_id=m.peer_id AND e.message_id=m.message_id),
+          m.last_seen_at),
+        COALESCE((SELECT MIN(de.observed_at) FROM events de WHERE
+          de.peer_kind=m.peer_kind AND de.peer_id=m.peer_id
+          AND de.message_id=m.message_id AND de.event_kind=2),m.last_seen_at),
+        COALESCE(m.sent_at,m.last_seen_at)
+        """
+    }
+
+    private static func fastRefreshStatement(_ row: String) -> String {
+        """
+        INSERT INTO goldgram_ui_fast_rows_v1
+          (peer_kind,peer_id,message_id,visible,edited,deleted,newest_at,deleted_at,sort_at)
+        SELECT \(fastSelectColumns)
+        FROM messages m WHERE m.peer_kind=\(row).peer_kind
+          AND m.peer_id=\(row).peer_id AND m.message_id=\(row).message_id
+        ON CONFLICT(peer_kind,peer_id,message_id) DO UPDATE SET
+          visible=excluded.visible, edited=excluded.edited,
+          deleted=excluded.deleted,newest_at=excluded.newest_at,
+          deleted_at=excluded.deleted_at,sort_at=excluded.sort_at;
+        """
+    }
+
+    // Executed on the archive writer queue while createOrOpen holds its
+    // temporary write connection. Crash/failure rolls back *all* index DDL,
+    // triggers and the backfill, leaving the original archive untouched.
+    // A failed optimization always falls back to the previous SQL queries.
+    fileprivate static func ensureFastIndex(on db: OpaquePointer) {
+        var ptr: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT 1 FROM sqlite_master WHERE type='table' AND name='goldgram_ui_fast_rows_v1';",
+                                 -1, &ptr, nil) == SQLITE_OK, let stmt = ptr else {
+            if let ptr { sqlite3_finalize(ptr) }
+            return
+        }
+        let exists = sqlite3_step(stmt) == SQLITE_ROW
+        sqlite3_finalize(stmt)
+        if exists { return }
+
+        func exec(_ sql: String) -> Bool {
+            sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK
+        }
+        guard exec("BEGIN IMMEDIATE;") else { return }
+        var completed = false
+        defer {
+            if !completed { _ = exec("ROLLBACK;") }
+        }
+        let setup = """
+        CREATE TABLE goldgram_ui_fast_rows_v1 (
+          peer_kind INTEGER NOT NULL,peer_id INTEGER NOT NULL,
+          message_id INTEGER NOT NULL,visible INTEGER NOT NULL,
+          edited INTEGER NOT NULL,deleted INTEGER NOT NULL,
+          newest_at INTEGER NOT NULL,deleted_at INTEGER NOT NULL,
+          sort_at INTEGER NOT NULL,
+          PRIMARY KEY(peer_kind,peer_id,message_id)
+        );
+        CREATE TABLE goldgram_ui_fast_totals_v1 (
+          id INTEGER PRIMARY KEY CHECK(id=1),
+          edited INTEGER NOT NULL DEFAULT 0,
+          deleted INTEGER NOT NULL DEFAULT 0
+        );
+        INSERT INTO goldgram_ui_fast_totals_v1(id,edited,deleted) VALUES(1,0,0);
+        CREATE INDEX goldgram_ui_fast_dialogs_v1
+           ON goldgram_ui_fast_rows_v1(visible,deleted,peer_kind,peer_id,newest_at DESC);
+        CREATE INDEX goldgram_ui_fast_dialog_dates_v1
+           ON goldgram_ui_fast_rows_v1(visible,deleted,peer_kind,peer_id,deleted_at DESC);
+        CREATE TRIGGER goldgram_ui_fast_insert_v1
+        AFTER INSERT ON goldgram_ui_fast_rows_v1 BEGIN
+          UPDATE goldgram_ui_fast_totals_v1
+          SET edited=edited+(NEW.visible * NEW.edited),
+              deleted=deleted+(NEW.visible * NEW.deleted) WHERE id=1;
+        END;
+        CREATE TRIGGER goldgram_ui_fast_update_v1
+        AFTER UPDATE ON goldgram_ui_fast_rows_v1 BEGIN
+          UPDATE goldgram_ui_fast_totals_v1 SET
+            edited=edited+(NEW.visible*NEW.edited)-(OLD.visible*OLD.edited),
+            deleted=deleted+(NEW.visible*NEW.deleted)-(OLD.visible*OLD.deleted)
+          WHERE id=1;
+        END;
+        CREATE TRIGGER goldgram_ui_fast_delete_v1
+        AFTER DELETE ON goldgram_ui_fast_rows_v1 BEGIN
+          UPDATE goldgram_ui_fast_totals_v1 SET
+            edited=edited-(OLD.visible*OLD.edited),
+            deleted=deleted-(OLD.visible*OLD.deleted) WHERE id=1;
+        END;
+        """
+        guard exec(setup) else { return }
+        guard exec("""
+          INSERT INTO goldgram_ui_fast_rows_v1
+          (peer_kind,peer_id,message_id,visible,edited,deleted,newest_at,deleted_at,sort_at)
+          SELECT \(fastSelectColumns) FROM messages m;
+          """) else { return }
+
+        let delete = """
+          DELETE FROM goldgram_ui_fast_rows_v1
+          WHERE peer_kind=OLD.peer_kind AND peer_id=OLD.peer_id
+            AND message_id=OLD.message_id;
+          """
+        let specs: [(String,String,String,String)] = [
+          ("message_insert","INSERT","messages","NEW"),
+          ("message_update","UPDATE","messages","NEW"),
+          ("event_insert","INSERT","events","NEW"),
+          ("event_update","UPDATE","events","NEW"),
+          ("event_delete","DELETE","events","OLD"),
+          ("revision_insert","INSERT","revisions","NEW"),
+          ("revision_update","UPDATE","revisions","NEW"),
+          ("revision_delete","DELETE","revisions","OLD")
+        ]
+        for (name, operation, table, row) in specs {
+            guard exec("""
+                CREATE TRIGGER goldgram_ui_fast_source_\(name)_v1
+                AFTER \(operation) ON \(table) BEGIN
+                  \(fastRefreshStatement(row))
+                END;
+                """) else { return }
+        }
+        guard exec("""
+            CREATE TRIGGER goldgram_ui_fast_source_message_delete_v1
+            AFTER DELETE ON messages BEGIN \(delete) END;
+            """) else { return }
+        guard exec("COMMIT;") else { return }
+        completed = true
+    }
+
+    private static func fastIndexAvailable(_ db: OpaquePointer) -> Bool {
+        var ptr: OpaquePointer?
+        guard sqlite3_prepare_v2(db,
+            "SELECT id FROM goldgram_ui_fast_totals_v1 WHERE id=1 LIMIT 1;",
+            -1, &ptr, nil) == SQLITE_OK, let stmt = ptr else {
+            if let ptr { sqlite3_finalize(ptr) }
+            return false
+        }
+        defer { sqlite3_finalize(stmt) }
+        return sqlite3_step(stmt) == SQLITE_ROW
+    }
+
+    private static let fastDialogsSQL = """
+    SELECT f.peer_kind, f.peer_id, COUNT(*) AS archived_count,
+           MAX(f.newest_at) AS newest_at
+    FROM goldgram_ui_fast_rows_v1 f
+    WHERE f.visible=1 AND f.deleted=0 AND f.peer_kind IN (?, ?)
+    GROUP BY f.peer_kind, f.peer_id
+    ORDER BY newest_at DESC, f.peer_kind ASC, f.peer_id ASC
+    LIMIT ? OFFSET ?;
+    """
+
+    private static let fastDeletedDialogsSQL = """
+    SELECT f.peer_kind, f.peer_id, COUNT(*) AS archived_count,
+           MAX(f.deleted_at) AS newest_at
+    FROM goldgram_ui_fast_rows_v1 f
+    WHERE f.visible=1 AND f.deleted=1 AND f.peer_kind IN (?, ?)
+    GROUP BY f.peer_kind, f.peer_id
+    ORDER BY newest_at DESC, f.peer_kind ASC, f.peer_id ASC
+    LIMIT ? OFFSET ?;
+    """
+
+    private static func fastMessagesSQL(deletedOnly: Bool) -> String {
+        // Reuse the exact legacy SELECT projection, so metadata, original
+        // evidence and column ordinals remain ABI-compatible with the UI.
+        let components = messagesSQL.components(separatedBy: "    FROM messages m\\n")
+        guard components.count == 2 else { return messagesSQL }
+        let order = deletedOnly ? "f.deleted_at" : "f.sort_at"
+        return components[0] + """
+            FROM goldgram_ui_fast_rows_v1 f
+            JOIN messages m ON m.peer_kind=f.peer_kind AND m.peer_id=f.peer_id
+              AND m.message_id=f.message_id
+            WHERE m.peer_kind = ? AND m.peer_id = ?
+              AND f.visible=1 AND f.deleted=\(deletedOnly ? 1 : 0)
+            ORDER BY \(order) DESC, m.message_id DESC, m.peer_kind ASC, m.peer_id ASC
+            LIMIT ? OFFSET ?;
+        """
+    }
+
     // Only explicit, positive Telegram account IDs are accepted. The UI must
     // obtain the selected authenticated account from native Telegram context,
     // NEVER from global MxLastKnownUserId or whichever DB happens to exist.
@@ -1549,12 +1772,21 @@ public final class GoldgramArchiveReader: NSObject {
             return result
         }
 
-        var sql = mode == "totals" ? countsSQL : mode == "dialogs" ? dialogsSQL : messagesSQL
+        let useFastIndex = fastIndexAvailable(db)
+        var sql = useFastIndex
+            ? (mode == "totals"
+                ? "SELECT edited, deleted FROM goldgram_ui_fast_totals_v1 WHERE id=1;"
+                : mode == "dialogs"
+                    ? (deletedOnly ? fastDeletedDialogsSQL : fastDialogsSQL)
+                    : fastMessagesSQL(deletedOnly: deletedOnly))
+            : (mode == "totals" ? countsSQL : mode == "dialogs" ? dialogsSQL : messagesSQL)
         if mode == "dialogs" {
             let placeholders = kinds.map { _ in "?" }.joined(separator: ", ")
-            sql = sql.replacingOccurrences(of: "WHERE d.peer_kind IN (?, ?)", with: "WHERE d.peer_kind IN (\(placeholders))")
+            let target = useFastIndex ? "f" : "d"
+            sql = sql.replacingOccurrences(of: "WHERE \(target).peer_kind IN (?, ?)",
+                                           with: "WHERE \(target).peer_kind IN (\(placeholders))")
         }
-        if deletedOnly {
+        if !useFastIndex && deletedOnly {
             let deletedPredicate = "AND (m.is_deleted=1 OR EXISTS (SELECT 1 FROM events de WHERE de.peer_kind=m.peer_kind AND de.peer_id=m.peer_id AND de.message_id=m.message_id AND de.event_kind=2)) "
             if mode == "dialogs" {
                 if let start = sql.range(of: "MAX(COALESCE("), let end = sql.range(of: " AS newest_at") {
@@ -1565,7 +1797,7 @@ public final class GoldgramArchiveReader: NSObject {
                 sql = sql.replacingOccurrences(of: "ORDER BY COALESCE(m.sent_at, m.last_seen_at) DESC", with: deletedPredicate + "ORDER BY COALESCE((SELECT MIN(de.observed_at) FROM events de WHERE de.peer_kind=m.peer_kind AND de.peer_id=m.peer_id AND de.message_id=m.message_id AND de.event_kind=2),m.last_seen_at) DESC")
             }
         }
-        if !deletedOnly && mode != "totals" {
+        if !useFastIndex && !deletedOnly && mode != "totals" {
             let anchor = mode == "dialogs" ? "GROUP BY d.peer_kind" : "ORDER BY COALESCE(m.sent_at, m.last_seen_at) DESC"
             sql = sql.replacingOccurrences(of: anchor, with: editedOnlyPredicate + anchor)
         }
