@@ -234,8 +234,26 @@ struct NativeCaptureFixture {
         }
         precondition(combined?["status"] as? String == "ok",
                      "deleted archive must use materialized predicates")
-        precondition(!((combined?["items"] as? [[String: Any]]) ?? []).isEmpty,
-                     "deleted rows remain accessible")
+        let deletedIDs = Set(((combined?["items"] as? [[String: Any]]) ?? [])
+            .compactMap { ($0["messageId"] as? NSNumber)?.intValue })
+        precondition(deletedIDs == Set([1, 2]),
+                     "fast deleted folder excludes hidden receipts and nondeleted edits")
+
+        var editedPage: NSDictionary?
+        GoldgramArchiveReader.query([
+            "accountId": NSNumber(value: account), "category": 1,
+            "mode": "messages", "peerKind": 2, "peerId": 99,
+            "offset": 0, "limit": 30
+        ]) { editedPage = $0 }
+        let editedDeadline = Date().addingTimeInterval(10)
+        while editedPage == nil && Date() < editedDeadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+        precondition(editedPage?["status"] as? String == "ok")
+        let editedIDs = Set(((editedPage?["items"] as? [[String: Any]]) ?? [])
+            .compactMap { ($0["messageId"] as? NSNumber)?.intValue })
+        precondition(editedIDs == Set([6, 1002, 1503]),
+                     "fast edit folder must exclude deleted and unverified originals")
 
         // Simulate the existing account-clear cascade on the same SQLite.
         precondition(sqlite3_exec(db, "PRAGMA foreign_keys=ON; DELETE FROM dialogs;",
