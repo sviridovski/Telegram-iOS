@@ -152,6 +152,28 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
     private var openingMessage = false
     private var preserveListOnNextAppearance = false
     private var status = "Загрузка истории…"
+    // Folder summaries contain NO message text. Retain only a bounded first
+    // page per account/category so repeated navigation has a zero-I/O first
+    // paint. NSCache releases the snapshot under memory pressure.
+    private static let fastFolderCache: NSCache<NSString, NSArray> = {
+        let cache = NSCache<NSString, NSArray>()
+        cache.countLimit = 12
+        return cache
+    }()
+    private func folderCacheKey(_ account: Int64) -> NSString {
+        "\(account):\(category)" as NSString
+    }
+    private func restoreFolderSnapshot(account: Int64) {
+        guard sources == nil, items.isEmpty,
+              let cached = Self.fastFolderCache.object(forKey: folderCacheKey(account))
+                as? [[String: Any]], !cached.isEmpty else { return }
+        boundAccount = account
+        items = cached
+        hasMore = cached.count == 30
+        rebuildDisplayItems()
+        tableView.reloadData()
+    }
+
     private let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateStyle = .short
@@ -1123,6 +1145,9 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
     public override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         GoldgramLiveBridge.shared.tryStartForVisibleArchive()
+        if let account = GoldgramArchiveReader.activeAccountId()?.int64Value {
+            restoreFolderSnapshot(account: account)
+        }
         if self.preserveListOnNextAppearance,
            GoldgramArchiveReader.activeAccountId()?.int64Value == self.boundAccount {
             self.preserveListOnNextAppearance = false
@@ -1181,9 +1206,10 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
     private func load(reset: Bool) {
         if reset {
             generation += 1
-            items = []; displayItems = []
-            hasMore = false; inFlight = false
-            status = "Загрузка истории…"
+            // Keep the previous (account-scoped) first paint visible until the
+            // new SQLite result is ready. Never show old data after account swap.
+            inFlight = false
+            if items.isEmpty { status = "Загрузка истории…" }
         }
         guard !inFlight else { return }
         guard let active = GoldgramArchiveReader.activeAccountId()?.int64Value, active > 0 else {
@@ -1197,9 +1223,10 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
             tableView.reloadData(); return
         }
         boundAccount = active
-        guard items.count <= 5000 else { hasMore = false; return }
+        guard reset || items.count <= 5000 else { hasMore = false; return }
         inFlight = true
         let callGeneration = generation
+        let startOffset = reset ? 0 : items.count
         let first = sources?.first
         let request: NSDictionary = [
             "accountId": NSNumber(value: active), "category": NSNumber(value: category),
@@ -1207,29 +1234,64 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
             "peerId": first?["peerId"] ?? NSNumber(value: 0),
             "peerKind": first?["peerKind"] ?? NSNumber(value: -1),
             "sources": sources ?? [],
-            "offset": NSNumber(value: items.count), "limit": NSNumber(value: 30)
+            "offset": NSNumber(value: startOffset), "limit": NSNumber(value: 30)
         ]
         GoldgramArchiveReader.query(request) { [weak self] answer in
             guard let self, self.generation == callGeneration else { return }
-            let page = answer["items"] as? [[String: Any]] ?? []
-            self.decorate(page, accountId: active) { [weak self] enriched in
-                guard let self, self.generation == callGeneration else { return }
+            guard GoldgramArchiveReader.activeAccountId()?.int64Value == active else {
                 self.inFlight = false
-                guard GoldgramArchiveReader.activeAccountId()?.int64Value == active else {
+                self.items = []; self.displayItems = []; self.hasMore = false
+                self.status = "Аккаунт изменён — откройте архив заново"
+                self.tableView.reloadData()
+                return
+            }
+            self.inFlight = false
+            let code = answer["status"] as? String ?? ""
+            guard code == "ok" else {
+                // A transient locked SQLite must not erase previously rendered
+                // information. A real absent archive does reset its view.
+                if code == "no_archive" {
                     self.items = []; self.displayItems = []; self.hasMore = false
-                    self.status = "Аккаунт изменён — откройте архив заново"
-                    self.tableView.reloadData(); return
+                    if self.sources == nil {
+                        Self.fastFolderCache.removeObject(forKey: self.folderCacheKey(active))
+                    }
                 }
-                let code = answer["status"] as? String ?? ""
-                if code == "ok" {
-                    self.items.append(contentsOf: enriched)
-                    self.rebuildDisplayItems()
-                    self.hasMore = (answer["hasMore"] as? Bool ?? false) && self.items.count <= 5000
-                    self.status = "Записей пока нет"
-                } else {
-                    self.items = []; self.displayItems = []; self.hasMore = false
-                    self.status = code == "no_archive" ? "Локальный архив ещё не создан" :
-                        code == "account_changed" ? "Аккаунт изменён" : "Не удалось прочитать SQLite-архив"
+                self.status = code == "no_archive" ? "Локальный архив ещё не создан" :
+                    code == "account_changed" ? "Аккаунт изменён" : "Не удалось прочитать SQLite-архив"
+                self.tableView.reloadData()
+                return
+            }
+            let page = answer["items"] as? [[String: Any]] ?? []
+            // First paint does NOT wait for Telegram metadata or usernames.
+            // Existing peer names are merged in when the native resolver replies.
+            if reset {
+                self.items = page
+            } else {
+                self.items.append(contentsOf: page)
+            }
+            self.rebuildDisplayItems()
+            self.hasMore = (answer["hasMore"] as? Bool ?? false) && self.items.count <= 5000
+            self.status = "Записей пока нет"
+            self.tableView.reloadData()
+            if self.sources == nil, reset {
+                Self.fastFolderCache.setObject(self.items as NSArray,
+                                               forKey: self.folderCacheKey(active))
+            }
+            self.decorate(page, accountId: active) { [weak self] enriched in
+                guard let self, self.generation == callGeneration,
+                      GoldgramArchiveReader.activeAccountId()?.int64Value == active else { return }
+                // A second page can load while metadata is in flight. Only
+                // decorate matching identities; never append or re-order rows.
+                for (index, row) in enriched.enumerated() {
+                    let slot = startOffset + index
+                    guard self.items.indices.contains(slot),
+                          Self.key(self.items[slot]) == Self.key(row) else { continue }
+                    self.items[slot] = row
+                }
+                self.rebuildDisplayItems()
+                if self.sources == nil, reset {
+                    Self.fastFolderCache.setObject(self.items as NSArray,
+                                                   forKey: self.folderCacheKey(active))
                 }
                 self.tableView.reloadData()
             }
@@ -1406,6 +1468,7 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
                 controller.present(result, animated: true)
                 }
                 if status == "ok" {
+                    GoldgramArchiveScreen.fastFolderCache.removeAllObjects()
                     let retained = answer["retainedItems"] as? [[String: Any]] ?? []
                     purgeRetained(retained, account: account, completion: showResult)
                 } else { showResult(false) }
