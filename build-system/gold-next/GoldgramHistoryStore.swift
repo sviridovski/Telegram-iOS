@@ -1342,7 +1342,7 @@ public final class GoldgramArchiveReader: NSObject {
     private static func fastMessagesSQL(deletedOnly: Bool) -> String {
         // Reuse the exact legacy SELECT projection, so metadata, original
         // evidence and column ordinals remain ABI-compatible with the UI.
-        let components = messagesSQL.components(separatedBy: "    FROM messages m\n")
+        let components = messagesSQL.components(separatedBy: "FROM messages m\n")
         guard components.count == 2 else { return messagesSQL }
         let order = deletedOnly ? "f.deleted_at" : "f.sort_at"
         return components[0] + """
@@ -1776,7 +1776,8 @@ public final class GoldgramArchiveReader: NSObject {
             return result
         }
 
-        let useFastIndex = fastIndexAvailable(db)
+        let useFastIndex = fastIndexAvailable(db) &&
+            messagesSQL.components(separatedBy: "FROM messages m\n").count == 2
         var sql = useFastIndex
             ? (mode == "totals"
                 ? "SELECT edited, deleted FROM goldgram_ui_fast_totals_v1 WHERE id=1;"
