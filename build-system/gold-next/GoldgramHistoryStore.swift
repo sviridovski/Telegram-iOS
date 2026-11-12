@@ -1338,7 +1338,7 @@ public final class GoldgramArchiveReader: NSObject {
     private static func fastMessagesSQL(deletedOnly: Bool) -> String {
         // Reuse the exact legacy SELECT projection, so metadata, original
         // evidence and column ordinals remain ABI-compatible with the UI.
-        let components = messagesSQL.components(separatedBy: "    FROM messages m\\n")
+        let components = messagesSQL.components(separatedBy: "    FROM messages m\n")
         guard components.count == 2 else { return messagesSQL }
         let order = deletedOnly ? "f.deleted_at" : "f.sort_at"
         return components[0] + """
@@ -1783,8 +1783,8 @@ public final class GoldgramArchiveReader: NSObject {
         if mode == "dialogs" {
             let placeholders = kinds.map { _ in "?" }.joined(separator: ", ")
             let target = useFastIndex ? "f" : "d"
-            sql = sql.replacingOccurrences(of: "WHERE \(target).peer_kind IN (?, ?)",
-                                           with: "WHERE \(target).peer_kind IN (\(placeholders))")
+            sql = sql.replacingOccurrences(of: "\(target).peer_kind IN (?, ?)",
+                                           with: "\(target).peer_kind IN (\(placeholders))")
         }
         if !useFastIndex && deletedOnly {
             let deletedPredicate = "AND (m.is_deleted=1 OR EXISTS (SELECT 1 FROM events de WHERE de.peer_kind=m.peer_kind AND de.peer_id=m.peer_id AND de.message_id=m.message_id AND de.event_kind=2)) "
