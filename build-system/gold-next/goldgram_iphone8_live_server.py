@@ -130,7 +130,7 @@ def pair_from_record(r, kind):
     return peer, chat
 
 
-def batch_from_db(conn, account, after_edits, after_deletions):
+def batch_from_db(conn, account, after_edits, after_deletions, limit_per_kind=PER_KIND):
     # SQLite consistent read snapshot, without blocking the live collector.
     conn.execute("BEGIN")
     try:
@@ -144,7 +144,7 @@ def batch_from_db(conn, account, after_edits, after_deletions):
            AND m.message_id=e.message_id
           WHERE e.rowid > ? AND e.account_id = ?
           ORDER BY e.rowid LIMIT ?
-        """, (after_edits, account, PER_KIND)).fetchall()
+        """, (after_edits, account, limit_per_kind)).fetchall()
         deletes = conn.execute("""
           SELECT d.rowid AS cursor, d.account_id, d.chat_id, d.message_id,
                  d.observed_at, d.resolution,
@@ -155,7 +155,7 @@ def batch_from_db(conn, account, after_edits, after_deletions):
            AND m.message_id=d.message_id
           WHERE d.rowid > ? AND d.account_id = ?
           ORDER BY d.rowid LIMIT ?
-        """, (after_deletions, account, PER_KIND)).fetchall()
+        """, (after_deletions, account, limit_per_kind)).fetchall()
     finally:
         conn.execute("ROLLBACK")
     records = []
@@ -248,13 +248,17 @@ def make_handler(db_path, token, account):
                 ec, dc = (int(args[k][0]) for k in keys)
                 if ec < 0 or dc < 0 or ec > 2**63 - 1 or dc > 2**63 - 1:
                     return self.fail(400)
-                with open_source(db_path) as conn:
-                    data = batch_from_db(conn, account, ec, dc)
-                response = json.dumps(data, ensure_ascii=False,
-                                      separators=(",", ":")).encode("utf-8")
-                if len(response) > 950_000:
-                    # No cursor advancement for oversized payloads.
-                    return self.fail(413)
+                size = PER_KIND
+                while True:
+                    with open_source(db_path) as conn:
+                        data = batch_from_db(conn, account, ec, dc, size)
+                    response = json.dumps(data, ensure_ascii=False,
+                                          separators=(",", ":")).encode("utf-8")
+                    if len(response) <= 950_000:
+                        break
+                    if size <= 1:
+                        return self.fail(413)
+                    size = max(1, size // 2)
             except (ValueError, sqlite3.Error, TypeError):
                 return self.fail(503)
             self.send_response(200)
