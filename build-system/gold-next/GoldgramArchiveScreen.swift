@@ -950,6 +950,88 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
     }
 
 
+    // Goldgram Bridge Live: explicit pairing; the existing archive SQLite is
+    // still the sole receiver. All credentials are kept by GoldgramLiveBridge
+    // in Keychain and never included in screenshots/log messages.
+    @objc private func showLiveMenu() {
+        guard let account = GoldgramArchiveReader.activeAccountId()?.int64Value,
+              account > 0 else {
+            showPhone8ImportResult("Для Live сначала выберите Telegram-аккаунт.")
+            return
+        }
+        let bridge = GoldgramLiveBridge.shared
+        let enabled = bridge.isEnabled(account: account)
+        let report = "Состояние: \(enabled ? "включено" : "выключено")\n" +
+            "\(bridge.lastStatus)\n\n" +
+            "Live работает через HTTPS в одной локальной сети. " +
+            "Пока Swiftgram активен, проверки выполняются примерно раз в 12 секунд. " +
+            "При приостановке iOS события накапливаются на iPhone 8."
+        let alert = UIAlertController(title: "Goldgram Bridge Live",
+                                      message: report, preferredStyle: .actionSheet)
+        alert.addAction(UIAlertAction(title: "Подключить iPhone 8", style: .default) { [weak self] _ in
+            self?.showLivePairing(account: account)
+        })
+        if enabled {
+            alert.addAction(UIAlertAction(title: "Синхронизировать сейчас", style: .default) { _ in
+                bridge.pollNow()
+            })
+            alert.addAction(UIAlertAction(title: "Отключить Live", style: .destructive) { _ in
+                bridge.disable(account: account)
+            })
+        }
+        alert.addAction(UIAlertAction(title: "Отмена", style: .cancel))
+        if let pop = alert.popoverPresentationController {
+            pop.sourceView = view
+            pop.sourceRect = CGRect(x: view.bounds.midX, y: 32, width: 1, height: 1)
+        }
+        present(alert, animated: true)
+    }
+
+    private func showLivePairing(account: Int64) {
+        let bridge = GoldgramLiveBridge.shared
+        let alert = UIAlertController(
+            title: "iPhone 8 · защищённое подключение",
+            message: "Введи локальный IP iPhone 8, SHA-256 сертификата и " +
+                "64-значный секрет из live_bridge_secret.txt. Порт 8873.",
+            preferredStyle: .alert)
+        alert.addTextField { field in
+            field.placeholder = "192.168.1.20"
+            field.text = bridge.configuredHost(account: account)
+            field.keyboardType = .numbersAndPunctuation
+            field.autocorrectionType = .no
+        }
+        alert.addTextField { field in
+            field.placeholder = "SHA256 сертификата — 64 символа"
+            field.text = bridge.configuredPin(account: account)
+            field.autocorrectionType = .no
+            field.autocapitalizationType = .none
+        }
+        alert.addTextField { field in
+            field.placeholder = "Секрет подключения — 64 символа"
+            field.isSecureTextEntry = true
+            field.autocorrectionType = .no
+            field.autocapitalizationType = .none
+        }
+        alert.addAction(UIAlertAction(title: "Отмена", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Включить Live", style: .default) { [weak self] _ in
+            let inputs = alert.textFields ?? []
+            guard inputs.count == 3,
+                  bridge.configure(account: account,
+                                   host: inputs[0].text ?? "",
+                                   pin: inputs[1].text ?? "",
+                                   token: inputs[2].text ?? "") else {
+                self?.showPhone8ImportResult(
+                    "Не удалось включить Live. Проверь IP, отпечаток сертификата и секрет подключения.")
+                return
+            }
+            self?.showPhone8ImportResult(
+                "Goldgram Bridge Live включён.\n\n" +
+                "После подключения события будут импортироваться примерно каждые 12 секунд, " +
+                "пока Swiftgram работает. Статус — в меню Live.")
+        })
+        present(alert, animated: true)
+    }
+
     // #185: one-time, opt-in proof of import. A later transport can reuse the
     // account-checked SQLite importer without changing these archives.
     @objc private func importPhone8File() {
@@ -990,12 +1072,16 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
             } else {
                 let imported = result["imported"] ?? 0
                 let edits = result["edits"] ?? 0
+                let deletes = result["deletions"] ?? 0
+                let pending = result["pending"] ?? 0
                 let dup = result["duplicates"] ?? 0
                 let unclassified = result["unknownChannels"] ?? 0
                 let conflicts = result["conflicts"] ?? 0
                 let invalid = result["invalid"] ?? 0
                 message = "Подтверждено оригиналов: \(imported)\n" +
                     "Новых записей редакций: \(edits)\n" +
+                    "Событий удаления: \(deletes)\n" +
+                    "Спорных записей на проверку: \(pending)\n" +
                     "Повторов: \(dup)\n" +
                     "Неопределённых каналов: \(unclassified)\n" +
                     "Конфликтов: \(conflicts)\n" +
@@ -1023,7 +1109,10 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
         let bridgeButton = UIBarButtonItem(image: UIImage(systemName: "square.and.arrow.down"),
                                            style: .plain, target: self, action: #selector(importPhone8File))
         bridgeButton.accessibilityLabel = "Импорт iPhone 8"
-        navigationItem.rightBarButtonItems = [bridgeButton, testButton,
+        let liveButton = UIBarButtonItem(image: UIImage(systemName: "arrow.triangle.2.circlepath"),
+                                         style: .plain, target: self, action: #selector(showLiveMenu))
+        liveButton.accessibilityLabel = "Goldgram Live"
+        navigationItem.rightBarButtonItems = [liveButton, bridgeButton, testButton,
             UIBarButtonItem(title: "Выгрузки", style: .plain, target: self, action: #selector(showProcessDiagnostics))]
         title = displayName ?? (category == 0 ? "Личные сообщения" :
              category == 1 ? "Группы и чаты" : category == 3 ? "Удалённые сообщения" : "Каналы")
@@ -1033,6 +1122,7 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
 
     public override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        GoldgramLiveBridge.shared.tryStartForVisibleArchive()
         if self.preserveListOnNextAppearance,
            GoldgramArchiveReader.activeAccountId()?.int64Value == self.boundAccount {
             self.preserveListOnNextAppearance = false
