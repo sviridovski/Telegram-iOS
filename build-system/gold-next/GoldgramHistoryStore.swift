@@ -4,6 +4,7 @@
 // Never infer an account ID from a message ID or a chat peer ID.
 import Foundation
 import SQLite3
+import CryptoKit
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
@@ -1923,10 +1924,142 @@ public func goldgramArchiveBarrierV1(_ context: UnsafeMutableRawPointer,
 }
 
 
-// Goldgram Bridge #185: explicit, account-checked iPhone 8 JSON import.
-// No new SQLite DB, no Telegram connection, and no automatic import on launch.
-// This first batch intentionally refuses unknown PeerChannel classification.
+// Goldgram Bridge Smart Merge V2 (base #187).
+// All mutations share storageQueue + the existing per-account SQLite transaction.
+// Inbox/receipts are ADDITIVE TABLES in that same DB, not a second database.
+// v1 snapshots lack edit chronology; never invent intermediate edit order.
 private enum GoldgramPhone8Bridge {
+    private static func bind(_ value: String, to stmt: OpaquePointer, at index: Int32) throws {
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        let rc = value.utf8CString.withUnsafeBufferPointer { chars in
+            sqlite3_bind_text(stmt, index, chars.baseAddress,
+                              Int32(chars.count - 1), transient)
+        }
+        guard rc == SQLITE_OK else { throw GoldgramHistoryStore.StorageError.sqlite(rc) }
+    }
+
+    private static func receiptStatus(db: OpaquePointer, key: String) throws -> String? {
+        var stmt: OpaquePointer?
+        let rc = sqlite3_prepare_v2(db,
+            "SELECT status FROM bridge_merge_receipts_v2 WHERE event_key=? LIMIT 1;",
+            -1, &stmt, nil)
+        guard rc == SQLITE_OK, let stmt else {
+            if let stmt { sqlite3_finalize(stmt) }
+            throw GoldgramHistoryStore.StorageError.sqlite(rc)
+        }
+        defer { sqlite3_finalize(stmt) }
+        try bind(key, to: stmt, at: 1)
+        let step = sqlite3_step(stmt)
+        if step == SQLITE_DONE { return nil }
+        guard step == SQLITE_ROW, let raw = sqlite3_column_text(stmt, 0) else {
+            throw GoldgramHistoryStore.StorageError.sqlite(step)
+        }
+        return String(cString: raw)
+    }
+
+    private static func saveReceipt(db: OpaquePointer, key: String, status: String,
+                                    payload: String?) throws {
+        guard ["applied", "already_present", "pending"].contains(status) else {
+            throw GoldgramHistoryStore.StorageError.sqlite(SQLITE_MISUSE)
+        }
+        let sql = """
+        INSERT INTO bridge_merge_receipts_v2(event_key,status,payload,updated_at)
+        VALUES(?,?,?,?)
+        ON CONFLICT(event_key) DO UPDATE SET
+           status=excluded.status,payload=excluded.payload,updated_at=excluded.updated_at;
+        """
+        var stmt: OpaquePointer?
+        let rc = sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
+        guard rc == SQLITE_OK, let stmt else {
+            if let stmt { sqlite3_finalize(stmt) }
+            throw GoldgramHistoryStore.StorageError.sqlite(rc)
+        }
+        defer { sqlite3_finalize(stmt) }
+        try bind(key, to: stmt, at: 1)
+        try bind(status, to: stmt, at: 2)
+        if let payload { try bind(payload, to: stmt, at: 3) }
+        else {
+            guard sqlite3_bind_null(stmt, 3) == SQLITE_OK else {
+                throw GoldgramHistoryStore.StorageError.sqlite(SQLITE_ERROR)
+            }
+        }
+        guard sqlite3_bind_int64(stmt, 4, Int64(Date().timeIntervalSince1970 * 1000)) == SQLITE_OK
+        else { throw GoldgramHistoryStore.StorageError.sqlite(SQLITE_ERROR) }
+        let step = sqlite3_step(stmt)
+        guard step == SQLITE_DONE else {
+            throw GoldgramHistoryStore.StorageError.sqlite(step)
+        }
+    }
+
+    private static func originalInArchive(db: OpaquePointer, scope: [Int64]) throws -> String? {
+        var stmt: OpaquePointer?
+        let sql = "SELECT original_text FROM messages WHERE peer_kind=? AND peer_id=? AND message_id=? AND original_observed=1 LIMIT 1;"
+        let rc = sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
+        guard rc == SQLITE_OK, let stmt else {
+            if let stmt { sqlite3_finalize(stmt) }
+            throw GoldgramHistoryStore.StorageError.sqlite(rc)
+        }
+        defer { sqlite3_finalize(stmt) }
+        for (i, id) in scope.enumerated() {
+            guard sqlite3_bind_int64(stmt, Int32(i+1), id) == SQLITE_OK else {
+                throw GoldgramHistoryStore.StorageError.sqlite(SQLITE_ERROR)
+            }
+        }
+        let step = sqlite3_step(stmt)
+        if step == SQLITE_DONE { return nil }
+        guard step == SQLITE_ROW else {
+            throw GoldgramHistoryStore.StorageError.sqlite(step)
+        }
+        guard let raw = sqlite3_column_text(stmt, 0) else { return nil }
+        return String(decoding: UnsafeBufferPointer(start: raw,
+            count: Int(sqlite3_column_bytes(stmt, 0))), as: UTF8.self)
+    }
+
+    // Last revision and its trustworthy SERVER edit time (not import time).
+    private static func lastRevisionTime(db: OpaquePointer, scope: [Int64]) throws -> Int64? {
+        var stmt: OpaquePointer?
+        let sql = "SELECT server_edit_at FROM revisions WHERE peer_kind=? AND peer_id=? AND message_id=? ORDER BY version_index DESC LIMIT 1;"
+        let rc = sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
+        guard rc == SQLITE_OK, let stmt else {
+            if let stmt { sqlite3_finalize(stmt) }
+            throw GoldgramHistoryStore.StorageError.sqlite(rc)
+        }
+        defer { sqlite3_finalize(stmt) }
+        for (i, id) in scope.enumerated() {
+            guard sqlite3_bind_int64(stmt, Int32(i+1), id) == SQLITE_OK else {
+                throw GoldgramHistoryStore.StorageError.sqlite(SQLITE_ERROR)
+            }
+        }
+        let step = sqlite3_step(stmt)
+        if step == SQLITE_DONE { return nil }
+        guard step == SQLITE_ROW else {
+            throw GoldgramHistoryStore.StorageError.sqlite(step)
+        }
+        return sqlite3_column_type(stmt, 0) == SQLITE_NULL
+            ? nil : sqlite3_column_int64(stmt, 0)
+    }
+
+    private static func hasEdit(db: OpaquePointer, scope: [Int64]) throws -> Bool {
+        var stmt: OpaquePointer?
+        let sql = "SELECT 1 FROM events WHERE peer_kind=? AND peer_id=? AND message_id=? AND event_kind=1 LIMIT 1;"
+        let rc = sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
+        guard rc == SQLITE_OK, let stmt else {
+            if let stmt { sqlite3_finalize(stmt) }
+            throw GoldgramHistoryStore.StorageError.sqlite(rc)
+        }
+        defer { sqlite3_finalize(stmt) }
+        for (i, id) in scope.enumerated() {
+            guard sqlite3_bind_int64(stmt, Int32(i+1), id) == SQLITE_OK else {
+                throw GoldgramHistoryStore.StorageError.sqlite(SQLITE_ERROR)
+            }
+        }
+        let step = sqlite3_step(stmt)
+        guard step == SQLITE_DONE || step == SQLITE_ROW else {
+            throw GoldgramHistoryStore.StorageError.sqlite(step)
+        }
+        return step == SQLITE_ROW
+    }
+
     static func importBundle(_ data: Data, accountId: Int64,
                              completion: @escaping ([String: Int]) -> Void) {
         func finish(_ result: [String: Int]) {
@@ -1934,12 +2067,13 @@ private enum GoldgramPhone8Bridge {
         }
         guard data.count <= 1_000_000, accountId > 0,
               let payload = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              payload["format"] as? String == "goldgram_bridge_test_v1",
+              let format = payload["format"] as? String,
+              ["goldgram_bridge_test_v1", "goldgram_bridge_v2"].contains(format),
               let rows = payload["records"] as? [[String: Any]],
               !rows.isEmpty, rows.count <= 50 else {
             finish(["invalid": 1]); return
         }
-        // Refuse the entire batch if any record claims a different account.
+        // Never import into a different account even for otherwise valid rows.
         guard rows.allSatisfy({ ($0["account_id"] as? String).flatMap(Int64.init) == accountId }) else {
             finish(["wrongAccount": 1]); return
         }
@@ -1955,13 +2089,35 @@ private enum GoldgramPhone8Bridge {
             date.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSSSSXXXXX"
             let iso = ISO8601DateFormatter()
             iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            func parse(_ value: String) -> Date? {
+                date.date(from: value) ?? iso.date(from: value)
+            }
             var counts = ["imported": 0, "edits": 0, "duplicates": 0,
-                          "unknownChannels": 0, "conflicts": 0, "invalid": 0]
+                          "unknownChannels": 0, "conflicts": 0,
+                          "pending": 0, "invalid": 0]
             do {
                 let db = try GoldgramHistoryStore.archiveConnection(for: accountId)
                 try GoldgramHistoryStore.archiveSQL("BEGIN IMMEDIATE;", db: db, ints: [])
                 do {
-                    for row in rows {
+                    try GoldgramHistoryStore.archiveSQL("""
+                    CREATE TABLE IF NOT EXISTS bridge_merge_receipts_v2 (
+                        event_key TEXT PRIMARY KEY,
+                        status TEXT NOT NULL CHECK(status IN ('applied','already_present','pending')),
+                        payload TEXT,
+                        updated_at INTEGER NOT NULL
+                    );
+                    """, db: db, ints: [])
+                    // V2 packets may include multiple edits of one message. Sort
+                    // only where both contain comparable event timestamps.
+                    let ordered = rows.enumerated().sorted { lhs, rhs in
+                        let a = lhs.element["server_edit_at"] as? String ??
+                                lhs.element["event_observed_at"] as? String ?? ""
+                        let b = rhs.element["server_edit_at"] as? String ??
+                                rhs.element["event_observed_at"] as? String ?? ""
+                        return !a.isEmpty && !b.isEmpty && a != b
+                            ? a < b : lhs.offset < rhs.offset
+                    }.map { $0.element }
+                    for row in ordered {
                         guard row["source"] as? String == "iphone8_telethon",
                               let kindText = row["peer_kind"] as? String,
                               let rawChat = row["chat_id"] as? String,
@@ -1969,12 +2125,22 @@ private enum GoldgramPhone8Bridge {
                               let idValue = Int64(midText),
                               let id = Int32(exactly: idValue), id > 0,
                               let firstAtText = row["first_seen_at"] as? String,
-                              let firstDate = date.date(from: firstAtText) ?? iso.date(from: firstAtText),
+                              let firstDate = parse(firstAtText),
                               let original = row["original_text"] as? String,
                               let latest = row["latest_text"] as? String,
                               !original.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                               original != latest,
                               original.utf8.count <= 65536, latest.utf8.count <= 65536 else {
+                            counts["invalid", default: 0] += 1; continue
+                        }
+                        // The exporter must supply a unique source event ID and
+                        // an actual server edit timestamp for full multi-edit merge.
+                        let token = (row["edit_event_id"] as? String) ?? ""
+                        let serverEditDate = (row["server_edit_at"] as? String).flatMap(parse)
+                        let eventSeenDate = (row["event_observed_at"] as? String).flatMap(parse)
+                        if format == "goldgram_bridge_v2" &&
+                            (token.isEmpty || token.utf8.count > 128 ||
+                             serverEditDate == nil || eventSeenDate == nil) {
                             counts["invalid", default: 0] += 1; continue
                         }
                         let peerId: Int64
@@ -1984,8 +2150,8 @@ private enum GoldgramPhone8Bridge {
                         } else if kindText == "PeerChannel", rawChat.hasPrefix("-100"),
                                   let value = Int64(rawChat.dropFirst(4)), value > 0 {
                             peerId = value
-                            // PeerChannel includes both channels and supergroups.
-                            // Do not guess; require exactly one existing native dialog type.
+                            // Telethon's PeerChannel maps to both channel and supergroup.
+                            // An already observed native dialog is required.
                             var ptr: OpaquePointer?
                             let sql = "SELECT peer_kind FROM dialogs WHERE peer_id=? AND peer_kind IN (2,3) LIMIT 2;"
                             guard sqlite3_prepare_v2(db, sql, -1, &ptr, nil) == SQLITE_OK,
@@ -1994,93 +2160,116 @@ private enum GoldgramPhone8Bridge {
                                 throw GoldgramHistoryStore.StorageError.sqlite(sqlite3_errcode(db))
                             }
                             sqlite3_bind_int64(stmt, 1, peerId)
-                            var found: [Int32] = []
+                            var kinds: [Int32] = []
                             while sqlite3_step(stmt) == SQLITE_ROW {
-                                found.append(sqlite3_column_int(stmt, 0))
+                                kinds.append(sqlite3_column_int(stmt, 0))
                             }
                             sqlite3_finalize(stmt)
-                            guard found.count == 1 else {
+                            guard kinds.count == 1 else {
                                 counts["unknownChannels", default: 0] += 1; continue
                             }
-                            peerKind = found[0]
+                            peerKind = kinds[0]
                         } else {
                             counts["invalid", default: 0] += 1; continue
                         }
                         let first = Int64(firstDate.timeIntervalSince1970 * 1000)
                         let now = Int64(Date().timeIntervalSince1970 * 1000)
-                        guard first > 0, first <= now + 300000 else {
+                        let edited = serverEditDate.map { Int64($0.timeIntervalSince1970 * 1000) }
+                        let observed = eventSeenDate.map { Int64($0.timeIntervalSince1970 * 1000) } ?? now
+                        guard first > 0, first <= now + 300000,
+                              observed >= first, observed <= now + 300000,
+                              edited == nil || (edited! >= first && edited! <= observed + 300000) else {
                             counts["invalid", default: 0] += 1; continue
                         }
                         let scope = [Int64(peerKind), peerId, Int64(id)]
-                        let wasKnown = try GoldgramHistoryStore.originalIsKnown(db: db, scope: scope)
-                        if wasKnown {
-                            // A conflicting locally verified original always wins.
-                            var ptr: OpaquePointer?
-                            let sql = "SELECT original_text FROM messages WHERE peer_kind=? AND peer_id=? AND message_id=?;"
-                            guard sqlite3_prepare_v2(db, sql, -1, &ptr, nil) == SQLITE_OK,
-                                  let stmt = ptr else {
-                                if let ptr { sqlite3_finalize(ptr) }
-                                throw GoldgramHistoryStore.StorageError.sqlite(sqlite3_errcode(db))
-                            }
-                            for (index, value) in scope.enumerated() {
-                                sqlite3_bind_int64(stmt, Int32(index + 1), value)
-                            }
-                            var existing: String?
-                            if sqlite3_step(stmt) == SQLITE_ROW,
-                               let raw = sqlite3_column_text(stmt, 0) {
-                                existing = String(decoding: UnsafeBufferPointer(
-                                    start: raw, count: Int(sqlite3_column_bytes(stmt, 0))
-                                ), as: UTF8.self)
-                            }
-                            sqlite3_finalize(stmt)
-                            if existing != original {
-                                counts["conflicts", default: 0] += 1; continue
-                            }
+                        // Cryptographically stable fingerprint. With V2 the source
+                        // event ID + server time differentiates A→B→A transitions;
+                        // V1 has no way to prove such repeated transitions.
+                        let identity = [String(peerKind), String(peerId), String(id),
+                            String(original.utf8.count), original,
+                            String(latest.utf8.count), latest,
+                            String(edited ?? 0), token].joined(separator: "\u{1f}")
+                        let digest = SHA256.hash(data: Data(identity.utf8))
+                            .map { String(format: "%02x", $0) }.joined()
+                        let key = "iphone8.merge.v2.\(digest)"
+                        let oldKey = "iphone8.edit.\(peerKind).\(peerId).\(id)"
+                        let receipt = try receiptStatus(db: db, key: key)
+                        if receipt == "applied" || receipt == "already_present" {
+                            counts["duplicates", default: 0] += 1; continue
                         }
+                        let knownOriginal = try originalInArchive(db: db, scope: scope)
+                        let previous = try GoldgramHistoryStore.lastSavedRevision(
+                            db: db, peerId: peerId, messageId: id, peerKind: peerKind)
+                        let previousTime = try lastRevisionTime(db: db, scope: scope)
+                        // Classify the transition BEFORE any live archive mutation.
+                        // If history diverges and order is not provable, retain the
+                        // entire remote payload in the same DB for later resolution.
+                        let originalConflict = knownOriginal != nil && knownOriginal != original
+                        let latestAlreadySeen = previous?.text == latest
+                        let canAppend = previous == nil ||
+                            (previous?.text == original && previous?.index == 0) ||
+                            (edited != nil && previousTime != nil && edited! > previousTime!)
+                        if originalConflict || (!latestAlreadySeen && !canAppend) {
+                            let packet = String(data: try JSONSerialization.data(
+                                withJSONObject: row, options: [.sortedKeys]), encoding: .utf8) ?? "{}"
+                            try saveReceipt(db: db, key: key, status: "pending", payload: packet)
+                            counts["conflicts", default: 0] += 1
+                            counts["pending", default: 0] += 1
+                            continue
+                        }
+                        let firstOriginal = knownOriginal == nil
                         try GoldgramHistoryStore.archiveSQL(
                             "INSERT OR IGNORE INTO dialogs(peer_kind,peer_id) VALUES(?,?);",
                             db: db, ints: [Int64(peerKind), peerId])
                         try GoldgramHistoryStore.archiveSQL(
-                            "INSERT OR IGNORE INTO messages(peer_kind,peer_id,message_id,first_seen_at,last_seen_at,original_observed,capture_provenance,original_text) VALUES(?,?,?,?,?,1,1,?);",
+                            "INSERT OR IGNORE INTO messages(peer_kind,peer_id,message_id,first_seen_at,last_seen_at,original_observed,capture_provenance,original_text) VALUES(?,?,?,?,?,1,3,?);",
                             db: db, ints: scope + [first, now], text: original)
-                        if !wasKnown {
+                        if firstOriginal {
                             try GoldgramHistoryStore.archiveSQL(
-                                "UPDATE messages SET original_observed=1,original_text=?4,capture_provenance=CASE WHEN capture_provenance=0 THEN 1 ELSE capture_provenance END WHERE peer_kind=?1 AND peer_id=?2 AND message_id=?3 AND original_observed=0;",
+                                "UPDATE messages SET original_observed=1,original_text=?4,capture_provenance=CASE WHEN capture_provenance=0 THEN 3 ELSE capture_provenance END WHERE peer_kind=?1 AND peer_id=?2 AND message_id=?3 AND original_observed=0;",
                                 db: db, ints: scope, text: original)
                             try GoldgramHistoryStore.recordFirstOriginalEvidence(
                                 db: db, scope: scope, at: first,
                                 source: "iphone8_telethon_initial_v1",
                                 attempt: nil, concurrentEdit: false, committedAt: now,
-                                enqueueState: "external_import", commitState: "committed")
+                                enqueueState: "unknown", commitState: "unknown")
                             counts["imported", default: 0] += 1
                         }
-                        let previous = try GoldgramHistoryStore.lastSavedRevision(
-                            db: db, peerId: peerId, messageId: id, peerKind: peerKind)
                         if previous == nil {
                             try GoldgramHistoryStore.archiveSQL(
                                 "INSERT INTO revisions(peer_kind,peer_id,message_id,version_index,observed_at,revision_provenance,content) VALUES(?,?,?,0,?,1,?);",
                                 db: db, ints: scope + [first], text: original)
                         }
-                        let current = try GoldgramHistoryStore.lastSavedRevision(
-                            db: db, peerId: peerId, messageId: id, peerKind: peerKind)
-                        if current?.text == original {
+                        if !latestAlreadySeen {
+                            let current = try GoldgramHistoryStore.lastSavedRevision(
+                                db: db, peerId: peerId, messageId: id, peerKind: peerKind)
                             try GoldgramHistoryStore.archiveSQL(
-                                "INSERT INTO revisions(peer_kind,peer_id,message_id,version_index,observed_at,revision_provenance,content) VALUES(?,?,?,?,?,3,?);",
-                                db: db, ints: scope + [(current?.index ?? 0) + 1, now], text: latest)
-                        } else if current?.text != latest {
-                            // The native archive has a different (possibly newer)
-                            // revision. Never replace or append an unsequenced snapshot.
-                            counts["conflicts", default: 0] += 1; continue
+                                "INSERT INTO revisions(peer_kind,peer_id,message_id,version_index,observed_at,server_edit_at,revision_provenance,content) VALUES(?,?,?,?,?,?,3,?);",
+                                db: db, ints: scope + [(current?.index ?? 0) + 1,
+                                                        observed, edited ?? 0], text: latest)
                         }
-                        let key = "iphone8.edit.\(peerKind).\(peerId).\(id)"
+                        // If Swiftgram already saw this edit, do not create a
+                        // duplicate edit event, regardless of bridge event key.
+                        if latestAlreadySeen && (try hasEdit(db: db, scope: scope)) {
+                            try saveReceipt(db: db, key: key,
+                                            status: "already_present", payload: nil)
+                            counts["duplicates", default: 0] += 1
+                            continue
+                        }
                         try GoldgramHistoryStore.archiveSQL(
-                            "INSERT OR IGNORE INTO events(peer_kind,peer_id,message_id,event_kind,source,server_time,observed_at,event_key) VALUES(?,?,?,1,'goldgram_iphone8_bridge_v1',NULL,?,?);",
-                            db: db, ints: scope + [now], text: key)
+                            "INSERT OR IGNORE INTO events(peer_kind,peer_id,message_id,event_kind,source,server_time,observed_at,event_key) VALUES(?,?,?,1,'goldgram_iphone8_bridge_v1',NULLIF(?,0),?,?);",
+                            db: db, ints: scope + [edited ?? 0, observed], text: key)
                         if sqlite3_changes(db) > 0 {
                             counts["edits", default: 0] += 1
                         } else {
                             counts["duplicates", default: 0] += 1
                         }
+                        try saveReceipt(db: db, key: key,
+                                        status: "applied", payload: nil)
+                        // Legacy #187 used one key per message. Existing events
+                        // remain untouched; a matching local revision is enough
+                        // to prevent a second revision on reimport.
+                        _ = oldKey
                     }
                     try GoldgramHistoryStore.archiveSQL("COMMIT;", db: db, ints: [])
                 } catch {
