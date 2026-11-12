@@ -5,6 +5,10 @@
 import Foundation
 import SQLite3
 import CryptoKit
+import Security
+#if canImport(UIKit)
+import UIKit
+#endif
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
@@ -2506,5 +2510,274 @@ extension GoldgramHistoryStore {
     static func importPhone8Bundle(_ data: Data, accountId: Int64,
                                    completion: @escaping ([String: Int]) -> Void) {
         GoldgramPhone8Bridge.importBundle(data, accountId: accountId, completion: completion)
+    }
+}
+
+
+// Goldgram Live receiver: foreground-only TLS-pinned pull from jailbroken iPhone 8.
+// No second SQLite; receipts and edits use the existing Goldgram import transaction.
+// No reliance on a persistent SSH/Termius session or on iOS running while suspended.
+final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
+    static let shared = GoldgramLiveBridge()
+    private let defaults = UserDefaults.standard
+    private let tokenService = "com.goldgram.livebridge.iphone8"
+    private var timer: DispatchSourceTimer?
+    private var session: URLSession?
+    private var runningAccount: Int64?
+    private var inFlight = false
+    private var expectedPin = ""
+    private(set) var lastStatus = "Live не настроен"
+
+    private override init() {
+        super.init()
+        #if os(iOS)
+        NotificationCenter.default.addObserver(self,
+            selector: #selector(activated),
+            name: UIApplication.didBecomeActiveNotification, object: nil)
+        #endif
+    }
+
+    private func key(_ account: Int64, _ name: String) -> String {
+        "GoldgramLiveV1.\(account).\(name)"
+    }
+
+    static func privateIPv4(_ value: String) -> Bool {
+        let segments = value.split(separator: ".", omittingEmptySubsequences: false)
+        guard segments.count == 4 else { return false }
+        let octets = segments.compactMap { UInt8($0) }
+        guard octets.count == 4 else { return false }
+        return octets[0] == 10 ||
+            (octets[0] == 172 && (16...31).contains(octets[1])) ||
+            (octets[0] == 192 && octets[1] == 168)
+    }
+
+    func configuredHost(account: Int64) -> String {
+        defaults.string(forKey: key(account, "host")) ?? ""
+    }
+
+    func configuredPin(account: Int64) -> String {
+        defaults.string(forKey: key(account, "pin")) ?? ""
+    }
+
+    func isEnabled(account: Int64) -> Bool {
+        defaults.bool(forKey: key(account, "enabled"))
+    }
+
+    // Stored only in iOS Keychain, never in UserDefaults, logs, crash reports,
+    // the server URL, or the SQLite archive.
+    private func storeSecret(_ secret: String, account: Int64) -> Bool {
+        let accountName = String(account)
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: tokenService,
+            kSecAttrAccount as String: accountName
+        ]
+        SecItemDelete(query as CFDictionary)
+        var insert = query
+        insert[kSecValueData as String] = Data(secret.utf8)
+        #if os(iOS)
+        insert[kSecAttrAccessible as String] =
+            kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        #endif
+        return SecItemAdd(insert as CFDictionary, nil) == errSecSuccess
+    }
+
+    private func readSecret(account: Int64) -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: tokenService,
+            kSecAttrAccount as String: String(account),
+            kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecReturnData as String: true
+        ]
+        var data: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &data) == errSecSuccess,
+              let bytes = data as? Data else { return nil }
+        return String(data: bytes, encoding: .utf8)
+    }
+
+    func configure(account: Int64, host: String, pin: String, token: String) -> Bool {
+        let normalizedHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedPin = pin.lowercased().filter { !$0.isWhitespace && $0 != ":" }
+        let normalizedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard account > 0, Self.privateIPv4(normalizedHost),
+              normalizedPin.count == 64,
+              normalizedPin.allSatisfy({ $0.isHexDigit }),
+              normalizedToken.count == 64,
+              normalizedToken.allSatisfy({ $0.isHexDigit }),
+              storeSecret(normalizedToken, account: account) else {
+            lastStatus = "Неверный IP, отпечаток сертификата или код подключения"
+            return false
+        }
+        let oldHost = configuredHost(account: account)
+        let oldPin = configuredPin(account: account)
+        if oldHost != normalizedHost || oldPin != normalizedPin {
+            defaults.removeObject(forKey: key(account, "editsCursor"))
+            defaults.removeObject(forKey: key(account, "deletionsCursor"))
+        }
+        defaults.set(normalizedHost, forKey: key(account, "host"))
+        defaults.set(normalizedPin, forKey: key(account, "pin"))
+        defaults.set(true, forKey: key(account, "enabled"))
+        stop()
+        start(account: account)
+        return true
+    }
+
+    func stop() {
+        timer?.cancel()
+        timer = nil
+        session?.invalidateAndCancel()
+        session = nil
+        runningAccount = nil
+        inFlight = false
+    }
+
+    func disable(account: Int64) {
+        defaults.set(false, forKey: key(account, "enabled"))
+        stop()
+        lastStatus = "Live отключён; архив не изменён"
+    }
+
+    func start(account: Int64) {
+        guard account > 0, isEnabled(account: account),
+              Self.privateIPv4(configuredHost(account: account)),
+              configuredPin(account: account).count == 64,
+              readSecret(account: account) != nil else {
+            return
+        }
+        if runningAccount == account && timer != nil { return }
+        stop()
+        runningAccount = account
+        expectedPin = configuredPin(account: account)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 10
+        configuration.timeoutIntervalForResource = 15
+        configuration.waitsForConnectivity = false
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        session = URLSession(configuration: configuration,
+                             delegate: self, delegateQueue: nil)
+        let source = DispatchSource.makeTimerSource(queue: .main)
+        source.schedule(deadline: .now(), repeating: .seconds(12),
+                        leeway: .seconds(2))
+        source.setEventHandler { [weak self] in self?.poll() }
+        timer = source
+        source.resume()
+        lastStatus = "Live включён: ожидаем HTTPS-соединение"
+    }
+
+    func tryStartForVisibleArchive() {
+        guard let account = GoldgramArchiveReader.activeAccountId()?.int64Value,
+              account > 0 else { return }
+        start(account: account)
+    }
+
+    @objc private func activated() {
+        guard let account = GoldgramArchiveReader.activeAccountId()?.int64Value,
+              account > 0 else { return }
+        start(account: account)
+        poll()
+    }
+
+    func pollNow() {
+        guard let account = GoldgramArchiveReader.activeAccountId()?.int64Value,
+              account > 0 else { return }
+        start(account: account)
+        poll()
+    }
+
+    private func status(_ new: String) {
+        DispatchQueue.main.async { [weak self] in
+            self?.lastStatus = new
+            NotificationCenter.default.post(
+                name: Notification.Name("GoldgramLiveBridgeChanged"), object: nil)
+        }
+    }
+
+    private func poll() {
+        guard !inFlight, let account = runningAccount,
+              GoldgramArchiveReader.activeAccountId()?.int64Value == account,
+              defaults.bool(forKey: "GoldgramSQLiteCaptureEnabled"),
+              let token = readSecret(account: account),
+              let session else { return }
+        #if os(iOS)
+        guard UIApplication.shared.applicationState == .active else { return }
+        #endif
+        let edits = max(0, defaults.integer(forKey: key(account, "editsCursor")))
+        let deletions = max(0, defaults.integer(forKey: key(account, "deletionsCursor")))
+        let host = configuredHost(account: account)
+        guard let url = URL(string: "https://\(host):8873/v1/events?edits_after=\(edits)&deletions_after=\(deletions)") else {
+            return
+        }
+        inFlight = true
+        var request = URLRequest(url: url)
+        request.setValue(token, forHTTPHeaderField: "X-Goldgram-Token")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let task = session.dataTask(with: request) { [weak self] data, response, error in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                guard self.runningAccount == account else { return }
+                if let error {
+                    self.inFlight = false
+                    self.status("Сбой HTTPS: \(error.localizedDescription)")
+                    return
+                }
+                guard (response as? HTTPURLResponse)?.statusCode == 200,
+                      let data, data.count <= 1_000_000,
+                      let payload = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                      payload["format"] as? String == "goldgram_bridge_v2",
+                      let rows = payload["records"] as? [[String: Any]],
+                      rows.count <= 40,
+                      let nextEdits = payload["next_edit_cursor"] as? Int,
+                      let nextDeletes = payload["next_delete_cursor"] as? Int,
+                      nextEdits >= edits, nextDeletes >= deletions else {
+                    self.inFlight = false
+                    self.status("Live: неверный или отклонённый HTTPS-ответ")
+                    return
+                }
+                func commitCursor(_ result: [String: Int]) {
+                    guard self.runningAccount == account else { return }
+                    self.inFlight = false
+                    if result["error"] != nil || result["wrongAccount"] != nil ||
+                       result["disabled"] != nil || result["invalid", default: 0] > 0 ||
+                       result["unknownChannels", default: 0] > 0 {
+                        self.status("Live: данные требуют проверки; курсор не сдвинут")
+                        return
+                    }
+                    // The importer callback follows the SQLite COMMIT.
+                    self.defaults.set(nextEdits, forKey: self.key(account, "editsCursor"))
+                    self.defaults.set(nextDeletes, forKey: self.key(account, "deletionsCursor"))
+                    let changes = (result["edits"] ?? 0) + (result["deletions"] ?? 0)
+                    let imported = result["imported"] ?? 0
+                    let pending = result["pending"] ?? 0
+                    self.status("Live: +\(changes) событий, +\(imported) оригиналов, спорных \(pending), курсоры \(nextEdits)/\(nextDeletes)")
+                }
+                if rows.isEmpty {
+                    commitCursor([:])
+                    return
+                }
+                GoldgramHistoryStore.importPhone8Bundle(data, accountId: account,
+                                                        completion: commitCursor)
+            }
+        }
+        task.resume()
+    }
+
+    func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge,
+                    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        guard challenge.protectionSpace.authenticationMethod ==
+                  NSURLAuthenticationMethodServerTrust,
+              let trust = challenge.protectionSpace.serverTrust,
+              let cert = SecTrustGetCertificateAtIndex(trust, 0) else {
+            completionHandler(.cancelAuthenticationChallenge, nil)
+            return
+        }
+        let digest = SHA256.hash(data: SecCertificateCopyData(cert) as Data)
+            .map { String(format: "%02x", $0) }.joined()
+        guard digest == expectedPin else {
+            completionHandler(.cancelAuthenticationChallenge, nil)
+            return
+        }
+        // Intentional certificate pin for a single self-signed certificate.
+        completionHandler(.useCredential, URLCredential(trust: trust))
     }
 }
