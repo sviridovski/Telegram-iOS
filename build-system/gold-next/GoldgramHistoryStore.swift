@@ -451,7 +451,7 @@ enum GoldgramHistoryStore {
 
 // Goldgram #66: incoming personal-message originals, account-scoped and
 // explicitly opt-in. The host supplies its authenticated accountPeerId.
-private extension GoldgramHistoryStore {
+fileprivate extension GoldgramHistoryStore {
     static var archiveConnections: [Int64: OpaquePointer] = [:]
 
     // Access and cleanup are both serialized with archive transactions.
@@ -1688,7 +1688,7 @@ public func goldgramRegisterNativeNavigationV1(_ rawCallback: UnsafeMutableRawPo
 }
 
 // #83: authenticated native replay is the sole producer of new history events.
-private extension GoldgramHistoryStore {
+fileprivate extension GoldgramHistoryStore {
     static var nativeWriteFailed = false
 
     private static var pendingDirectory: URL {
