@@ -122,6 +122,8 @@ jobs:
         run: |
           set -euo pipefail
           python3 build-system/gold-next/test_sqlite_schema.py
+          python3 -m py_compile build-system/gold-next/goldgram_iphone8_live_server.py
+          python3 build-system/gold-next/test_goldgram_iphone8_live_server.py
           python3 build-system/gold-next/test_sqlite_edits.py
           python3 build-system/gold-next/test_sqlite_reader.py
           python3 build-system/gold-next/test_sqlite_browser.py
