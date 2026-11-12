@@ -22,8 +22,8 @@ for path in ['submodules/TelegramCore/Sources/TelegramEngine/Messages/ReplyThrea
 assert 'transaction.updateMessage(id, preprocess: false' in u
 assert 'transaction.addMessages([restored], location: .Random, preprocess: false)' in n
 assert 'goldgramSnapshotAuthor(transaction: transaction, id: id)?.id' in n
-state = (r/'submodules/TelegramCore/Sources/State/AccountStateManagementUtils.swift').read_text()
-edit = state.split('case let .EditMessage(id, rawMessage):', 1)[1].split('case let .UpdateMessagePoll', 1)[0]
+state = (r/'submodules/TelegramCore/Sources/State/Sync/StateReplay+Messages.swift').read_text()
+edit = state.split('func applyEditMessage(', 1)[1].split('func applyUpdateMessagePoll(', 1)[0]
 assert edit.index('transaction.addMessages([message], location: .Random)') < edit.index('transaction.updateMessage(id'), 'Missing native row still saves full delivered edit'
 assert 'transaction.getMessage(id) == nil' in edit
 assert '"eventKind": 0' in n, 'Received bodies also persist outside the bounded Postbox baseline ring'

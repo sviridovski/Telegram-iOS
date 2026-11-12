@@ -103,12 +103,12 @@ for field in ("networkStatus", "firstOnlineAt", "rpcAttempts", "rpcErrors",
               "lastRpcError", "rpcResponseAt", "rpcFinal", "rpcPts", "rpcTimeout"):
     assert f"let {field}: " in ui
 assert 'RPC-подписок:' in ui and '"inner_postbox_entered"' in ui
-utils = (root / "submodules/TelegramCore/Sources/State/AccountStateManagementUtils.swift").read_text()
+utils = (root / "submodules/TelegramCore/Sources/State/Sync/ChannelPolling.swift").read_text()
 standalone = utils.split("public func standalonePollChannelOnce(", 1)[1].split(
     "func keepPollingChannel(", 1)[0]
 assert '"inner_postbox_entered"' in standalone and '"replay_started"' in standalone
 assert '"resolve_messages"' in standalone and '"resolve_peer_infos"' in standalone
-poll = utils.split("private func pollChannel(", 1)[1].split("func ", 1)[0]
+poll = utils.split("func pollChannel(", 1)[1].split("func ", 1)[0]
 assert "GoldgramBackgroundRefreshTrace.rpcAttempt(diagnosticToken)" in poll
 assert "GoldgramBackgroundRefreshTrace.rpcResponse(diagnosticToken," in poll
 assert "GoldgramBackgroundRefreshTrace.rpcError(diagnosticToken," in poll
@@ -141,7 +141,7 @@ assert bg.index('guard let account = primary?.account') < bg.index('wakeupManage
 assert 'activeAccountContexts\n            |> take(1)\n            |> deliverOnMainQueue' in bg
 assert '"wakeup_lease_active"' in bg and 'менеджеру Telegram разрешена фоновая работа' in ui
 assert 'ignoreDisabled: true' not in refresh, "No unsafe blanket Postbox bypass"
-assert 'Trim Bazel cache to 6 GiB' in workflow and 'cap = 6 * (1024 ** 3)' in workflow
+assert 'Measure Bazel cache after native GC' in workflow and 'cap_kib=$((10 * 1024 * 1024))' in workflow
 assert 'actions/cache/save@v4' in workflow and 'actions/cache/restore@v4' in workflow
 
 print("Goldgram #114: bounded BG gate readiness trace, existing RPC/replay, lease and cache OK")
@@ -163,16 +163,17 @@ assert 'guard defaults.bool(forKey: enabledKey)' in foreground
 assert 'defaults.bool(forKey: foregroundKey)' in foreground
 for forbidden in ("message.text", "accessHash", "authKey", "serializedMessage"):
     assert forbidden not in foreground, forbidden
-assert 'mtprotoDiagnosticFlags.set(Int32(info.flags.rawValue))' in net
+assert 'diagnosticFlags.set(flags)' in net
 assert 'public var mtprotoDiagnosticFlags: Signal<Int32, NoError>' in net
-assert '.updating(proxyAddress: info.proxyAddress)' in net and 'info.flags.intersection([.UpdatingConnectionContext, .PerformingServiceTasks])' in net, "Keep real MTProto status"
+assert '.updating(proxyAddress: state.proxyAddress)' in net and 'state.isUpdatingConnectionContext || state.isPerformingServiceTasks' in net, "Keep real MTProto status"
 assert 'self._connectionStatus = _connectionStatus' in net
-assert 'self._mtprotoDiagnosticFlags = _mtprotoDiagnosticFlags' in net
+assert 'self._mtprotoDiagnosticFlags = mainSessionDelegate.diagnosticFlags' in net
 assert 'combineLatest(queue: networkStateQueue, self.stateManager.isUpdating, network.connectionStatus, network.mtprotoDiagnosticFlags)' in account
 assert 'GoldgramForegroundSyncTrace.state(accountPeerId: diagnosticAccountPeerId,' in account
 assert 'if isUpdating {' in account and 'return .updating(proxy: proxyState)' in account
 assert 'GoldgramForegroundSyncTrace.lifecycle(active: false)' in app
 assert app.count('GoldgramForegroundSyncTrace.lifecycle(active: true)') == 2, "Observe will-enter-foreground before MTProto changes"
+manager += (root / "submodules/TelegramCore/Sources/State/AccountStateManager+FetchDifference.swift").read_text()
 for point in ("pollDifference_begin", "getDifference_rpc_subscribed", "getDifference_reply_",
               "getDifference_error_code_", "pollDifference_replay_result",
               "state_manager_updating_on", "state_manager_updating_off"):
@@ -217,8 +218,10 @@ assert "recovery_still_stalled_after_two_resets" in watchdog
 assert "recovery_long_stall_retry" in watchdog
 assert 'self.network.goldgramRequestTransportRecovery(resetTransport: false)' in watchdog
 assert 'self.network.goldgramRequestTransportRecovery(resetTransport: true)' in watchdog
-assert "self.mtProto.requestSecureTransportReset()" in net
-assert "self.mtProto.requestTransportTransaction()" in net
+mt_engine = (root / "submodules/TelegramCore/Sources/Network/MtProtoKitEngine.swift").read_text()
+assert "self.mainSession.goldgramRecoverTransport(reset: resetTransport)" in net
+assert "self.mtProto.requestSecureTransportReset()" in mt_engine
+assert "self.mtProto.requestTransportTransaction()" in mt_engine
 for forbidden in ("resetSessionInfo", ".pause()", ".resume()", "shouldKeepConnection.set",
                   "requestApiInitialization", "ignoreDisabled: true"):
     assert forbidden not in watchdog, forbidden
@@ -262,7 +265,7 @@ print("Goldgram #118: independent live UI sampling, 30s online-only title repair
 # #120: tooLong is a snapshot, not a replay of every earlier revision.
 # Only a verified same-peer, unedited StoreMessage may enter the EXISTING
 # baseline-only writer; already-edited snapshots must never become originals.
-utils = (root / "submodules/TelegramCore/Sources/State/AccountStateManagementUtils.swift").read_text()
+utils = (root / "submodules/TelegramCore/Sources/State/Sync/ChannelPolling.swift").read_text()
 too_long = utils.split("case let .channelDifferenceTooLong(channelDifferenceTooLongData):", 1)[1].split(
     "private func verifyTransaction(", 1)[0]
 for expected in (
@@ -368,8 +371,7 @@ assert 'shouldKeepConnection.set' not in observer
 request_method = net.split("public func request<T>(", 1)[1].split(
     "func updateNetworkSpeedLimitedEventNotifyInterval", 1)[0]
 assert 'diagnosticTransportEvent: ((String) -> Void)? = nil' in request_method
-assert 'request.acknowledgementReceived = {' in request_method
-assert 'diagnosticTransportEvent("acknowledged")' in request_method
+assert 'acknowledged: diagnosticTransportEvent.map { event in { event("acknowledged") } }' in request_method
 assert request_method.index('requestService.add(request)') < request_method.index(
     'diagnosticTransportEvent?("service_added")')
 assert 'diagnosticTransportEvent?("removed")' in request_method
@@ -506,6 +508,7 @@ for q in ('evidenceSource: String = "native_unclassified"',
           'GoldgramLocationLabTrace.evidenceSource(for: $0)',
           'evidenceAttempt: locationTraceToken'):
     assert q in core, q
+utils += (root / "submodules/TelegramCore/Sources/State/Sync/UpdateInterpreter+Channels.swift").read_text()
 for q in ('evidenceSource: "live_update"',
           '"os_bg_refresh" : "channel_difference"',
           'evidenceAttempt: locationTraceToken'):

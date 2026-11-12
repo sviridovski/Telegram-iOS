@@ -15,7 +15,7 @@ public struct AppConfiguration: Codable, Equatable {
         return AppConfiguration(sgWebSettings: SGWebSettings.defaultValue, sgGHSettings: SGGHSettings.defaultValue, data: nil, hash: 0)
     }
     
-    init(sgWebSettings: SGWebSettings, sgGHSettings: SGGHSettings, data: JSON?, hash: Int32) {
+    init(sgWebSettings: SGWebSettings = .defaultValue, sgGHSettings: SGGHSettings = .defaultValue, data: JSON?, hash: Int32) { // MARK: Swiftgram
         self.sgWebSettings = sgWebSettings
         self.sgGHSettings = sgGHSettings
         self.data = data

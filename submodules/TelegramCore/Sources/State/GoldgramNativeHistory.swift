@@ -2,7 +2,8 @@ import Foundation
 import Darwin
 import Postbox
 import SwiftSignalKit
-import TelegramApi
+internal import TelegramApi
+import MtProtoKit
 
 // #108: bounded diagnostic evidence for system-granted refresh runs.
 // No message text, sender, peer IDs or Telegram session contents are stored.
@@ -1810,15 +1811,257 @@ private func goldgramSeedDiscussion(account: Account, peerId: PeerId, labOnly: B
     }
 }
 
+// Persist only scan positions in the existing account-local Postbox cache.
+// Bodies and deletion events still go through the one archive writer.
+private struct GoldgramDeletionScanState: Codable {
+    var nextPeer: Int64 = 0
+    var upperBounds: [String: Int32] = [:]
+}
+private let goldgramDeletionScanKey = ItemCacheEntryId(collectionId: -108, key: ValueBoxKey(length: 0))
+
+// Pure decisions are extracted and executed by test_deletion_reconciliation.py.
+private enum GoldgramDeletionScanPolicy {
+    // Containment for reported device exits at the first five-second scan.
+    // Keep automatic execution off until the device failure is understood.
+    static let automaticScanEnabled = false
+
+    static func nextUpperBound(scanned: [Int32]) -> Int32 {
+        guard let oldest = scanned.min(), oldest > 1 else { return Int32.max }
+        return oldest - 1
+    }
+
+    static func confirmed(requested: Set<Int32>, empty: Set<Int32>, live: Set<Int32>, accessible: Bool) -> Set<Int32> {
+        guard accessible else { return [] }
+        // Omission from a response, a history page or a failed RPC proves nothing.
+        return requested.intersection(empty).subtracting(live)
+    }
+}
+
+private struct GoldgramDeletionScanBatch {
+    let peer: Peer
+    let scanned: [MessageId]
+    let requested: [MessageId]
+}
+
+// A disposed RPC can already have queued its Postbox continuation. The permit
+// is checked inside each transaction, not only at the signal subscription.
+private final class GoldgramDeletionScanPermit {
+    private let active = Atomic(value: true)
+    var isActive: Bool { self.active.with { $0 } }
+    @discardableResult func cancel() -> Bool { self.active.swap(false) }
+}
+
+private func goldgramDeletionScanAttempt(
+    work: @escaping (GoldgramDeletionScanPermit) -> Signal<Never, NoError>,
+    onCancel: @escaping () -> Void
+) -> Signal<Never, NoError> {
+    return Signal { subscriber in
+        let permit = GoldgramDeletionScanPermit()
+        let disposable = work(permit).start(completed: {
+            if permit.cancel() { subscriber.putCompletion() }
+        })
+        return ActionDisposable {
+            let cancelled = permit.cancel()
+            disposable.dispose()
+            if cancelled { onCancel() }
+        }
+    }
+}
+
+// Kept independent of Account/Postbox so CI can execute the real scheduler
+// with SwiftSignalKit and controlled storage/network continuations.
+private func goldgramDeletionScanSession(
+    foreground: Signal<Bool, NoError>, queue: Queue, enabled: Bool,
+    initialDelay: Double = 5.0, interval: Double = 15.0, deadline: Double = 8.0,
+    scan: @escaping () -> Signal<Never, NoError>
+) -> Signal<Never, NoError> {
+    return foreground |> deliverOn(queue) |> map { active -> Signal<Never, NoError> in
+        guard enabled, active else { return .complete() }
+        let first = (Signal<Void, NoError>.complete() |> delay(initialDelay, queue: queue))
+            |> then(Signal<Void, NoError>.single(()))
+        let subsequent = ((Signal<Void, NoError>.complete() |> delay(interval, queue: queue))
+            |> then(Signal<Void, NoError>.single(()))) |> restart
+        return (first |> then(subsequent)) |> map { _ -> Signal<Never, NoError> in
+            return scan() |> timeout(deadline, queue: queue, alternate: .complete())
+        } |> switchToLatest
+    } |> switchToLatest
+}
+
+private enum GoldgramDeletionScanProgress {
+    private static let lock = NSLock()
+    static func record(account: Int64, phase: String, checked: Int = 0, retained: Int = 0, unavailable: Int = 0) {
+        self.lock.lock()
+        defer { self.lock.unlock() }
+        let key = "GoldgramDeletionScanProgressV1." + String(account)
+        let defaults = UserDefaults.standard
+        var row = defaults.dictionary(forKey: key) ?? [:]
+        row["phase"] = phase
+        row["updatedAt"] = Date().timeIntervalSince1970
+        row["pid"] = Int(ProcessInfo.processInfo.processIdentifier)
+        if phase == "completed" {
+            row["lastSuccessAt"] = Date().timeIntervalSince1970
+            row["batches"] = ((row["batches"] as? NSNumber)?.int64Value ?? 0) + 1
+        }
+        for (field, count) in [("checked", checked), ("retained", retained), ("unavailable", unavailable)] {
+            row[field] = ((row[field] as? NSNumber)?.int64Value ?? 0) + Int64(count)
+        }
+        // Only phase/times/counters; no message or peer identifiers or bodies.
+        defaults.set(row, forKey: key)
+    }
+}
+
+private func goldgramReconcileDeletions(account: Account) -> Signal<Never, NoError> {
+    let accountId = account.peerId.id._internalGetInt64Value()
+    return goldgramDeletionScanAttempt(work: { permit in
+        GoldgramDeletionScanProgress.record(account: accountId, phase: "local_selection")
+        return goldgramPerformDeletionScan(account: account, permit: permit)
+    }, onCancel: {
+        GoldgramDeletionScanProgress.record(account: accountId, phase: "cancelled_or_deadline")
+    })
+}
+
+private func goldgramPerformDeletionScan(account: Account, permit: GoldgramDeletionScanPermit) -> Signal<Never, NoError> {
+    let accountId = account.peerId.id._internalGetInt64Value()
+    return account.postbox.transaction { transaction -> GoldgramDeletionScanBatch? in
+        guard permit.isActive, UserDefaults.standard.bool(forKey: "GoldgramForegroundActiveV1"),
+              goldgramCaptureEnabled(accountPeerId: account.peerId, transaction: transaction) else { return nil }
+        // Include archived chats and watched linked discussions, even if their
+        // comments have no independent row in the chat list. No joins or reads.
+        var peers = Set(transaction.chatListGetAllPeerIds())
+        let watched = transaction.retrieveItemCacheEntry(id: goldgramDiscussionTargetsKey)?.get(GoldgramDiscussionTargets.self)?.items ?? []
+        peers.formUnion(watched.map { PeerId($0.peer) })
+        peers.formUnion(goldgramPriorityPeers(transaction: transaction, accountPeerId: account.peerId))
+        for id in Array(peers) {
+            if let cached = transaction.getPeerCachedData(peerId: id) as? CachedChannelData,
+               case let .known(linked) = cached.linkedDiscussionPeerId, let linked {
+                peers.insert(linked)
+            }
+        }
+        let ordered = peers.filter { goldgramKind($0, transaction.getPeer($0)) != nil }
+            .sorted { $0.toInt64() < $1.toInt64() }
+        guard !ordered.isEmpty else { return nil }
+        var state = transaction.retrieveItemCacheEntry(id: goldgramDeletionScanKey)?.get(GoldgramDeletionScanState.self) ?? GoldgramDeletionScanState()
+        let keys = Set(ordered.map { String($0.toInt64()) })
+        state.upperBounds = state.upperBounds.filter { keys.contains($0.key) }
+        let start = ordered.firstIndex(where: { $0.toInt64() > state.nextPeer }) ?? 0
+        // Bound local work too: never enumerate an entire message history.
+        for offset in 0 ..< min(8, ordered.count) {
+            let id = ordered[(start + offset) % ordered.count]
+            state.nextPeer = id.toInt64()
+            guard let peer = transaction.getPeer(id) else { continue }
+            let key = String(id.toInt64())
+            let upper = max(1, state.upperBounds[key] ?? Int32.max)
+            let scanned = transaction.messageIdsInRange(peerId: id, namespace: Namespaces.Message.Cloud,
+                range: 1 ... upper, limit: 32, fromUpperBound: true)
+            let requested = scanned.filter { messageId in
+                guard let message = transaction.getMessage(messageId) else { return false }
+                return !message.localTags.contains(goldgramDeletedMessageTag)
+            }
+            if requested.isEmpty {
+                state.upperBounds[key] = GoldgramDeletionScanPolicy.nextUpperBound(scanned: scanned.map { $0.id })
+                continue
+            }
+            if let entry = CodableEntry(state) { transaction.putItemCacheEntry(id: goldgramDeletionScanKey, entry: entry) }
+            return GoldgramDeletionScanBatch(peer: peer, scanned: scanned, requested: requested)
+        }
+        if let entry = CodableEntry(state) { transaction.putItemCacheEntry(id: goldgramDeletionScanKey, entry: entry) }
+        return nil
+    }
+    |> mapToSignal { batch -> Signal<Never, NoError> in
+        guard permit.isActive else { return .complete() }
+        guard let batch else {
+            GoldgramDeletionScanProgress.record(account: accountId, phase: "no_candidates")
+            return .complete()
+        }
+        GoldgramDeletionScanProgress.record(account: accountId, phase: "rpc_requested")
+        let input = batch.requested.map { Api.InputMessage.inputMessageID(.init(id: $0.id)) }
+        let request: Signal<Api.messages.Messages, MTRpcError>
+        if let channel = batch.peer as? TelegramChannel {
+            guard let inputChannel = apiInputChannel(channel) else { return .complete() }
+            request = account.network.request(Api.functions.channels.getMessages(channel: inputChannel, id: input))
+        } else {
+            request = account.network.request(Api.functions.messages.getMessages(id: input))
+        }
+        return request
+        |> map(Optional.init)
+        |> `catch` { _ -> Signal<Api.messages.Messages?, NoError> in
+            if permit.isActive { GoldgramDeletionScanProgress.record(account: accountId, phase: "rpc_failed") }
+            Logger.shared.log("GoldgramDeletionScan", "RPC failed; no deletion inferred")
+            return .single(nil)
+        }
+        |> mapToSignal { response -> Signal<Never, NoError> in
+            guard permit.isActive, let response else { return .complete() }
+            GoldgramDeletionScanProgress.record(account: accountId, phase: "await_apply")
+            return account.postbox.transaction { transaction -> Void in
+                guard permit.isActive, UserDefaults.standard.bool(forKey: "GoldgramForegroundActiveV1"),
+                      goldgramCaptureEnabled(accountPeerId: account.peerId, transaction: transaction) else { return }
+                let messages: [Api.Message]
+                switch response {
+                case let .messages(data): messages = data.messages
+                case let .messagesSlice(data): messages = data.messages
+                case let .channelMessages(data): messages = data.messages
+                case .messagesNotModified: return
+                }
+                var empty = Set<Int32>()
+                var live = Set<Int32>()
+                for message in messages {
+                    if case let .messageEmpty(data) = message {
+                        empty.insert(data.id)
+                    } else if let stored = StoreMessage(apiMessage: message, accountPeerId: account.peerId,
+                        peerIsForum: (batch.peer as? TelegramChannel)?.isForumOrMonoForum ?? false),
+                        case let .Id(id) = stored.id, id.peerId == batch.peer.id {
+                        live.insert(id.id)
+                    }
+                }
+                // An all-empty response for a group we left is ambiguous. A
+                // live body in the same response proves continued access to a
+                // public discussion without forcing the user to join it.
+                var accessible = true
+                if let channel = transaction.getPeer(batch.peer.id) as? TelegramChannel {
+                    accessible = channel.participationStatus == .member || !live.isEmpty
+                } else if let group = transaction.getPeer(batch.peer.id) as? TelegramGroup {
+                    accessible = group.membership == .Member || !live.isEmpty
+                }
+                let deleted = GoldgramDeletionScanPolicy.confirmed(requested: Set(batch.requested.map { $0.id }),
+                    empty: empty, live: live, accessible: accessible)
+                GoldgramDeletionScanProgress.record(account: accountId, phase: "applying")
+                var retained = 0
+                for id in batch.requested where deleted.contains(id.id) {
+                    guard permit.isActive else { return }
+                    // Preserve exactly the same native bodies/media/history as
+                    // an incoming delete update. The existing writer dedups.
+                    if goldgramRetainDeletion(accountPeerId: account.peerId, transaction: transaction,
+                        mediaBox: account.postbox.mediaBox, id: id) { retained += 1 }
+                }
+                guard permit.isActive else { return }
+                var state = transaction.retrieveItemCacheEntry(id: goldgramDeletionScanKey)?.get(GoldgramDeletionScanState.self) ?? GoldgramDeletionScanState()
+                state.upperBounds[String(batch.peer.id.toInt64())] = GoldgramDeletionScanPolicy.nextUpperBound(scanned: batch.scanned.map { $0.id })
+                if let entry = CodableEntry(state) { transaction.putItemCacheEntry(id: goldgramDeletionScanKey, entry: entry) }
+                GoldgramDeletionScanProgress.record(account: accountId, phase: accessible ? "completed" : "access_unconfirmed",
+                    checked: batch.requested.count, retained: retained, unavailable: accessible ? 0 : 1)
+                Logger.shared.log("GoldgramDeletionScan", "checked=\(batch.requested.count), confirmed=\(deleted.count), accessible=\(accessible)")
+            }
+            |> ignoreValues
+        }
+    }
+}
+
 private final class GoldgramDiscussionMonitor {
     private let account: Account
     private let refresh = MetaDisposable()
     private let labPulse = MetaDisposable()
     private let labSeedWork = MetaDisposable()
+    private let deletionScanPulse = MetaDisposable()
     private var subscriptions: [PeerId: Disposable] = [:]
 
     init(account: Account, queue: Queue) {
         self.account = account
+        // First useful frame precedes this work. One RPC/32 IDs per 15 s,
+        // 8 s deadline, no keep-alive or extra BGAppRefresh session.
+        self.deletionScanPulse.set(goldgramDeletionScanSession(
+            foreground: GoldgramForegroundSyncTrace.foregroundActive, queue: queue,
+            enabled: GoldgramDeletionScanPolicy.automaticScanEnabled,
+            scan: { goldgramReconcileDeletions(account: account) }).start())
         let tick: Signal<Void, NoError> = .single(())
         let clock = tick |> then(Signal<Void, NoError>.complete() |> delay(15.0, queue: queue)) |> restart
         self.refresh.set((clock
@@ -1890,6 +2133,7 @@ private final class GoldgramDiscussionMonitor {
         }))
     }
     func stop() {
+        self.deletionScanPulse.dispose()
         self.refresh.dispose()
         self.labPulse.dispose()
         self.labSeedWork.dispose()

@@ -30,7 +30,7 @@ private enum ChatLinkReverseOpenTarget {
     func title(strings: PresentationStrings) -> String {
         switch self {
         case .inApp:
-            return strings.WebBrowser_Exception_OpenInApp
+            return strings.WebBrowser_Exception_OpenInApp.replacingOccurrences(of: "Telegram", with: "Swiftgram") /* MARK: Swiftgram */
         case .externalBrowser:
             return strings.WebBrowser_Exception_OpenInBrowser
         }
@@ -246,7 +246,7 @@ extension ChatControllerImpl {
 
                 let actionSheet = ActionSheetController(presentationData: self.presentationData)
                 var items: [ActionSheetItem] = []
-                items.append(ActionSheetTextItem(title: cleanUrl))
+                items.append(ActionSheetTextItem(title: displayUrlRevealingLoginPart(url) ?? cleanUrl))
                 if hasOpenAction {
                     items.append(ActionSheetButtonItem(title: openText, color: .accent, action: { [weak self, weak actionSheet] in
                         actionSheet?.dismissAnimated()
@@ -254,7 +254,7 @@ extension ChatControllerImpl {
                     }))
 
                     if let openMode {
-                        let reverseText = openMode.shouldOpenInApp ? self.presentationData.strings.Chat_ContextMenu_OpenInBrowser : self.presentationData.strings.Chat_ContextMenu_OpenInApp
+                        let reverseText = openMode.shouldOpenInApp ? self.presentationData.strings.Chat_ContextMenu_OpenInBrowser : self.presentationData.strings.Chat_ContextMenu_OpenInApp.replacingOccurrences(of: "Telegram", with: "Swiftgram") /* MARK: Swiftgram */
                         items.append(ActionSheetButtonItem(title: reverseText, color: .accent, action: { [weak self, weak actionSheet] in
                             actionSheet?.dismissAnimated()
                             guard let self else {
@@ -384,7 +384,7 @@ extension ChatControllerImpl {
             )
 
             if let openMode {
-                let reverseText = openMode.shouldOpenInApp ? self.presentationData.strings.Chat_ContextMenu_OpenInBrowser : self.presentationData.strings.Chat_ContextMenu_OpenInApp
+                let reverseText = openMode.shouldOpenInApp ? self.presentationData.strings.Chat_ContextMenu_OpenInBrowser : self.presentationData.strings.Chat_ContextMenu_OpenInApp.replacingOccurrences(of: "Telegram", with: "Swiftgram") /* MARK: Swiftgram */
                 items.append(
                     .action(ContextMenuActionItem(text: reverseText, icon: { theme in return generateTintedImage(image: openMode.shouldOpenInApp ? UIImage(bundleImageName: "Chat/Context Menu/Globe") : UIImage(bundleImageName: "Chat/Context Menu/Browser"), color: theme.contextMenu.primaryColor) }, action: { [weak self] _, f in
                         f(.default)

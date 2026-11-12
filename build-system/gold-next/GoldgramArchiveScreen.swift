@@ -1,6 +1,7 @@
 // Goldgram #80: account-scoped named channel/discussion archive.
 import Foundation
 import UIKit
+import UniformTypeIdentifiers
 import tgapiC
 
 // Mirror the tiny, versioned diagnostic record without linking the app-only
@@ -137,7 +138,7 @@ private struct GoldgramLocationLabReportRow: Decodable {
 }
 
 @objc(GoldgramArchiveScreen)
-public final class GoldgramArchiveScreen: UITableViewController {
+public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPickerDelegate {
     private let category: Int
     // nil = dialog index; non-nil = one conversation or a verified channel pair.
     private let sources: [[String: Any]]?
@@ -149,6 +150,7 @@ public final class GoldgramArchiveScreen: UITableViewController {
     private var inFlight = false
     private var generation = 0
     private var openingMessage = false
+    private var preserveListOnNextAppearance = false
     private var status = "Загрузка истории…"
     private let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -258,6 +260,26 @@ public final class GoldgramArchiveScreen: UITableViewController {
         let menu = UIAlertController(title: "Тест захвата Goldgram",
                                      message: "Только счётчики этапов и состояние SQLite. Без текстов, имён и ID сообщений.",
                                      preferredStyle: .actionSheet)
+        menu.addAction(UIAlertAction(title: "Состояние проверки удалений", style: .default) { _ in
+            let row = defaults.dictionary(forKey: "GoldgramDeletionScanProgressV1." + String(account)) ?? [:]
+            let labels = ["local_selection": "выбор сохранённых сообщений", "no_candidates": "нет доступной пачки",
+                "rpc_requested": "запрос отправлен", "rpc_failed": "ошибка запроса",
+                "await_apply": "ответ получен, ожидание Postbox", "applying": "обработка ответа",
+                "completed": "пачка проверена", "access_unconfirmed": "доступ не подтверждён",
+                "cancelled_or_deadline": "проверка отменена или истекло время"]
+            let phase = labels[row["phase"] as? String ?? ""] ?? "проверка ещё не запускалась"
+            let formatter = DateFormatter()
+            formatter.dateStyle = .short
+            formatter.timeStyle = .medium
+            let last = (row["lastSuccessAt"] as? NSNumber).map {
+                formatter.string(from: Date(timeIntervalSince1970: $0.doubleValue))
+            } ?? "нет"
+            let report = "Автоматический обход временно отключён после вылетов №182.\n\nПоследний этап: \(phase)\nПоследняя успешная пачка: \(last)\nПачек проверено: \((row["batches"] as? NSNumber)?.int64Value ?? 0)\nПроверок сообщений: \((row["checked"] as? NSNumber)?.int64Value ?? 0)\nПередано в архив: \((row["retained"] as? NSNumber)?.int64Value ?? 0)\nПачек без подтверждённого доступа: \((row["unavailable"] as? NSNumber)?.int64Value ?? 0)\n\nСчётчики могут включать повторные проверки. Успешная пачка не означает завершение всего обхода."
+            let alert = UIAlertController(title: "Проверка удалений", message: report, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "Скопировать", style: .default) { _ in UIPasteboard.general.string = report })
+            alert.addAction(UIAlertAction(title: "Закрыть", style: .cancel))
+            self.present(alert, animated: true)
+        })
         menu.addAction(UIAlertAction(title: "Журнал запусков", style: .default) { _ in
             let history = defaults.array(forKey: "GoldgramProcessHistoryV1") as? [[String: Any]] ?? []
             let formatter = DateFormatter()
@@ -927,11 +949,171 @@ public final class GoldgramArchiveScreen: UITableViewController {
         }
     }
 
+
+    // Goldgram Bridge Live: explicit pairing; the existing archive SQLite is
+    // still the sole receiver. All credentials are kept by GoldgramLiveBridge
+    // in Keychain and never included in screenshots/log messages.
+    @objc private func showLiveMenu() {
+        guard let account = GoldgramArchiveReader.activeAccountId()?.int64Value,
+              account > 0 else {
+            showPhone8ImportResult("Для Live сначала выберите Telegram-аккаунт.")
+            return
+        }
+        let bridge = GoldgramLiveBridge.shared
+        let enabled = bridge.isEnabled(account: account)
+        let report = "Состояние: \(enabled ? "включено" : "выключено")\n" +
+            "\(bridge.lastStatus)\n\n" +
+            "Live работает через HTTPS в одной локальной сети. " +
+            "Пока Swiftgram активен, проверки выполняются примерно раз в 12 секунд. " +
+            "При приостановке iOS события накапливаются на iPhone 8."
+        let alert = UIAlertController(title: "Goldgram Bridge Live",
+                                      message: report, preferredStyle: .actionSheet)
+        alert.addAction(UIAlertAction(title: "Подключить iPhone 8", style: .default) { [weak self] _ in
+            self?.showLivePairing(account: account)
+        })
+        if enabled {
+            alert.addAction(UIAlertAction(title: "Синхронизировать сейчас", style: .default) { _ in
+                bridge.pollNow()
+            })
+            alert.addAction(UIAlertAction(title: "Отключить Live", style: .destructive) { _ in
+                bridge.disable(account: account)
+            })
+        }
+        alert.addAction(UIAlertAction(title: "Отмена", style: .cancel))
+        if let pop = alert.popoverPresentationController {
+            pop.sourceView = view
+            pop.sourceRect = CGRect(x: view.bounds.midX, y: 32, width: 1, height: 1)
+        }
+        present(alert, animated: true)
+    }
+
+    private func showLivePairing(account: Int64) {
+        let bridge = GoldgramLiveBridge.shared
+        let alert = UIAlertController(
+            title: "iPhone 8 · защищённое подключение",
+            message: "Введи локальный IP iPhone 8, SHA-256 сертификата и " +
+                "64-значный секрет из live_bridge_secret.txt. Порт 8873.",
+            preferredStyle: .alert)
+        alert.addTextField { field in
+            field.placeholder = "192.168.1.20"
+            field.text = bridge.configuredHost(account: account)
+            field.keyboardType = .numbersAndPunctuation
+            field.autocorrectionType = .no
+        }
+        alert.addTextField { field in
+            field.placeholder = "SHA256 сертификата — 64 символа"
+            field.text = bridge.configuredPin(account: account)
+            field.autocorrectionType = .no
+            field.autocapitalizationType = .none
+        }
+        alert.addTextField { field in
+            field.placeholder = "Секрет подключения — 64 символа"
+            field.isSecureTextEntry = true
+            field.autocorrectionType = .no
+            field.autocapitalizationType = .none
+        }
+        alert.addAction(UIAlertAction(title: "Отмена", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Включить Live", style: .default) { [weak self] _ in
+            let inputs = alert.textFields ?? []
+            guard inputs.count == 3,
+                  bridge.configure(account: account,
+                                   host: inputs[0].text ?? "",
+                                   pin: inputs[1].text ?? "",
+                                   token: inputs[2].text ?? "") else {
+                self?.showPhone8ImportResult(
+                    "Не удалось включить Live. Проверь IP, отпечаток сертификата и секрет подключения.")
+                return
+            }
+            self?.showPhone8ImportResult(
+                "Goldgram Bridge Live включён.\n\n" +
+                "После подключения события будут импортироваться примерно каждые 12 секунд, " +
+                "пока Swiftgram работает. Статус — в меню Live.")
+        })
+        present(alert, animated: true)
+    }
+
+    // #185: one-time, opt-in proof of import. A later transport can reuse the
+    // account-checked SQLite importer without changing these archives.
+    @objc private func importPhone8File() {
+        guard GoldgramArchiveReader.activeAccountId()?.int64Value != nil else {
+            showPhone8ImportResult("Сначала откройте архив нужного Telegram-аккаунта.")
+            return
+        }
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.json], asCopy: true)
+        picker.delegate = self
+        picker.allowsMultipleSelection = false
+        present(picker, animated: true)
+    }
+
+    public func documentPicker(_ controller: UIDocumentPickerViewController,
+                               didPickDocumentsAt urls: [URL]) {
+        guard let account = GoldgramArchiveReader.activeAccountId()?.int64Value,
+              let url = urls.first else {
+            showPhone8ImportResult("Аккаунт не выбран или файл не получен.")
+            return
+        }
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = attributes[.size] as? NSNumber, size.intValue <= 1_000_000,
+              let data = try? Data(contentsOf: url), data.count <= 1_000_000 else {
+            showPhone8ImportResult("Нужен тестовый JSON размером не более 1 МБ.")
+            return
+        }
+        GoldgramHistoryStore.importPhone8Bundle(data, accountId: account) { [weak self] result in
+            guard let self else { return }
+            let message: String
+            if result["wrongAccount"] != nil {
+                message = "Отказ: Telegram-аккаунты iPhone 8 и Swiftgram не совпадают."
+            } else if result["disabled"] != nil {
+                message = "Архив выключен или активный Telegram-аккаунт изменился."
+            } else if result["error"] != nil || result["invalid"] == 1 && result.count == 1 {
+                message = "Не удалось импортировать пакет. Существующая история не изменена."
+            } else {
+                let imported = result["imported"] ?? 0
+                let edits = result["edits"] ?? 0
+                let deletes = result["deletions"] ?? 0
+                let pending = result["pending"] ?? 0
+                let dup = result["duplicates"] ?? 0
+                let unclassified = result["unknownChannels"] ?? 0
+                let conflicts = result["conflicts"] ?? 0
+                let invalid = result["invalid"] ?? 0
+                message = "Подтверждено оригиналов: \(imported)\n" +
+                    "Новых записей редакций: \(edits)\n" +
+                    "Событий удаления: \(deletes)\n" +
+                    "Спорных записей на проверку: \(pending)\n" +
+                    "Повторов: \(dup)\n" +
+                    "Неопределённых каналов: \(unclassified)\n" +
+                    "Конфликтов: \(conflicts)\n" +
+                    "Отклонённых строк: \(invalid)\n\n" +
+                    "Существующие оригиналы и история не перезаписывались."
+                if GoldgramArchiveReader.activeAccountId()?.int64Value == account {
+                    self.load(reset: true)
+                }
+            }
+            self.showPhone8ImportResult(message)
+        }
+    }
+
+    private func showPhone8ImportResult(_ message: String) {
+        let alert = UIAlertController(title: "Goldgram Bridge · iPhone 8",
+                                      message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Закрыть", style: .default))
+        present(alert, animated: true)
+    }
+
     public override func viewDidLoad() {
         super.viewDidLoad()
         let testButton = UIBarButtonItem(
             title: "Тест", style: .plain, target: self, action: #selector(captureDiagnosticMenu))
-        navigationItem.rightBarButtonItems = [testButton, UIBarButtonItem(title: "Выгрузки", style: .plain, target: self, action: #selector(showProcessDiagnostics))]
+        let bridgeButton = UIBarButtonItem(image: UIImage(systemName: "square.and.arrow.down"),
+                                           style: .plain, target: self, action: #selector(importPhone8File))
+        bridgeButton.accessibilityLabel = "Импорт iPhone 8"
+        let liveButton = UIBarButtonItem(image: UIImage(systemName: "arrow.triangle.2.circlepath"),
+                                         style: .plain, target: self, action: #selector(showLiveMenu))
+        liveButton.accessibilityLabel = "Goldgram Live"
+        navigationItem.rightBarButtonItems = [liveButton, bridgeButton, testButton,
+            UIBarButtonItem(title: "Выгрузки", style: .plain, target: self, action: #selector(showProcessDiagnostics))]
         title = displayName ?? (category == 0 ? "Личные сообщения" :
              category == 1 ? "Группы и чаты" : category == 3 ? "Удалённые сообщения" : "Каналы")
         tableView.rowHeight = UITableView.automaticDimension
@@ -940,6 +1122,13 @@ public final class GoldgramArchiveScreen: UITableViewController {
 
     public override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        GoldgramLiveBridge.shared.tryStartForVisibleArchive()
+        if self.preserveListOnNextAppearance,
+           GoldgramArchiveReader.activeAccountId()?.int64Value == self.boundAccount {
+            self.preserveListOnNextAppearance = false
+            return
+        }
+        self.preserveListOnNextAppearance = false
         load(reset: true)
     }
 
@@ -1251,6 +1440,7 @@ public final class GoldgramArchiveScreen: UITableViewController {
             text.leadingAnchor.constraint(equalTo: controller.view.leadingAnchor),
             text.trailingAnchor.constraint(equalTo: controller.view.trailingAnchor)
         ])
+        self.preserveListOnNextAppearance = true
         navigationController?.pushViewController(controller, animated: true)
     }
 
@@ -1260,18 +1450,36 @@ public final class GoldgramArchiveScreen: UITableViewController {
         var request: [AnyHashable: Any] = ["action": "prepare_jump", "accountId": NSNumber(value: accountId), "items": [entry]]
         goldgramResolveNativeMetadata(request) { [weak self] response in
             guard let self else { return }
-            self.openingMessage = false
             let status = (response as NSDictionary)["status"] as? String
             guard status == "ok", self.boundAccount == accountId else {
+                self.openingMessage = false
                 self.showLocalRecord(entry, accountChanged: status == "account_changed"); return
             }
             request["action"] = "open_message"
-            let open = { goldgramResolveNativeMetadata(request) { _ in } }
-            // Finish dismissing UIKit's archive/menu sheet before the native
-            // Telegram navigation mutates its own controller stack.
-            if let presenter = self.navigationController?.presentingViewController ?? self.presentingViewController {
+            if let archiveNavigation = self.navigationController,
+               let presenter = archiveNavigation.presentingViewController {
+                request["returnNavigation"] = archiveNavigation
+                request["returnPresenter"] = presenter
+                request["returnSnapshot"] = archiveNavigation.view.snapshotView(afterScreenUpdates: false)
+                self.preserveListOnNextAppearance = true
+                let open = {
+                    goldgramResolveNativeMetadata(request) { [weak self] answer in
+                        guard let self else { return }
+                        self.openingMessage = false
+                        guard (answer as NSDictionary)["status"] as? String != "ok",
+                              GoldgramArchiveReader.activeAccountId()?.int64Value == accountId,
+                              presenter.viewIfLoaded?.window != nil,
+                              presenter.presentedViewController == nil else { return }
+                        // A failed native handoff returns the same list as well.
+                        presenter.present(archiveNavigation, animated: true) {
+                            self.showLocalRecord(entry, accountChanged: false)
+                        }
+                    }
+                }
                 presenter.dismiss(animated: true, completion: open)
-            } else { open() }
+            } else {
+                goldgramResolveNativeMetadata(request) { [weak self] _ in self?.openingMessage = false }
+            }
         }
     }
 
@@ -1288,6 +1496,7 @@ public final class GoldgramArchiveScreen: UITableViewController {
         let child = GoldgramArchiveScreen(category: category, sources: members,
             displayName: entry["displayName"] as? String)
         child.boundAccount = boundAccount
+        self.preserveListOnNextAppearance = true
         navigationController?.pushViewController(child, animated: true)
     }
 }

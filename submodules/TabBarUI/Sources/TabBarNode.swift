@@ -116,6 +116,7 @@ private final class TabBarItemNode: ASDisplayNode {
     
     var pointerInteraction: PointerInteraction?
     
+
     override init() {
         self.extractedContainerNode = ContextExtractedContentContainingNode()
         self.containerNode = ContextControllerSourceNode()
@@ -357,6 +358,7 @@ class TabBarNode: ASDisplayNode, ASGestureRecognizerDelegate {
     
     private var tapRecognizer: TapLongTapOrDoubleTapGestureRecognizer?
     
+
     init(theme: PresentationTheme, itemSelected: @escaping (Int, Bool, [ASDisplayNode]) -> Void, contextAction: @escaping (Int, ContextExtractedContentContainingNode, ContextGesture) -> Void, swipeAction: @escaping (Int, TabBarItemSwipeDirection) -> Void) {
         self.itemSelected = itemSelected
         self.contextAction = contextAction

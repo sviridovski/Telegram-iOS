@@ -2,7 +2,7 @@ name: Gold Next CI
 
 on:
   push:
-    branches: [ gold-next ]
+    branches: [ gold-next, port/telegram-13.2 ]
   workflow_dispatch:
 
 permissions:
@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: xcode-27
 
     steps:
       - uses: actions/checkout@v4
@@ -32,6 +32,10 @@ jobs:
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
 
+      - name: Test refresh task lifecycle
+        shell: bash
+        run: python3 build-system/gold-next/test_refresh_task_lifecycle.py --require-swift
+
       - name: Create canonical source directory
         shell: bash
         run: |
@@ -43,13 +47,42 @@ jobs:
       # #107: reuse immutable compiler actions across ephemeral macOS runners.
       # Do not archive the full output_user_root, app IPA, or signing data.
       - name: Restore bounded Bazel disk cache
+        id: bazel_restore
         uses: actions/cache/restore@v4
         with:
           path: /private/var/tmp/goldgram-bazel-action-cache
-          key: gold-next-bazel-macos15-${{ hashFiles('versions.json', '.bazelrc', 'MODULE.bazel.lock') }}-${{ github.sha }}
+          key: gold-next-bazel-xcode27-${{ hashFiles('versions.json', '.bazelrc', 'MODULE.bazel.lock') }}-${{ github.sha }}
           restore-keys: |
-            gold-next-bazel-macos15-${{ hashFiles('versions.json', '.bazelrc', 'MODULE.bazel.lock') }}-
+            gold-next-bazel-xcode27-${{ hashFiles('versions.json', '.bazelrc', 'MODULE.bazel.lock') }}-
+      - name: Identify Mx toolchain
+        id: mx_toolchain
+        shell: bash
+        run: |
+          fingerprint="$( { xcodebuild -version; xcrun --sdk iphoneos --show-sdk-build-version; uname -m; } | shasum -a 256 | cut -d ' ' -f 1)"
+          echo "fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
+          echo "Runner: $(sysctl -n hw.logicalcpu) logical CPUs, $(sysctl -n hw.memsize) bytes RAM"
+          df -h "$RUNNER_TEMP"
+
+      - name: Restore compiled Mx
+        id: mx_cache
+        uses: actions/cache/restore@v4
+        with:
+          path: mx-output
+          key: mx-arm64-v1-${{ steps.mx_toolchain.outputs.fingerprint }}-${{ hashFiles('.github/workflows/build.yml', 'versions.json', 'build-system/gold-next/prepare_mx.py', 'build-system/gold-next/*.swift', 'build-system/gold-next/*.m', 'submodules/TelegramApi/swift_scheme.tl') }}
+
+      - name: Validate cached Mx
+        id: mx
+        shell: bash
+        run: |
+          if [[ -s mx-output/Mx.dylib && -s mx-output/Mx.bundle/langs.json && -s mx-output/Mx.bundle/ru.lproj/Localizable.strings ]] &&
+             (cd mx-output && shasum -a 256 -c SHA256SUMS >/dev/null && lipo -verify_arch arm64 Mx.dylib); then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Fetch pinned Mx 1.0.0 source
+        if: steps.mx.outputs.ready != 'true'
         uses: actions/checkout@v4
         with:
           repository: m1ronx1412/mxgram
@@ -59,6 +92,7 @@ jobs:
       # Pin the exact Theos/SDK revisions previously used by the action.
       # Its cached update-theos path resets origin/master, but this fork uses main.
       - name: Install Theos dependencies for Mx
+        if: steps.mx.outputs.ready != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -67,6 +101,7 @@ jobs:
           echo "THEOS=$GITHUB_WORKSPACE/theos" >> "$GITHUB_ENV"
 
       - name: Fetch pinned Theos for Mx
+        if: steps.mx.outputs.ready != 'true'
         uses: actions/checkout@v4
         with:
           repository: waruhachi/theos
@@ -75,6 +110,7 @@ jobs:
           path: theos
 
       - name: Fetch pinned Theos SDKs for Mx
+        if: steps.mx.outputs.ready != 'true'
         uses: actions/checkout@v4
         with:
           repository: waruhachi/sdks
@@ -101,6 +137,8 @@ jobs:
           python3 build-system/gold-next/test_native_write_boundary.py
           python3 build-system/gold-next/test_discussion_priority_policy.py
           python3 build-system/gold-next/test_difference_original_capture.py
+          python3 build-system/gold-next/test_deletion_reconciliation.py
+          python3 build-system/gold-next/run_deletion_scan_lifecycle.py --require-swift
           python3 build-system/gold-next/test_background_refresh_ci.py
           python3 build-system/gold-next/test_background_run_diagnostics.py
           python3 build-system/gold-next/test_background_session_stages.py
@@ -116,18 +154,28 @@ jobs:
           python3 build-system/gold-next/run_postbox_snapshot_codec.py
           swiftc submodules/TelegramCore/Sources/State/GoldgramEventPolicy.swift build-system/gold-next/test_native_event_policy.swift -o "$RUNNER_TEMP/goldgram-event-policy-test"
           "$RUNNER_TEMP/goldgram-event-policy-test"
-          xcrun swiftc -typecheck -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -target arm64-apple-ios14.0 build-system/gold-next/GoldgramHistoryStore.swift
+          xcrun swiftc -typecheck -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -target arm64-apple-ios15.0 build-system/gold-next/GoldgramHistoryStore.swift
 
-      - name: Build Mx 1.0.0 for Swiftgram 12.9.2
+      - name: Build Mx 1.0.0 for Swiftgram 13.2
+        if: steps.mx.outputs.ready != 'true'
         shell: bash
         run: |
           set -euo pipefail
+          SECONDS=0
           python3 build-system/gold-next/prepare_mx.py mxgram
           cd mxgram
-          make clean package FINALPACKAGE=1 STRIP=0 ARCHS=arm64 \
+          make clean
+          make -j"$(sysctl -n hw.logicalcpu)" package FINALPACKAGE=1 STRIP=0 ARCHS=arm64 \
             'Sources/tgapi/VideoToVoice.xm_CFLAGS=-std=c++17'
           test -f packages/Mx.dylib
           test -f Mx.bundle/langs.json
+          rm -rf ../mx-output
+          mkdir ../mx-output
+          cp packages/Mx.dylib ../mx-output/
+          cp -R Mx.bundle ../mx-output/
+          cd ../mx-output
+          find Mx.dylib Mx.bundle -type f -exec shasum -a 256 {} + > SHA256SUMS
+          echo "Mx build (s): $SECONDS" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install pinned Cyan injector
         shell: bash
@@ -207,11 +255,12 @@ jobs:
               config.write(
                   "\n# Gold Next CI unsigned archive for re-signing\n"
                   "build --features=disable_legacy_signing\n"
+                  "build --experimental_disk_cache_gc_max_size=10G --experimental_disk_cache_gc_idle_delay=1s\n"
               )
           PY
 
           mkdir -p "/private/var/tmp/goldgram-bazel-action-cache"
-          python3 -u build-system/Make/Make.py             --bazelUserRoot="$BAZEL_USER_ROOT"             --cacheDir="/private/var/tmp/goldgram-bazel-action-cache"             build             --configurationPath="build-system/appstore-configuration.json"             --codesigningInformationPath=build-system/fake-codesigning             --configuration=release_arm64             --buildNumber="$BUILD_NUMBER"
+          python3 -u build-system/Make/Make.py             --bazelUserRoot="$BAZEL_USER_ROOT"             --cacheDir="/private/var/tmp/goldgram-bazel-action-cache"             build             --configurationPath="build-system/appstore-configuration.json"             --codesigningInformationPath=build-system/fake-codesigning             --configuration=release_arm64             --buildNumber="$BUILD_NUMBER" 2>&1 | tee "$RUNNER_TEMP/goldgram-bazel.log"
 
           OUTPUT_PATH=build/artifacts
           rm -rf "$OUTPUT_PATH"
@@ -222,44 +271,54 @@ jobs:
           cp "$IPA" "$OUTPUT_PATH/Swiftgram.ipa"
           ls -lh "$OUTPUT_PATH/Swiftgram.ipa"
 
-      # Preserve more reusable Swift/ObjC actions, but keep a strict cap.
-      # First 6 GiB snapshot may be slower to upload; measure cache hits next run.
-      - name: Trim Bazel cache to 6 GiB
+      - name: Measure Bazel cache after native GC
+        id: bazel_size
         shell: bash
         run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-          cache = Path("/private/var/tmp/goldgram-bazel-action-cache")
-          cap = 6 * (1024 ** 3)
-          paths = sorted((p for p in cache.rglob('*') if p.is_file() and not p.is_symlink()),
-                         key=lambda p: p.stat().st_mtime, reverse=True)
-          size = sum(p.stat().st_size for p in paths)
-          print(f'Bazel cache before trim: {size / 1024**3:.2f} GiB')
-          for path in reversed(paths):
-              if size <= cap:
+          cache=/private/var/tmp/goldgram-bazel-action-cache
+          cap_kib=$((10 * 1024 * 1024))
+          initial=unavailable
+          size=unavailable
+          echo "save=false" >> "$GITHUB_OUTPUT"
+          for attempt in 1 2 3 4 5; do
+            # Native idle GC can unlink an entry while du walks the cache.
+            # A failed walk is incomplete and must never authorize a cache save.
+            if measurement=$(du -sk "$cache" 2>"$RUNNER_TEMP/goldgram-cache-size.err"); then
+              size=${measurement%%[[:space:]]*}
+              if [[ "$size" =~ ^[0-9]+$ ]]; then
+                [[ "$initial" != unavailable ]] || initial=$size
+                if (( size <= cap_kib )); then
+                  echo "save=true" >> "$GITHUB_OUTPUT"
                   break
-              try:
-                  n = path.stat().st_size
-                  path.unlink()
-                  size -= n
-              except FileNotFoundError:
-                  continue
-          print(f'Bazel cache after trim: {size / 1024**3:.2f} GiB')
-          PY
+                fi
+              fi
+            fi
+            if (( attempt < 5 )); then sleep 2; fi
+          done
+          if ! grep -q '^save=true$' "$GITHUB_OUTPUT"; then
+            echo "::warning::Bazel cache could not be measured within 10 GiB; skipping cache save."
+            cat "$RUNNER_TEMP/goldgram-cache-size.err" >&2
+          fi
+          {
+            echo "Mx cache validated: ${{ steps.mx.outputs.ready }}"
+            echo "Bazel cache before/after idle GC (KiB): $initial / $size"
+            grep -E 'INFO: (Elapsed time:|[0-9]+ processes:)' "$RUNNER_TEMP/goldgram-bazel.log" || true
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Save bounded Bazel disk cache
+        continue-on-error: true
+        if: steps.bazel_size.outputs.save == 'true' && steps.bazel_restore.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: /private/var/tmp/goldgram-bazel-action-cache
-          key: gold-next-bazel-macos15-${{ hashFiles('versions.json', '.bazelrc', 'MODULE.bazel.lock') }}-${{ github.sha }}
+          key: gold-next-bazel-xcode27-${{ hashFiles('versions.json', '.bazelrc', 'MODULE.bazel.lock') }}-${{ github.sha }}
       - name: Inject Mx into the host only
         shell: bash
         run: |
           set -euo pipefail
           IPA=/Users/Shared/telegram-ios/build/artifacts/Swiftgram.ipa
           cyan -i "$IPA" -o "$RUNNER_TEMP/Swiftgram-mx.ipa" \
-            -s -f mxgram/packages/Mx.dylib mxgram/Mx.bundle
+            -s -f mx-output/Mx.dylib mx-output/Mx.bundle
           test -s "$RUNNER_TEMP/Swiftgram-mx.ipa"
 
       - name: Install ipapatch
@@ -378,6 +437,13 @@ jobs:
           cd /Users/Shared/telegram-ios/build/artifacts
           shasum -a 256 Swiftgram.ipa > SHA256.txt
 
+      - name: Save verified Mx
+        if: steps.mx_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: mx-output
+          key: ${{ steps.mx_cache.outputs.cache-primary-key }}
+
       - name: Validate symbols against the patched IPA
         shell: bash
         run: |
@@ -397,9 +463,8 @@ jobs:
       - name: Upload Mx IPA
         uses: actions/upload-artifact@v4
         with:
-          name: Swiftgram-12.9.2-gold-next-Mx-1.0.0
+          name: Swiftgram-13.2-gold-next-Mx-1.0.0
           path: |
             /Users/Shared/telegram-ios/build/artifacts/Swiftgram.ipa
             /Users/Shared/telegram-ios/build/artifacts/SHA256.txt
           if-no-files-found: error
-

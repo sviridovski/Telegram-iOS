@@ -14,7 +14,9 @@ assert "BGAppRefreshTask" in app and "goldgramRunRefresh(refresh)" in app
 assert 'goldgramScheduleRefresh()' in app
 assert 'task.expirationHandler = { complete("ios_expiration", false) }' in app
 assert 'complete("goldgram_deadline", false)' in app
-assert 'guard let self, !finished else { return }' in app
+assert 'guard !finished else { return }' in app
+assert '[weak self, task] reason, success in' in app
+assert 'task?.setTaskCompleted' not in app
 assert 'self.goldgramRefreshWork.set(nil)' in app
 assert 'goldgramRefreshPriorityDiscussions(' in app
 assert 'account: account, diagnosticToken: token' in app
@@ -32,6 +34,7 @@ assert 'joinChannel(' not in core
 assert "actions/cache/restore@v4" in workflow
 assert "actions/cache/save@v4" in workflow
 assert "--cacheDir=\"/private/var/tmp/goldgram-bazel-action-cache\"" in workflow
-assert "6 * (1024 ** 3)" in workflow
+assert "--experimental_disk_cache_gc_max_size=10G" in workflow
+assert "--experimental_disk_cache_gc_idle_delay=1s" in workflow
 assert "verify_mx.py" in workflow
-print("Goldgram #107–111: scoped BGAppRefresh, distinct expiry reasons and 6 GiB Bazel cache verified")
+print("Goldgram #107–111: scoped BGAppRefresh, distinct expiry reasons and 10 GiB Bazel cache verified")

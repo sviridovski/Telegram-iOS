@@ -164,7 +164,7 @@ private final class OpenInOptionsScreenComponent: Component {
                 metrics: environment.metrics,
                 deviceMetrics: environment.deviceMetrics,
                 isDisplaying: environment.isVisible,
-                isCentered: environment.metrics.widthClass == .regular,
+                isCentered: environment.presentsFloatingPanels,
                 hasInputHeight: !environment.inputHeight.isZero,
                 regularMetricsSize: CGSize(width: 430.0, height: 900.0),
                 dismiss: { [weak self] animated in
@@ -253,15 +253,26 @@ private final class OpenInOptionsSheetContentComponent: Component {
         return true
     }
     
+    private final class OptionsScrollView: UIScrollView {
+        // The content of this scroll view is made of OpenInAppView, which is a UIControl.
+        // UIScrollView's default -touchesShouldCancelInContentView: returns NO for a UIControl, and
+        // because delaysContentTouches is NO the control starts tracking the touch immediately — so
+        // without this override a horizontal drag that begins on an app icon is never converted
+        // into a scroll, and only the gaps between icons can be dragged.
+        override func touchesShouldCancel(in view: UIView) -> Bool {
+            return true
+        }
+    }
+    
     final class View: UIView {
         private let closeButton = ComponentView<Empty>()
         private let title = ComponentView<Empty>()
-        private let scrollView: UIScrollView
+        private let scrollView: OptionsScrollView
         private var optionViews: [String: OpenInAppView] = [:]
         private var shareButton: ComponentView<Empty>?
         
         override init(frame: CGRect) {
-            self.scrollView = UIScrollView()
+            self.scrollView = OptionsScrollView()
             self.scrollView.showsVerticalScrollIndicator = false
             self.scrollView.showsHorizontalScrollIndicator = false
             self.scrollView.clipsToBounds = false
@@ -524,6 +535,12 @@ private final class OpenInAppView: UIControl {
                 if let image = UIImage(bundleImageName: "Open In/Safari") {
                     self.iconView.setSignal(openInAppIcon(engine: context.engine, appIcon: .image(image: image)))
                 }
+            // MARK: Swiftgram
+            case .system:
+                if let image = renderSettingsIcon(name: "Chat/Context Menu/Globe", backgroundColors: [UIColor(rgb: 0x8E8E93)]) {
+                    self.iconView.setSignal(openInAppIcon(engine: context.engine, appIcon: .image(image: image), withChrome: false))
+                }
+            //
             case .maps:
                 if let image = UIImage(bundleImageName: "Open In/Maps") {
                     self.iconView.setSignal(openInAppIcon(engine: context.engine, appIcon: .image(image: image)))

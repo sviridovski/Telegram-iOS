@@ -5,6 +5,7 @@ sgdeps = [
 ]
 
 sgsrc = [
+    "//Swiftgram/SGChatListSimpleSettingsSignal:SGSimpleSettingsBoolSignal", # MARK: Swiftgram
     "//Swiftgram/SGTabBarHeightModifier:SGTabBarHeightModifier"
 ]
 
@@ -27,6 +28,7 @@ swift_library(
         "//submodules/ComponentFlow",
         "//submodules/Components/ComponentDisplayAdapters",
         "//submodules/TelegramUI/Components/TabBarComponent",
+        "//submodules/TelegramUI/Components/TabBarLayout",
         "//submodules/TelegramUI/Components/GlassControls",
     ],
     visibility = [

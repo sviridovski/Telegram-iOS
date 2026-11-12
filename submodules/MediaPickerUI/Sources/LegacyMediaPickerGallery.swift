@@ -116,6 +116,7 @@ func presentLegacyMediaPickerGallery(
     threadTitle: String?,
     chatLocation: ChatLocation?,
     isScheduledMessages: Bool,
+    isActionButtonDone: Bool = false,
     presentationData: PresentationData,
     source: LegacyMediaPickerGallerySource,
     immediateThumbnail: UIImage?,
@@ -203,7 +204,7 @@ func presentLegacyMediaPickerGallery(
             recipientName = peer?.displayTitle(strings: presentationData.strings, displayOrder: presentationData.nameDisplayOrder)
         }
     }
-    let currentAppConfiguration = context.currentAppConfiguration.with { $0 }
+    let currentAppConfiguration = context.currentAppConfiguration.with { $0 } // MARK: Swiftgram
     let model = TGMediaPickerGalleryModel(
         context: legacyController.context,
         items: items,
@@ -219,8 +220,11 @@ func presentLegacyMediaPickerGallery(
         hasCamera: false,
         recipientName: recipientName,
         isScheduledMessages: isScheduledMessages,
+        isActionButtonDone: isActionButtonDone,
+        // MARK: Swiftgram
         canShowTelescope: currentAppConfiguration.sgWebSettings.global.canShowTelescope,
         canSendTelescope: currentAppConfiguration.sgWebSettings.user.canSendTelescope,
+        //
         hasCoverButton: hasCoverButton
     )!
     model.stickersContext = paintStickersContext
@@ -357,7 +361,7 @@ func presentLegacyMediaPickerGallery(
                 
                 let _ = (sendWhenOnlineAvailable
                 |> take(1)
-                |> deliverOnMainQueue).start(next: { sendWhenOnlineAvailable in
+                |> deliverOnMainQueue).start(next: { [model] sendWhenOnlineAvailable in
                     let dismissImpl = { [weak model] in
                         model?.dismiss(true, false)
                         dismissAll()

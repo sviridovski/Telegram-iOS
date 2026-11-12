@@ -8,7 +8,7 @@ from pathlib import Path
 
 root = Path(__file__).resolve().parents[2]
 core = (root / "submodules/TelegramCore/Sources/State/GoldgramNativeHistory.swift").read_text()
-state = (root / "submodules/TelegramCore/Sources/State/AccountStateManagementUtils.swift").read_text()
+state = (root / "submodules/TelegramCore/Sources/State/Sync/ChannelPolling.swift").read_text()
 app = (root / "submodules/TelegramUI/Sources/AppDelegate.swift").read_text()
 ui = (root / "build-system/gold-next/GoldgramArchiveScreen.swift").read_text()
 
@@ -38,7 +38,9 @@ for check_file in (root / "build-system/gold-next").glob("*.py"):
     )
 assert '"ios_expiration"' in bg and '"goldgram_deadline"' in bg, "OS expiration != app deadline"
 assert "GoldgramBackgroundRefreshTrace.finish(token, reason: reason)" in bg
-assert "guard let self, !finished else { return }" in bg, "BG completion must run once"
+assert "guard !finished else { return }" in bg, "BG work cleanup must run once"
+assert "guard !systemTaskCompleted else { return }" in bg, "System completion must run once"
+assert "task.setTaskCompleted(success: success)" in bg, "Complete the retained system task"
 assert 'return "no_targets"' in bg and 'return "incomplete_requests"' in bg
 assert "goldgramRefreshPriorityDiscussions(" in bg and "diagnosticToken: token" in bg
 
@@ -61,7 +63,7 @@ standalone = state.split("public func standalonePollChannelOnce(", 1)[1].split(
     "\nfunc keepPollingChannel(", 1)[0]
 assert "diagnosticToken: String? = nil" in standalone
 assert "diagnosticToken: diagnosticToken, locationTraceToken: locationTraceToken)" in standalone
-poll = state.split("private func pollChannel(", 1)[1]
+poll = state.split("func pollChannel(", 1)[1]
 assert "diagnosticToken: String? = nil" in poll
 for kind in ('"difference"', '"empty"', '"tooLong"', '"unavailable"'):
     assert "kind: " + kind in poll, "missing status " + kind
