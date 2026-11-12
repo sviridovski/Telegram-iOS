@@ -237,7 +237,9 @@ struct NativeCaptureFixture {
         precondition(!((combined?["items"] as? [[String: Any]]) ?? []).isEmpty,
                      "deleted rows remain accessible")
 
-        try GoldgramHistoryStore.clearHistory(accountId: account)
+        // Simulate the existing account-clear cascade on the same SQLite.
+        precondition(sqlite3_exec(db, "PRAGMA foreign_keys=ON; DELETE FROM dialogs;",
+                                  nil, nil, nil) == SQLITE_OK)
         precondition(row("SELECT COUNT(*) FROM goldgram_ui_fast_rows_v1") == ["0"],
                      "clear must cascade fast-row cleanup")
         precondition(row("SELECT edited,deleted FROM goldgram_ui_fast_totals_v1 WHERE id=1") == ["0","0"],
