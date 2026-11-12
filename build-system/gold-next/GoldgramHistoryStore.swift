@@ -2525,6 +2525,7 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
     private var session: URLSession?
     private var runningAccount: Int64?
     private var inFlight = false
+    private var runToken: UInt64 = 0
     private var expectedPin = ""
     private(set) var lastStatus = "Live не настроен"
 
@@ -2624,6 +2625,7 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
     }
 
     func stop() {
+        runToken &+= 1
         timer?.cancel()
         timer = nil
         session?.invalidateAndCancel()
@@ -2709,13 +2711,14 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
             return
         }
         inFlight = true
+        let ticket = runToken
         var request = URLRequest(url: url)
         request.setValue(token, forHTTPHeaderField: "X-Goldgram-Token")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         let task = session.dataTask(with: request) { [weak self] data, response, error in
             DispatchQueue.main.async {
                 guard let self else { return }
-                guard self.runningAccount == account else { return }
+                guard self.runningAccount == account, self.runToken == ticket else { return }
                 if let error {
                     self.inFlight = false
                     self.status("Сбой HTTPS: \(error.localizedDescription)")
@@ -2735,7 +2738,7 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
                     return
                 }
                 func commitCursor(_ result: [String: Int]) {
-                    guard self.runningAccount == account else { return }
+                    guard self.runningAccount == account, self.runToken == ticket else { return }
                     self.inFlight = false
                     if result["error"] != nil || result["wrongAccount"] != nil ||
                        result["disabled"] != nil || result["invalid", default: 0] > 0 ||
@@ -2750,6 +2753,15 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
                     let imported = result["imported"] ?? 0
                     let pending = result["pending"] ?? 0
                     self.status("Live: +\(changes) событий, +\(imported) оригиналов, спорных \(pending), курсоры \(nextEdits)/\(nextDeletes)")
+                    // Catch up the old archive quickly without waiting one
+                    // 12-second interval per historical batch. Limited by
+                    // the importer transaction and its single in-flight gate.
+                    if nextEdits > edits || nextDeletes > deletions {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(600)) { [weak self] in
+                            guard let self, self.runToken == ticket else { return }
+                            self.poll()
+                        }
+                    }
                 }
                 if rows.isEmpty {
                     commitCursor([:])
