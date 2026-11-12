@@ -85,8 +85,10 @@ print('Goldgram #140: verified edits only, deleted/media anchors, retained hidde
 match = re.search(r'private static let editedOnlyPredicate = "([^"]+)"', s)
 assert match, 'Missing shipped edited-only filter'
 edited_predicate = match.group(1)
-reader = s.split('var sql = mode == "totals"', 1)[1]
-assert 'if !deletedOnly && mode != "totals"' in reader
+reader = s.split('let useFastIndex = fastIndexAvailable(db)', 1)[1]
+assert 'if !useFastIndex && !deletedOnly && mode != "totals"' in reader
+assert 'fastMessagesSQL(deletedOnly: deletedOnly)' in reader
+assert 'fastDeletedDialogsSQL' in reader
 assert 'with: editedOnlyPredicate + anchor' in reader
 assert reader.index('with: editedOnlyPredicate + anchor') < reader.index('sqlite3_prepare_v2')
 
