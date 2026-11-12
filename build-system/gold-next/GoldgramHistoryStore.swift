@@ -2261,8 +2261,14 @@ private enum GoldgramPhone8Bridge {
             date.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSSSSXXXXX"
             let iso = ISO8601DateFormatter()
             iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            // Telegram server_edit_at often has whole-second precision,
+            // unlike the microsecond-precision local observed_at timestamp.
+            let isoWholeSeconds = ISO8601DateFormatter()
+            isoWholeSeconds.formatOptions = [.withInternetDateTime]
             func parse(_ value: String) -> Date? {
-                date.date(from: value) ?? iso.date(from: value)
+                date.date(from: value) ??
+                    iso.date(from: value) ??
+                    isoWholeSeconds.date(from: value)
             }
             var counts = ["imported": 0, "edits": 0, "deletions": 0,
                           "duplicates": 0, "unknownChannels": 0, "conflicts": 0,
@@ -2743,7 +2749,12 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
                     if result["error"] != nil || result["wrongAccount"] != nil ||
                        result["disabled"] != nil || result["invalid", default: 0] > 0 ||
                        result["unknownChannels", default: 0] > 0 {
-                        self.status("Live: данные требуют проверки; курсор не сдвинут")
+                        let invalid = result["invalid", default: 0]
+                        let unknown = result["unknownChannels", default: 0]
+                        let accountMismatch = result["wrongAccount", default: 0]
+                        let disabled = result["disabled", default: 0]
+                        let databaseError = result["error", default: 0]
+                        self.status("Live: не принят пакет (формат: \(invalid), каналы: \(unknown), аккаунт: \(accountMismatch), SQLite выключен: \(disabled), ошибка БД: \(databaseError)); курсор не сдвинут")
                         return
                     }
                     // The importer callback follows the SQLite COMMIT.
