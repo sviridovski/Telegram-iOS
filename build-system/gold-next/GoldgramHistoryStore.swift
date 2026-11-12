@@ -2060,6 +2060,47 @@ private enum GoldgramPhone8Bridge {
         return step == SQLITE_ROW
     }
 
+
+    private static func containsRevision(db: OpaquePointer, scope: [Int64],
+                                         content: String) throws -> Bool {
+        var stmt: OpaquePointer?
+        let sql = "SELECT 1 FROM revisions WHERE peer_kind=? AND peer_id=? AND message_id=? AND content=? LIMIT 1;"
+        let rc = sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
+        guard rc == SQLITE_OK, let stmt else {
+            if let stmt { sqlite3_finalize(stmt) }
+            throw GoldgramHistoryStore.StorageError.sqlite(rc)
+        }
+        defer { sqlite3_finalize(stmt) }
+        for (i, value) in scope.enumerated() {
+            guard sqlite3_bind_int64(stmt, Int32(i + 1), value) == SQLITE_OK else {
+                throw GoldgramHistoryStore.StorageError.sqlite(SQLITE_ERROR)
+            }
+        }
+        try bind(content, to: stmt, at: 4)
+        let step = sqlite3_step(stmt)
+        guard step == SQLITE_DONE || step == SQLITE_ROW else {
+            throw GoldgramHistoryStore.StorageError.sqlite(step)
+        }
+        return step == SQLITE_ROW
+    }
+
+    private static func hasEventKey(db: OpaquePointer, key: String) throws -> Bool {
+        var stmt: OpaquePointer?
+        let rc = sqlite3_prepare_v2(db,
+            "SELECT 1 FROM events WHERE event_key=? LIMIT 1;", -1, &stmt, nil)
+        guard rc == SQLITE_OK, let stmt else {
+            if let stmt { sqlite3_finalize(stmt) }
+            throw GoldgramHistoryStore.StorageError.sqlite(rc)
+        }
+        defer { sqlite3_finalize(stmt) }
+        try bind(key, to: stmt, at: 1)
+        let step = sqlite3_step(stmt)
+        guard step == SQLITE_DONE || step == SQLITE_ROW else {
+            throw GoldgramHistoryStore.StorageError.sqlite(step)
+        }
+        return step == SQLITE_ROW
+    }
+
     static func importBundle(_ data: Data, accountId: Int64,
                              completion: @escaping ([String: Int]) -> Void) {
         func finish(_ result: [String: Int]) {
@@ -2109,14 +2150,16 @@ private enum GoldgramPhone8Bridge {
                     """, db: db, ints: [])
                     // V2 packets may include multiple edits of one message. Sort
                     // only where both contain comparable event timestamps.
-                    let ordered = rows.enumerated().sorted { lhs, rhs in
-                        let a = lhs.element["server_edit_at"] as? String ??
-                                lhs.element["event_observed_at"] as? String ?? ""
-                        let b = rhs.element["server_edit_at"] as? String ??
-                                rhs.element["event_observed_at"] as? String ?? ""
-                        return !a.isEmpty && !b.isEmpty && a != b
-                            ? a < b : lhs.offset < rhs.offset
-                    }.map { $0.element }
+                    let ordered: [[String: Any]]
+                    if format == "goldgram_bridge_v2" {
+                        ordered = rows.enumerated().sorted { lhs, rhs in
+                            let a = (lhs.element["server_edit_at"] as? String) ?? ""
+                            let b = (rhs.element["server_edit_at"] as? String) ?? ""
+                            return a == b ? lhs.offset < rhs.offset : a < b
+                        }.map { $0.element }
+                    } else {
+                        ordered = rows
+                    }
                     for row in ordered {
                         guard row["source"] as? String == "iphone8_telethon",
                               let kindText = row["peer_kind"] as? String,
@@ -2206,10 +2249,22 @@ private enum GoldgramPhone8Bridge {
                         // entire remote payload in the same DB for later resolution.
                         let originalConflict = knownOriginal != nil && knownOriginal != original
                         let latestAlreadySeen = previous?.text == latest
-                        let canAppend = previous == nil ||
-                            (previous?.text == original && previous?.index == 0) ||
-                            (edited != nil && previousTime != nil && edited! > previousTime!)
-                        if originalConflict || (!latestAlreadySeen && !canAppend) {
+                        let previousIsBaseline = previous?.text == original && previous?.index == 0
+                        let newerServerEdit = edited != nil && previousTime != nil &&
+                            edited! > previousTime!
+                        let canAppend = previous == nil || previousIsBaseline || newerServerEdit
+                        // A legacy #187 import has no per-edit event ID. Recognize
+                        // a previously saved revision + its legacy event even after
+                        // newer native revisions arrive, rather than queueing it.
+                        if receipt == nil && (try hasEventKey(db: db, key: oldKey)) &&
+                            (try containsRevision(db: db, scope: scope, content: latest)) &&
+                            !originalConflict {
+                            try saveReceipt(db: db, key: key,
+                                            status: "already_present", payload: nil)
+                            counts["duplicates", default: 0] += 1
+                            continue
+                        }
+                        if originalConflict {
                             let packet = String(data: try JSONSerialization.data(
                                 withJSONObject: row, options: [.sortedKeys]), encoding: .utf8) ?? "{}"
                             try saveReceipt(db: db, key: key, status: "pending", payload: packet)
@@ -2235,22 +2290,37 @@ private enum GoldgramPhone8Bridge {
                                 enqueueState: "unknown", commitState: "unknown")
                             counts["imported", default: 0] += 1
                         }
+                        // A pre-edit original is independently useful even when
+                        // the remote latest edit cannot be safely ordered against
+                        // native history. Save it, but queue that edit for review.
+                        if !latestAlreadySeen && !canAppend {
+                            let packet = String(data: try JSONSerialization.data(
+                                withJSONObject: row, options: [.sortedKeys]), encoding: .utf8) ?? "{}"
+                            try saveReceipt(db: db, key: key, status: "pending", payload: packet)
+                            counts["conflicts", default: 0] += 1
+                            counts["pending", default: 0] += 1
+                            continue
+                        }
                         if previous == nil {
                             try GoldgramHistoryStore.archiveSQL(
                                 "INSERT INTO revisions(peer_kind,peer_id,message_id,version_index,observed_at,revision_provenance,content) VALUES(?,?,?,0,?,1,?);",
                                 db: db, ints: scope + [first], text: original)
                         }
-                        if !latestAlreadySeen {
+                        // With a newer authenticated Telegram edit timestamp,
+                        // even an A→B→A return to identical text is a distinct
+                        // transition. V1 cannot establish this and stays conservative.
+                        let timedRepeat = latestAlreadySeen && newerServerEdit
+                        if !latestAlreadySeen || timedRepeat {
                             let current = try GoldgramHistoryStore.lastSavedRevision(
                                 db: db, peerId: peerId, messageId: id, peerKind: peerKind)
                             try GoldgramHistoryStore.archiveSQL(
-                                "INSERT INTO revisions(peer_kind,peer_id,message_id,version_index,observed_at,server_edit_at,revision_provenance,content) VALUES(?,?,?,?,?,?,3,?);",
+                                "INSERT INTO revisions(peer_kind,peer_id,message_id,version_index,observed_at,server_edit_at,revision_provenance,content) VALUES(?,?,?,?,?,NULLIF(?,0),3,?);",
                                 db: db, ints: scope + [(current?.index ?? 0) + 1,
                                                         observed, edited ?? 0], text: latest)
                         }
                         // If Swiftgram already saw this edit, do not create a
                         // duplicate edit event, regardless of bridge event key.
-                        if latestAlreadySeen && (try hasEdit(db: db, scope: scope)) {
+                        if latestAlreadySeen && !timedRepeat && (try hasEdit(db: db, scope: scope)) {
                             try saveReceipt(db: db, key: key,
                                             status: "already_present", payload: nil)
                             counts["duplicates", default: 0] += 1
@@ -2266,10 +2336,6 @@ private enum GoldgramPhone8Bridge {
                         }
                         try saveReceipt(db: db, key: key,
                                         status: "applied", payload: nil)
-                        // Legacy #187 used one key per message. Existing events
-                        // remain untouched; a matching local revision is enough
-                        // to prevent a second revision on reimport.
-                        _ = oldKey
                     }
                     try GoldgramHistoryStore.archiveSQL("COMMIT;", db: db, ints: [])
                 } catch {
