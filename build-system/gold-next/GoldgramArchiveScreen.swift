@@ -1,6 +1,7 @@
 // Goldgram #80: account-scoped named channel/discussion archive.
 import Foundation
 import UIKit
+import UniformTypeIdentifiers
 import tgapiC
 
 // Mirror the tiny, versioned diagnostic record without linking the app-only
@@ -137,7 +138,7 @@ private struct GoldgramLocationLabReportRow: Decodable {
 }
 
 @objc(GoldgramArchiveScreen)
-public final class GoldgramArchiveScreen: UITableViewController {
+public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPickerDelegate {
     private let category: Int
     // nil = dialog index; non-nil = one conversation or a verified channel pair.
     private let sources: [[String: Any]]?
@@ -948,11 +949,82 @@ public final class GoldgramArchiveScreen: UITableViewController {
         }
     }
 
+
+    // #185: one-time, opt-in proof of import. A later transport can reuse the
+    // account-checked SQLite importer without changing these archives.
+    @objc private func importPhone8File() {
+        guard GoldgramArchiveReader.activeAccountId()?.int64Value != nil else {
+            showPhone8ImportResult("Сначала откройте архив нужного Telegram-аккаунта.")
+            return
+        }
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.json], asCopy: true)
+        picker.delegate = self
+        picker.allowsMultipleSelection = false
+        present(picker, animated: true)
+    }
+
+    public func documentPicker(_ controller: UIDocumentPickerViewController,
+                               didPickDocumentsAt urls: [URL]) {
+        guard let account = GoldgramArchiveReader.activeAccountId()?.int64Value,
+              let url = urls.first else {
+            showPhone8ImportResult("Аккаунт не выбран или файл не получен.")
+            return
+        }
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = attributes[.size] as? NSNumber, size.intValue <= 1_000_000,
+              let data = try? Data(contentsOf: url), data.count <= 1_000_000 else {
+            showPhone8ImportResult("Нужен тестовый JSON размером не более 1 МБ.")
+            return
+        }
+        GoldgramHistoryStore.importPhone8Bundle(data, accountId: account) { [weak self] result in
+            guard let self else { return }
+            let message: String
+            if result["wrongAccount"] != nil {
+                message = "Отказ: Telegram-аккаунты iPhone 8 и Swiftgram не совпадают."
+            } else if result["disabled"] != nil {
+                message = "Архив выключен или активный Telegram-аккаунт изменился."
+            } else if result["error"] != nil || result["invalid"] == 1 && result.count == 1 {
+                message = "Не удалось импортировать пакет. Существующая история не изменена."
+            } else {
+                let imported = result["imported"] ?? 0
+                let edits = result["edits"] ?? 0
+                let dup = result["duplicates"] ?? 0
+                let unclassified = result["unknownChannels"] ?? 0
+                let conflicts = result["conflicts"] ?? 0
+                let invalid = result["invalid"] ?? 0
+                message = "Подтверждено оригиналов: \(imported)\n" +
+                    "Новых записей редакций: \(edits)\n" +
+                    "Повторов: \(dup)\n" +
+                    "Неопределённых каналов: \(unclassified)\n" +
+                    "Конфликтов: \(conflicts)\n" +
+                    "Отклонённых строк: \(invalid)\n\n" +
+                    "Существующие оригиналы и история не перезаписывались."
+                if GoldgramArchiveReader.activeAccountId()?.int64Value == account {
+                    self.load(reset: true)
+                }
+            }
+            self.showPhone8ImportResult(message)
+        }
+    }
+
+    private func showPhone8ImportResult(_ message: String) {
+        let alert = UIAlertController(title: "Goldgram Bridge · iPhone 8",
+                                      message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Закрыть", style: .default))
+        present(alert, animated: true)
+    }
+
     public override func viewDidLoad() {
         super.viewDidLoad()
         let testButton = UIBarButtonItem(
             title: "Тест", style: .plain, target: self, action: #selector(captureDiagnosticMenu))
-        navigationItem.rightBarButtonItems = [testButton, UIBarButtonItem(title: "Выгрузки", style: .plain, target: self, action: #selector(showProcessDiagnostics))]
+        let bridgeButton = UIBarButtonItem(image: UIImage(systemName: "square.and.arrow.down"),
+                                           style: .plain, target: self, action: #selector(importPhone8File))
+        bridgeButton.accessibilityLabel = "Импорт iPhone 8"
+        navigationItem.rightBarButtonItems = [bridgeButton, testButton,
+            UIBarButtonItem(title: "Выгрузки", style: .plain, target: self, action: #selector(showProcessDiagnostics))]
         title = displayName ?? (category == 0 ? "Личные сообщения" :
              category == 1 ? "Группы и чаты" : category == 3 ? "Удалённые сообщения" : "Каналы")
         tableView.rowHeight = UITableView.automaticDimension
