@@ -26,7 +26,9 @@ def extract(start):
 
 
 policy = extract('private enum GoldgramDeletionScanPolicy')
-worker = extract('private func goldgramReconcileDeletions(')
+worker = extract('private func goldgramPerformDeletionScan(')
+session = extract('private func goldgramDeletionScanSession(')
+attempt = extract('private func goldgramDeletionScanAttempt(')
 assert re.search(r'^import MtProtoKit$', source, re.MULTILINE), 'MTRpcError requires its defining module in this file'
 monitor = source.split('private final class GoldgramDiscussionMonitor', 1)[1].split('// #114:', 1)[0]
 assert 'chatListGetAllPeerIds()' in worker, 'include archived chats, not only recent ten'
@@ -44,13 +46,19 @@ assert worker.count('GoldgramForegroundActiveV1') == 2
 error_path = worker.split('|> `catch`', 1)[1].split('|> mapToSignal', 1)[0]
 assert '.single(nil)' in error_path and 'empty.insert' not in error_path
 assert 'state.upperBounds' not in error_path, 'failed RPC keeps the message cursor'
-assert 'GoldgramForegroundSyncTrace.foregroundActive |> deliverOn(queue)' in monitor
+assert 'foreground: GoldgramForegroundSyncTrace.foregroundActive' in monitor
 assert 'static let automaticScanEnabled = false' in policy, 'device-crash containment must remain off'
-assert monitor.index('self.deletionScanWork.set(nil)') < monitor.index('guard GoldgramDeletionScanPolicy.automaticScanEnabled, active else')
-assert monitor.index('guard GoldgramDeletionScanPolicy.automaticScanEnabled, active else') < monitor.index('self.deletionScanWork.set((scanClock')
-assert 'timeout(8.0, queue: queue, alternate: .complete())' in monitor
-assert 'delay(5.0, queue: queue)' in monitor and 'delay(10.0, queue: queue)' in monitor
-assert 'self.deletionScanPulse.dispose()' in monitor and 'self.deletionScanWork.dispose()' in monitor
+assert 'enabled: GoldgramDeletionScanPolicy.automaticScanEnabled' in monitor
+assert session.index('guard enabled, active else') < session.index('let first =')
+assert 'timeout(deadline, queue: queue, alternate: .complete())' in session
+assert 'initialDelay: Double = 5.0, interval: Double = 15.0, deadline: Double = 8.0' in session
+assert session.count('switchToLatest') == 2
+assert 'self.deletionScanPulse.dispose()' in monitor
+assert worker.count('permit.isActive') >= 6
+assert 'let cancelled = permit.cancel()' in attempt and 'disposable.dispose()' in attempt
+assert '"rpc_failed"' in worker and '"access_unconfirmed"' in worker
+ui = (root / 'build-system/gold-next/GoldgramArchiveScreen.swift').read_text()
+assert 'Состояние проверки удалений' in ui and 'GoldgramDeletionScanProgressV1.' in ui
 assert not re.search(r'readHistory|readMessageContents|updateStatus|setTyping|beginBackgroundTask', worker)
 cache_ids = re.findall(r'ItemCacheEntryId\(collectionId: (-\d+), key: ValueBoxKey\(length: 0\)\)', source)
 assert len(cache_ids) == len(set(cache_ids)), 'scan cursor must not overwrite another cache record'

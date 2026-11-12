@@ -138,6 +138,7 @@ jobs:
           python3 build-system/gold-next/test_discussion_priority_policy.py
           python3 build-system/gold-next/test_difference_original_capture.py
           python3 build-system/gold-next/test_deletion_reconciliation.py
+          python3 build-system/gold-next/run_deletion_scan_lifecycle.py --require-swift
           python3 build-system/gold-next/test_background_refresh_ci.py
           python3 build-system/gold-next/test_background_run_diagnostics.py
           python3 build-system/gold-next/test_background_session_stages.py

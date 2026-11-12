@@ -259,6 +259,26 @@ public final class GoldgramArchiveScreen: UITableViewController {
         let menu = UIAlertController(title: "Тест захвата Goldgram",
                                      message: "Только счётчики этапов и состояние SQLite. Без текстов, имён и ID сообщений.",
                                      preferredStyle: .actionSheet)
+        menu.addAction(UIAlertAction(title: "Состояние проверки удалений", style: .default) { _ in
+            let row = defaults.dictionary(forKey: "GoldgramDeletionScanProgressV1." + String(account)) ?? [:]
+            let labels = ["local_selection": "выбор сохранённых сообщений", "no_candidates": "нет доступной пачки",
+                "rpc_requested": "запрос отправлен", "rpc_failed": "ошибка запроса",
+                "await_apply": "ответ получен, ожидание Postbox", "applying": "обработка ответа",
+                "completed": "пачка проверена", "access_unconfirmed": "доступ не подтверждён",
+                "cancelled_or_deadline": "проверка отменена или истекло время"]
+            let phase = labels[row["phase"] as? String ?? ""] ?? "проверка ещё не запускалась"
+            let formatter = DateFormatter()
+            formatter.dateStyle = .short
+            formatter.timeStyle = .medium
+            let last = (row["lastSuccessAt"] as? NSNumber).map {
+                formatter.string(from: Date(timeIntervalSince1970: $0.doubleValue))
+            } ?? "нет"
+            let report = "Автоматический обход временно отключён после вылетов №182.\n\nПоследний этап: \(phase)\nПоследняя успешная пачка: \(last)\nПачек проверено: \((row["batches"] as? NSNumber)?.int64Value ?? 0)\nПроверок сообщений: \((row["checked"] as? NSNumber)?.int64Value ?? 0)\nПередано в архив: \((row["retained"] as? NSNumber)?.int64Value ?? 0)\nПачек без подтверждённого доступа: \((row["unavailable"] as? NSNumber)?.int64Value ?? 0)\n\nСчётчики могут включать повторные проверки. Успешная пачка не означает завершение всего обхода."
+            let alert = UIAlertController(title: "Проверка удалений", message: report, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "Скопировать", style: .default) { _ in UIPasteboard.general.string = report })
+            alert.addAction(UIAlertAction(title: "Закрыть", style: .cancel))
+            self.present(alert, animated: true)
+        })
         menu.addAction(UIAlertAction(title: "Журнал запусков", style: .default) { _ in
             let history = defaults.array(forKey: "GoldgramProcessHistoryV1") as? [[String: Any]] ?? []
             let formatter = DateFormatter()
