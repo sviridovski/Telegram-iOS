@@ -2101,6 +2101,133 @@ private enum GoldgramPhone8Bridge {
         return step == SQLITE_ROW
     }
 
+
+    private static func importDelete(_ row: [String: Any], db: OpaquePointer,
+                                     now: Int64, parse: (String) -> Date?) throws -> String {
+        guard row["source"] as? String == "iphone8_telethon",
+              row["record_kind"] as? String == "delete",
+              let kindText = row["peer_kind"] as? String,
+              let chat = row["chat_id"] as? String,
+              let message = row["message_id"] as? String,
+              let mid = Int32(message), mid > 0,
+              let token = row["edit_event_id"] as? String,
+              token.hasPrefix("delete:"), token.utf8.count <= 128,
+              let atText = row["event_observed_at"] as? String,
+              let atDate = parse(atText) else { return "invalid" }
+        let at = Int64(atDate.timeIntervalSince1970 * 1000)
+        guard at > 0, at <= now + 300000 else { return "invalid" }
+        let peerId: Int64
+        let peerKind: Int32
+        if kindText == "PeerUser", let id = Int64(chat), id > 0 {
+            peerId = id
+            peerKind = 0
+        } else if kindText == "PeerChannel", chat.hasPrefix("-100"),
+                  let id = Int64(chat.dropFirst(4)), id > 0 {
+            peerId = id
+            var ptr: OpaquePointer?
+            let sql = "SELECT peer_kind FROM dialogs WHERE peer_id=? AND peer_kind IN (2,3) LIMIT 2;"
+            let rc = sqlite3_prepare_v2(db, sql, -1, &ptr, nil)
+            guard rc == SQLITE_OK, let stmt = ptr else {
+                if let ptr { sqlite3_finalize(ptr) }
+                throw GoldgramHistoryStore.StorageError.sqlite(rc)
+            }
+            sqlite3_bind_int64(stmt, 1, peerId)
+            var kinds: [Int32] = []
+            var step = sqlite3_step(stmt)
+            while step == SQLITE_ROW {
+                kinds.append(sqlite3_column_int(stmt, 0))
+                step = sqlite3_step(stmt)
+            }
+            sqlite3_finalize(stmt)
+            guard step == SQLITE_DONE else {
+                throw GoldgramHistoryStore.StorageError.sqlite(step)
+            }
+            guard kinds.count == 1 else { return "unknownChannels" }
+            peerKind = kinds[0]
+        } else {
+            return "invalid"
+        }
+        let scope: [Int64] = [Int64(peerKind), peerId, Int64(mid)]
+        // This ID is per original deletion event, not a message-wide cursor.
+        let identity = "\(peerKind):\(peerId):\(mid):\(token)"
+        let digest = SHA256.hash(data: Data(identity.utf8))
+            .map { String(format: "%02x", $0) }.joined()
+        let key = "iphone8.delete.v2.\(digest)"
+        if let status = try receiptStatus(db: db, key: key),
+           status == "applied" || status == "already_present" {
+            return "duplicates"
+        }
+        let original = (row["original_text"] as? String) ?? ""
+        let atFirst: Int64
+        if let raw = row["first_seen_at"] as? String, let first = parse(raw) {
+            atFirst = Int64(first.timeIntervalSince1970 * 1000)
+        } else {
+            atFirst = at
+        }
+        let safeOriginal = !original.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            original != "[Содержимое не было получено]" &&
+            original.utf8.count <= 65536 && atFirst > 0 && atFirst <= at
+        let knownOriginal = try originalInArchive(db: db, scope: scope)
+        if safeOriginal && knownOriginal != nil && knownOriginal != original {
+            let packet = String(data: try JSONSerialization.data(
+                withJSONObject: row, options: [.sortedKeys]), encoding: .utf8) ?? "{}"
+            try saveReceipt(db: db, key: key, status: "pending", payload: packet)
+            return "pending"
+        }
+        try GoldgramHistoryStore.archiveSQL(
+            "INSERT OR IGNORE INTO dialogs(peer_kind,peer_id) VALUES(?,?);",
+            db: db, ints: [Int64(peerKind), peerId])
+        // Unknown originals are *not* declared verified. The native collector
+        // may fill this placeholder if the original is independently observed.
+        try GoldgramHistoryStore.archiveSQL(
+            "INSERT OR IGNORE INTO messages(peer_kind,peer_id,message_id,first_seen_at,last_seen_at,original_observed,capture_provenance,is_deleted) VALUES(?,?,?,?,?,0,0,1);",
+            db: db, ints: scope + [atFirst, now])
+        if safeOriginal && knownOriginal == nil {
+            try GoldgramHistoryStore.archiveSQL(
+                "UPDATE messages SET original_text=?4,original_observed=1,capture_provenance=CASE WHEN capture_provenance=0 THEN 3 ELSE capture_provenance END WHERE peer_kind=?1 AND peer_id=?2 AND message_id=?3 AND original_observed=0;",
+                db: db, ints: scope, text: original)
+            try GoldgramHistoryStore.recordFirstOriginalEvidence(
+                db: db, scope: scope, at: atFirst, source: "iphone8_telethon_initial_v1",
+                attempt: nil, concurrentEdit: false, committedAt: now,
+                enqueueState: "unknown", commitState: "unknown")
+        }
+        let duplicate = try existsDelete(db: db, scope: scope)
+        try GoldgramHistoryStore.archiveSQL(
+            "UPDATE messages SET is_deleted=1,last_seen_at=MAX(last_seen_at,?) WHERE peer_kind=? AND peer_id=? AND message_id=?;",
+            db: db, ints: [now] + scope)
+        if duplicate {
+            try saveReceipt(db: db, key: key, status: "already_present", payload: nil)
+            return "duplicates"
+        }
+        // archiveSQL(_:ints:text:) binds text at the LAST placeholder.
+        try GoldgramHistoryStore.archiveSQL(
+            "INSERT OR IGNORE INTO events(peer_kind,peer_id,message_id,event_kind,source,server_time,observed_at,event_key) VALUES(?,?,?,2,'goldgram_iphone8_bridge_v1',NULL,?,?);",
+            db: db, ints: scope + [at], text: key)
+        try saveReceipt(db: db, key: key, status: "applied", payload: nil)
+        return "deletions"
+    }
+
+    private static func existsDelete(db: OpaquePointer, scope: [Int64]) throws -> Bool {
+        var ptr: OpaquePointer?
+        let sql = "SELECT 1 FROM events WHERE peer_kind=? AND peer_id=? AND message_id=? AND event_kind=2 LIMIT 1;"
+        let rc = sqlite3_prepare_v2(db, sql, -1, &ptr, nil)
+        guard rc == SQLITE_OK, let stmt = ptr else {
+            if let ptr { sqlite3_finalize(ptr) }
+            throw GoldgramHistoryStore.StorageError.sqlite(rc)
+        }
+        defer { sqlite3_finalize(stmt) }
+        for (i, value) in scope.enumerated() {
+            guard sqlite3_bind_int64(stmt, Int32(i + 1), value) == SQLITE_OK else {
+                throw GoldgramHistoryStore.StorageError.sqlite(SQLITE_ERROR)
+            }
+        }
+        let step = sqlite3_step(stmt)
+        guard step == SQLITE_ROW || step == SQLITE_DONE else {
+            throw GoldgramHistoryStore.StorageError.sqlite(step)
+        }
+        return step == SQLITE_ROW
+    }
+
     static func importBundle(_ data: Data, accountId: Int64,
                              completion: @escaping ([String: Int]) -> Void) {
         func finish(_ result: [String: Int]) {
@@ -2133,8 +2260,8 @@ private enum GoldgramPhone8Bridge {
             func parse(_ value: String) -> Date? {
                 date.date(from: value) ?? iso.date(from: value)
             }
-            var counts = ["imported": 0, "edits": 0, "duplicates": 0,
-                          "unknownChannels": 0, "conflicts": 0,
+            var counts = ["imported": 0, "edits": 0, "deletions": 0,
+                          "duplicates": 0, "unknownChannels": 0, "conflicts": 0,
                           "pending": 0, "invalid": 0]
             do {
                 let db = try GoldgramHistoryStore.archiveConnection(for: accountId)
@@ -2161,6 +2288,16 @@ private enum GoldgramPhone8Bridge {
                         ordered = rows
                     }
                     for row in ordered {
+                        if row["record_kind"] as? String == "delete" {
+                            let status = try importDelete(
+                                row, db: db, now: Int64(Date().timeIntervalSince1970 * 1000),
+                                parse: parse)
+                            counts[status, default: 0] += 1
+                            if status == "pending" {
+                                counts["conflicts", default: 0] += 1
+                            }
+                            continue
+                        }
                         guard row["source"] as? String == "iphone8_telethon",
                               let kindText = row["peer_kind"] as? String,
                               let rawChat = row["chat_id"] as? String,
