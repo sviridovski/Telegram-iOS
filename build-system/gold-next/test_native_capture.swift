@@ -183,6 +183,67 @@ struct NativeCaptureFixture {
         precondition(row("SELECT COUNT(*) FROM revisions WHERE message_id=1503") == ["2"])
         precondition(row("SELECT content FROM revisions WHERE message_id=1503 ORDER BY version_index DESC LIMIT 1") == ["После правки"])
         precondition(!FileManager.default.fileExists(atPath: pending.path))
+
+        // #203: production writer triggers maintain an exact, materialized
+        // projection IN THE SAME SQLite. Neither a second DB nor a JSON cache.
+        precondition(row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='goldgram_ui_fast_rows_v1'") == ["1"],
+                     "Fast index migration must finish atomically")
+        precondition(row("SELECT edited,deleted FROM goldgram_ui_fast_totals_v1 WHERE id=1") ==
+                     row(GoldgramArchiveReader.countsSQL), "fast totals equal legacy full-scan query")
+        precondition(row("SELECT COUNT(*) FROM goldgram_ui_fast_rows_v1") ==
+                     row("SELECT COUNT(*) FROM messages"), "every baseline has one fast projection")
+
+        // Edit and delete updates must change counters without scanning the
+        // complete archive, and restoring visibility must recover the exact
+        // previous totals. This is a reversible fixture mutation.
+        let beforeHide = row("SELECT edited,deleted FROM goldgram_ui_fast_totals_v1 WHERE id=1")
+        precondition(sqlite3_exec(db,
+            "UPDATE messages SET original_observed=0 WHERE peer_kind=2 AND peer_id=99 AND message_id=1002;",
+            nil, nil, nil) == SQLITE_OK)
+        precondition(row("SELECT edited,deleted FROM goldgram_ui_fast_totals_v1 WHERE id=1") ==
+                     row(GoldgramArchiveReader.countsSQL), "original revocation updates totals")
+        precondition(sqlite3_exec(db,
+            "UPDATE messages SET original_observed=1 WHERE peer_kind=2 AND peer_id=99 AND message_id=1002;",
+            nil, nil, nil) == SQLITE_OK)
+        precondition(row("SELECT edited,deleted FROM goldgram_ui_fast_totals_v1 WHERE id=1") == beforeHide,
+                     "restoring a baseline restores totals")
+
+        var folders: NSDictionary?
+        GoldgramArchiveReader.query([
+            "accountId": NSNumber(value: account), "category": 1,
+            "mode": "dialogs", "offset": 0, "limit": 30
+        ]) { folders = $0 }
+        let foldersDeadline = Date().addingTimeInterval(10)
+        while folders == nil && Date() < foldersDeadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+        precondition(folders?["status"] as? String == "ok",
+                     "fast dialogs SQL must prepare and return without an aggregate scan")
+        precondition(!((folders?["items"] as? [[String: Any]]) ?? []).isEmpty,
+                     "real edited/deleted group folder visible")
+
+        var combined: NSDictionary?
+        GoldgramArchiveReader.query([
+            "accountId": NSNumber(value: account), "category": 3,
+            "mode": "combined", "offset": 0, "limit": 30,
+            "sources": [["peerKind": 2, "peerId": 99]]
+        ]) { combined = $0 }
+        let combinedDeadline = Date().addingTimeInterval(10)
+        while combined == nil && Date() < combinedDeadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+        precondition(combined?["status"] as? String == "ok",
+                     "deleted archive must use materialized predicates")
+        precondition(!((combined?["items"] as? [[String: Any]]) ?? []).isEmpty,
+                     "deleted rows remain accessible")
+
+        try GoldgramHistoryStore.clearHistory(accountId: account)
+        precondition(row("SELECT COUNT(*) FROM goldgram_ui_fast_rows_v1") == ["0"],
+                     "clear must cascade fast-row cleanup")
+        precondition(row("SELECT edited,deleted FROM goldgram_ui_fast_totals_v1 WHERE id=1") == ["0","0"],
+                     "clear must zero fast counters")
+        print("Goldgram #203: transactional fast listing/totals, idempotence and clear OK")
+
         print("Goldgram #106: ordered difference original/edit writer regression passes")
         print("Goldgram #91: durable original bridge and selected-account archive totals passed against actual Swift writer/reader")
         print("Goldgram #89: production async writer preserves received content/authors on ID-only deletion; observations never become edit events")
