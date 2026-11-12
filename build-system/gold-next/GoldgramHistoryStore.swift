@@ -2272,7 +2272,7 @@ private enum GoldgramPhone8Bridge {
             }
             var counts = ["imported": 0, "edits": 0, "deletions": 0,
                           "duplicates": 0, "unknownChannels": 0, "conflicts": 0,
-                          "pending": 0, "invalid": 0]
+                          "pending": 0, "chronologyPending": 0, "invalid": 0]
             do {
                 let db = try GoldgramHistoryStore.archiveConnection(for: accountId)
                 try GoldgramHistoryStore.archiveSQL("BEGIN IMMEDIATE;", db: db, ints: [])
@@ -2368,7 +2368,7 @@ private enum GoldgramPhone8Bridge {
                         let observed = eventSeenDate.map { Int64($0.timeIntervalSince1970 * 1000) } ?? now
                         guard first > 0, first <= now + 300000,
                               observed >= first, observed <= now + 300000,
-                              edited == nil || (edited! >= first && edited! <= observed + 300000) else {
+                              edited == nil || (edited! > 0 && edited! <= observed + 300000) else {
                             counts["invalid", default: 0] += 1; continue
                         }
                         let scope = [Int64(peerKind), peerId, Int64(id)]
@@ -2386,6 +2386,27 @@ private enum GoldgramPhone8Bridge {
                         let receipt = try receiptStatus(db: db, key: key)
                         if receipt == "applied" || receipt == "already_present" {
                             counts["duplicates", default: 0] += 1; continue
+                        }
+                        // If Telegram's server edit predates the FIRST observation
+                        // on iPhone 8, there is no reliable proof that the supplied
+                        // "original_text" was observed before the edit. Keep the
+                        // entire remote event in the SAME SQLite for later review,
+                        // without declaring a verified original or adding a revision.
+                        // Saving the pending receipt in this transaction allows the
+                        // live cursor to advance after COMMIT and unblock safe rows.
+                        if let edited, edited < first {
+                            if receipt != "pending" {
+                                let payload = String(data: try JSONSerialization.data(
+                                    withJSONObject: row, options: [.sortedKeys]),
+                                    encoding: .utf8) ?? "{}"
+                                try saveReceipt(db: db, key: key,
+                                                status: "pending", payload: payload)
+                                counts["chronologyPending", default: 0] += 1
+                                counts["pending", default: 0] += 1
+                            } else {
+                                counts["duplicates", default: 0] += 1
+                            }
+                            continue
                         }
                         let knownOriginal = try originalInArchive(db: db, scope: scope)
                         let previous = try GoldgramHistoryStore.lastSavedRevision(
@@ -2763,7 +2784,8 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
                     let changes = (result["edits"] ?? 0) + (result["deletions"] ?? 0)
                     let imported = result["imported"] ?? 0
                     let pending = result["pending"] ?? 0
-                    self.status("Live: +\(changes) событий, +\(imported) оригиналов, спорных \(pending), курсоры \(nextEdits)/\(nextDeletes)")
+                    let chronologyPending = result["chronologyPending"] ?? 0
+                    self.status("Live: +\(changes) событий, +\(imported) оригиналов, спорных \(pending) (хронология: \(chronologyPending)), курсоры \(nextEdits)/\(nextDeletes)")
                     // Catch up the old archive quickly without waiting one
                     // 12-second interval per historical batch. Limited by
                     // the importer transaction and its single in-flight gate.
