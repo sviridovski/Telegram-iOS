@@ -2256,13 +2256,20 @@ private enum GoldgramPhone8Bridge {
                         // A legacy #187 import has no per-edit event ID. Recognize
                         // a previously saved revision + its legacy event even after
                         // newer native revisions arrive, rather than queueing it.
-                        if receipt == nil && (try hasEventKey(db: db, key: oldKey)) &&
-                            (try containsRevision(db: db, scope: scope, content: latest)) &&
-                            !originalConflict {
-                            try saveReceipt(db: db, key: key,
-                                            status: "already_present", payload: nil)
-                            counts["duplicates", default: 0] += 1
-                            continue
+                        // Swift's && operator is rethrows; evaluate the
+                        // fallible SQLite lookups independently before combining.
+                        if receipt == nil && !originalConflict {
+                            let legacyEventSeen = try hasEventKey(db: db, key: oldKey)
+                            if legacyEventSeen {
+                                let legacyRevisionSeen = try containsRevision(
+                                    db: db, scope: scope, content: latest)
+                                if legacyRevisionSeen {
+                                    try saveReceipt(db: db, key: key,
+                                                    status: "already_present", payload: nil)
+                                    counts["duplicates", default: 0] += 1
+                                    continue
+                                }
+                            }
                         }
                         if originalConflict {
                             let packet = String(data: try JSONSerialization.data(
@@ -2320,11 +2327,14 @@ private enum GoldgramPhone8Bridge {
                         }
                         // If Swiftgram already saw this edit, do not create a
                         // duplicate edit event, regardless of bridge event key.
-                        if latestAlreadySeen && !timedRepeat && (try hasEdit(db: db, scope: scope)) {
-                            try saveReceipt(db: db, key: key,
-                                            status: "already_present", payload: nil)
-                            counts["duplicates", default: 0] += 1
-                            continue
+                        if latestAlreadySeen && !timedRepeat {
+                            let nativeEditSeen = try hasEdit(db: db, scope: scope)
+                            if nativeEditSeen {
+                                try saveReceipt(db: db, key: key,
+                                                status: "already_present", payload: nil)
+                                counts["duplicates", default: 0] += 1
+                                continue
+                            }
                         }
                         try GoldgramHistoryStore.archiveSQL(
                             "INSERT OR IGNORE INTO events(peer_kind,peer_id,message_id,event_kind,source,server_time,observed_at,event_key) VALUES(?,?,?,1,'goldgram_iphone8_bridge_v1',NULLIF(?,0),?,?);",
