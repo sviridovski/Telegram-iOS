@@ -1995,6 +1995,37 @@ private enum GoldgramPhone8Bridge {
         }
     }
 
+    // A source edit older than the first local observation cannot certify
+    // the claimed original. Hold the entire message scope for manual chronology
+    // reconciliation without inserting any misleading original/revision.
+    private static func holdChronology(db: OpaquePointer, scope: [Int64],
+                                       first: Int64, eventKey: String) throws {
+        try GoldgramHistoryStore.archiveSQL(
+            "INSERT OR IGNORE INTO bridge_chronology_holds_v1(peer_kind,peer_id,message_id,first_seen_at,event_key) VALUES(?,?,?,?,?);",
+            db: db, ints: scope + [first], text: eventKey)
+    }
+
+    private static func isChronologyHeld(db: OpaquePointer, scope: [Int64]) throws -> Bool {
+        var ptr: OpaquePointer?
+        let sql = "SELECT 1 FROM bridge_chronology_holds_v1 WHERE peer_kind=? AND peer_id=? AND message_id=? LIMIT 1;"
+        let rc = sqlite3_prepare_v2(db, sql, -1, &ptr, nil)
+        guard rc == SQLITE_OK, let stmt = ptr else {
+            if let ptr { sqlite3_finalize(ptr) }
+            throw GoldgramHistoryStore.StorageError.sqlite(rc)
+        }
+        defer { sqlite3_finalize(stmt) }
+        for (i, value) in scope.enumerated() {
+            guard sqlite3_bind_int64(stmt, Int32(i + 1), value) == SQLITE_OK else {
+                throw GoldgramHistoryStore.StorageError.sqlite(SQLITE_ERROR)
+            }
+        }
+        let step = sqlite3_step(stmt)
+        guard step == SQLITE_ROW || step == SQLITE_DONE else {
+            throw GoldgramHistoryStore.StorageError.sqlite(step)
+        }
+        return step == SQLITE_ROW
+    }
+
     private static func originalInArchive(db: OpaquePointer, scope: [Int64]) throws -> String? {
         var stmt: OpaquePointer?
         let sql = "SELECT original_text FROM messages WHERE peer_kind=? AND peer_id=? AND message_id=? AND original_observed=1 LIMIT 1;"
@@ -2168,7 +2199,11 @@ private enum GoldgramPhone8Bridge {
         } else {
             atFirst = at
         }
-        let safeOriginal = !original.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        // Deletions remain useful even for a held message, but they must not
+        // promote a potentially post-edit text to "verified original".
+        let held = try isChronologyHeld(db: db, scope: scope)
+        let safeOriginal = !held &&
+            !original.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
             original != "[Содержимое не было получено]" &&
             original.utf8.count <= 65536 && atFirst > 0 && atFirst <= at
         let knownOriginal = try originalInArchive(db: db, scope: scope)
@@ -2285,11 +2320,27 @@ private enum GoldgramPhone8Bridge {
                         updated_at INTEGER NOT NULL
                     );
                     """, db: db, ints: [])
+                    try GoldgramHistoryStore.archiveSQL("""
+                    CREATE TABLE IF NOT EXISTS bridge_chronology_holds_v1 (
+                        peer_kind INTEGER NOT NULL,
+                        peer_id INTEGER NOT NULL,
+                        message_id INTEGER NOT NULL,
+                        first_seen_at INTEGER NOT NULL,
+                        event_key TEXT NOT NULL,
+                        PRIMARY KEY(peer_kind, peer_id, message_id)
+                    );
+                    """, db: db, ints: [])
                     // V2 packets may include multiple edits of one message. Sort
                     // only where both contain comparable event timestamps.
                     let ordered: [[String: Any]]
                     if format == "goldgram_bridge_v2" {
                         ordered = rows.enumerated().sorted { lhs, rhs in
+                            // Process source edits before deletions so a new
+                            // chronology hold prevents a deletion from promoting
+                            // the same uncertain text to a verified original.
+                            let aDeleted = lhs.element["record_kind"] as? String == "delete"
+                            let bDeleted = rhs.element["record_kind"] as? String == "delete"
+                            if aDeleted != bDeleted { return !aDeleted }
                             let a = (lhs.element["server_edit_at"] as? String) ?? ""
                             let b = (rhs.element["server_edit_at"] as? String) ?? ""
                             return a == b ? lhs.offset < rhs.offset : a < b
@@ -2394,7 +2445,13 @@ private enum GoldgramPhone8Bridge {
                         // without declaring a verified original or adding a revision.
                         // Saving the pending receipt in this transaction allows the
                         // live cursor to advance after COMMIT and unblock safe rows.
-                        if let edited, edited < first {
+                        let chronologyBroken = edited != nil && edited! < first
+                        let chronologyHeld = try isChronologyHeld(db: db, scope: scope)
+                        if chronologyBroken || chronologyHeld {
+                            if chronologyBroken {
+                                try holdChronology(db: db, scope: scope,
+                                                   first: first, eventKey: key)
+                            }
                             if receipt != "pending" {
                                 let payload = String(data: try JSONSerialization.data(
                                     withJSONObject: row, options: [.sortedKeys]),
