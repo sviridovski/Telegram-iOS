@@ -1245,6 +1245,10 @@ public final class GoldgramArchiveReader: NSObject {
            ON goldgram_ui_fast_rows_v1(visible,deleted,peer_kind,peer_id,newest_at DESC);
         CREATE INDEX goldgram_ui_fast_dialog_dates_v1
            ON goldgram_ui_fast_rows_v1(visible,deleted,peer_kind,peer_id,deleted_at DESC);
+        CREATE INDEX goldgram_ui_fast_message_order_v1
+           ON goldgram_ui_fast_rows_v1(peer_kind,peer_id,visible,deleted,sort_at DESC,message_id DESC);
+        CREATE INDEX goldgram_ui_fast_delete_order_v1
+           ON goldgram_ui_fast_rows_v1(peer_kind,peer_id,visible,deleted,deleted_at DESC,message_id DESC);
         CREATE TRIGGER goldgram_ui_fast_insert_v1
         AFTER INSERT ON goldgram_ui_fast_rows_v1 BEGIN
           UPDATE goldgram_ui_fast_totals_v1
