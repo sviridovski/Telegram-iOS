@@ -130,26 +130,43 @@ def pair_from_record(r, kind):
     return peer, chat
 
 
+def optional_user_sender(row):
+    # Telethon's positive sender_id identifies a user. Negative -100...
+    # identifiers can represent channels/supergroups and must NOT be labelled
+    # as users without a separately verified sender peer type.
+    raw = row["sender_id"]
+    if isinstance(raw, bool) or raw is None:
+        return None
+    try:
+        value = int(raw)
+    except (ValueError, TypeError, OverflowError):
+        return None
+    return str(value) if 0 < value < (1 << 63) else None
+
+
 def batch_from_db(conn, account, after_edits, after_deletions, limit_per_kind=PER_KIND):
+    # Backwards compatibility with older read-only archives without sender_id.
+    columns = {r["name"] for r in conn.execute("PRAGMA table_info(messages)")}
+    sender_sql = "m.sender_id" if "sender_id" in columns else "NULL"
     # SQLite consistent read snapshot, without blocking the live collector.
     conn.execute("BEGIN")
     try:
-        edits = conn.execute("""
+        edits = conn.execute(f"""
           SELECT e.rowid AS cursor, e.account_id, e.chat_id, e.message_id,
                  e.observed_at, e.server_edit_at, e.text,
                  m.peer_kind, m.first_seen_at, m.first_seen_kind,
-                 m.original_text
+                 m.original_text, {sender_sql} AS sender_id
           FROM edits e LEFT JOIN messages m
             ON m.account_id=e.account_id AND m.chat_id=e.chat_id
            AND m.message_id=e.message_id
           WHERE e.rowid > ? AND e.account_id = ?
           ORDER BY e.rowid LIMIT ?
         """, (after_edits, account, limit_per_kind)).fetchall()
-        deletes = conn.execute("""
+        deletes = conn.execute(f"""
           SELECT d.rowid AS cursor, d.account_id, d.chat_id, d.message_id,
                  d.observed_at, d.resolution,
                  m.peer_kind, m.first_seen_at, m.first_seen_kind,
-                 m.original_text
+                 m.original_text, {sender_sql} AS sender_id
           FROM deletions d LEFT JOIN messages m
             ON m.account_id=d.account_id AND m.chat_id=d.chat_id
            AND m.message_id=d.message_id
@@ -176,7 +193,7 @@ def batch_from_db(conn, account, after_edits, after_deletions, limit_per_kind=PE
         if not r["server_edit_at"] or not r["observed_at"] or not r["first_seen_at"]:
             skipped_edits += 1
             continue
-        records.append({
+        record = {
             "record_kind": "edit", "source": "iphone8_telethon",
             "account_id": str(r["account_id"]),
             "peer_kind": pair[0], "chat_id": pair[1],
@@ -187,13 +204,17 @@ def batch_from_db(conn, account, after_edits, after_deletions, limit_per_kind=PE
             "server_edit_at": iso(r["server_edit_at"]),
             "event_observed_at": iso(r["observed_at"]),
             "edit_event_id": "edit:" + str(r["cursor"]),
-        })
+        }
+        sender = optional_user_sender(r)
+        if sender is not None:
+            record["sender_id"] = sender
+        records.append(record)
     for r in deletes:
         pair = pair_from_record(r, "delete")
         if not pair or r["resolution"] != "telegram_chat" or not r["observed_at"]:
             skipped_deletions += 1
             continue
-        records.append({
+        record = {
             "record_kind": "delete", "source": "iphone8_telethon",
             "account_id": str(r["account_id"]),
             "peer_kind": pair[0], "chat_id": pair[1],
@@ -203,7 +224,11 @@ def batch_from_db(conn, account, after_edits, after_deletions, limit_per_kind=PE
             "original_text": r["original_text"] if
                 r["first_seen_kind"] == "new_unedited" else None,
             "first_seen_at": iso(r["first_seen_at"]),
-        })
+        }
+        sender = optional_user_sender(r)
+        if sender is not None:
+            record["sender_id"] = sender
+        records.append(record)
     return {
         "format": "goldgram_bridge_v2",
         "records": records,

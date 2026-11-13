@@ -18,7 +18,7 @@ with tempfile.TemporaryDirectory() as d:
     CREATE TABLE messages (
       account_id INTEGER, chat_id INTEGER, message_id INTEGER,
       original_text TEXT, first_seen_at TEXT, first_seen_kind TEXT,
-      peer_kind TEXT
+      peer_kind TEXT, sender_id INTEGER
     );
     CREATE TABLE edits (
       account_id INTEGER, chat_id INTEGER, message_id INTEGER,
@@ -31,10 +31,10 @@ with tempfile.TemporaryDirectory() as d:
     """)
     t0 = "2026-11-11T17:00:00+00:00"
     t1 = "2026-11-11T17:10:00+00:00"
-    con.execute("INSERT INTO messages VALUES(1,111,3,'Оригинал',?, 'new_unedited','PeerUser')", (t0,))
-    con.execute("INSERT INTO messages VALUES(1,-10044444,6,'Первые слова',?, 'new_unedited','PeerChannel')", (t0,))
-    con.execute("INSERT INTO messages VALUES(1,222,7,'Не доказано',?, 'edit_first','PeerUser')", (t0,))
-    con.execute("INSERT INTO messages VALUES(2,333,8,'Чужой аккаунт',?, 'new_unedited','PeerUser')", (t0,))
+    con.execute("INSERT INTO messages VALUES(1,111,3,'Оригинал',?, 'new_unedited','PeerUser',12345)", (t0,))
+    con.execute("INSERT INTO messages VALUES(1,-10044444,6,'Первые слова',?, 'new_unedited','PeerChannel',54321)", (t0,))
+    con.execute("INSERT INTO messages VALUES(1,222,7,'Не доказано',?, 'edit_first','PeerUser',NULL)", (t0,))
+    con.execute("INSERT INTO messages VALUES(2,333,8,'Чужой аккаунт',?, 'new_unedited','PeerUser',-10098765)", (t0,))
     con.execute("INSERT INTO edits VALUES(1,111,3,?,?,?)", (t1,t1,"Изменено"))
     con.execute("INSERT INTO edits VALUES(1,-10044444,6,?,?,?)", (t1,t1,"Новый текст"))
     con.execute("INSERT INTO edits VALUES(1,222,7,?,?,?)", (t1,t1,"Не доказано"))
@@ -60,6 +60,11 @@ with tempfile.TemporaryDirectory() as d:
     assert any(r["edit_event_id"] == "delete:1" for r in packet["records"])
     assert all(r["source"] == "iphone8_telethon" for r in packet["records"])
     assert not any("api_hash" in r or "session" in r for r in packet["records"])
+    assert {r["sender_id"] for r in packet["records"] if "sender_id" in r} == {"12345", "54321"}
+    assert next(r for r in packet["records"] if r["record_kind"] == "delete")["sender_id"] == "12345"
+    # This addition must not fabricate a sender type, send date, or thread.
+    assert not any("sender_kind" in r or "sent_at" in r or "thread_id" in r
+                   for r in packet["records"])
 
     with live.open_source(path) as db:
         again = live.batch_from_db(db, 1, packet["next_edit_cursor"],
@@ -74,6 +79,23 @@ with tempfile.TemporaryDirectory() as d:
         other = live.batch_from_db(db, 2, 0, 0)
     assert len(other["records"]) == 2
     assert {r["account_id"] for r in other["records"]} == {"2"}
+    assert all("sender_id" not in r for r in other["records"]), "do not mislabel channel senders as user authors"
+
+    # Source archives created before sender_id was added still export as before.
+    legacy = Path(d) / "legacy.sqlite"
+    import shutil
+    shutil.copyfile(path, legacy)
+    with sqlite3.connect(legacy) as c:
+        c.executescript("""
+        CREATE TABLE original_msgs AS SELECT account_id,chat_id,message_id,
+          original_text,first_seen_at,first_seen_kind,peer_kind FROM messages;
+        DROP TABLE messages;
+        ALTER TABLE original_msgs RENAME TO messages;
+        """)
+    with live.open_source(legacy) as db:
+        old_packet = live.batch_from_db(db, 1, 0, 0)
+    assert len(old_packet["records"]) == 3
+    assert all("sender_id" not in r for r in old_packet["records"])
 
     for ip in ("192.168.1.20", "172.16.20.10", "10.11.12.13"):
         assert live.local_client(ip)

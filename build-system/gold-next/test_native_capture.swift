@@ -270,7 +270,7 @@ struct NativeCaptureFixture {
             "chat_id": "-100770077", "message_id": "2001",
             "edit_event_id": "edit:2001", "first_seen_at": first,
             "original_text": "Unmodified pre-edit text",
-            "latest_text": "Modified channel text",
+            "latest_text": "Modified channel text", "sender_id": "424242",
             "server_edit_at": editedAt, "event_observed_at": observed
         ]
         let unknownDelete: [String: Any] = [
@@ -278,7 +278,7 @@ struct NativeCaptureFixture {
             "account_id": String(account), "peer_kind": "PeerChannel",
             "chat_id": "-100770077", "message_id": "2002",
             "edit_event_id": "delete:2002", "first_seen_at": first,
-            "original_text": "Unmodified deleted text",
+            "original_text": "Unmodified deleted text", "sender_id": "434343",
             "event_observed_at": observed
         ]
         func bridgeResult(_ records: [[String: Any]]) throws -> [String: Int] {
@@ -328,6 +328,17 @@ struct NativeCaptureFixture {
                      ["Unmodified pre-edit text","1"], "real original survives deferred replay")
         precondition(row("SELECT is_deleted FROM messages WHERE peer_kind=2 AND peer_id=770077 AND message_id=2002") == ["1"])
         precondition(row("SELECT COUNT(*) FROM events WHERE peer_kind=2 AND peer_id=770077") == ["2"])
+        precondition(row("SELECT sender_id,sender_kind,sent_at FROM messages WHERE peer_kind=2 AND peer_id=770077 AND message_id=2001") ==
+                     ["424242","0","NULL"], "Bridge sender ID must not fabricate a send timestamp")
+        precondition(row("SELECT sender_id,sender_kind,sent_at FROM messages WHERE peer_kind=2 AND peer_id=770077 AND message_id=2002") ==
+                     ["434343","0","NULL"], "deletion must retain independently observed author only")
+        // A retransmitted event with contradictory sender metadata must not
+        // overwrite a sender from a previous committed import.
+        var changedSender = unknownEdit
+        changedSender["sender_id"] = "999999"
+        let senderDuplicate = try bridgeResult([changedSender])
+        precondition(senderDuplicate["duplicates"] == 1)
+        precondition(row("SELECT sender_id FROM messages WHERE peer_kind=2 AND peer_id=770077 AND message_id=2001") == ["424242"])
         precondition(replayResult().isEmpty, "idempotent after successful replay")
 
         // Simulate the existing account-clear cascade on the same SQLite.
