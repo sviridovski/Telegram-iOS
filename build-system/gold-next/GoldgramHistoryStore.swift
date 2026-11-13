@@ -2232,6 +2232,136 @@ private enum GoldgramPhone8Bridge {
         }
     }
 
+
+    // The bridge must never guess whether PeerChannel means broadcast or
+    // supergroup. Hold the whole packet in this account's existing SQLite,
+    // atomically with cursor acknowledgement.
+    private static func unresolvedKey(_ row: [String: Any]) -> String? {
+        guard let account = row["account_id"] as? String,
+              let kind = row["record_kind"] as? String,
+              kind == "edit" || kind == "delete",
+              let chat = row["chat_id"] as? String, chat.hasPrefix("-100"),
+              let message = row["message_id"] as? String,
+              let token = row["edit_event_id"] as? String,
+              !token.isEmpty, token.utf8.count <= 128 else { return nil }
+        let identity = [account, kind, chat, message, token].joined(separator: ":")
+        let digest = SHA256.hash(data: Data(identity.utf8))
+            .map { String(format: "%02x", $0) }.joined()
+        return "iphone8.unknown.channel.v1." + digest
+    }
+
+    private static func deferUnknown(_ row: [String: Any], peerId: Int64,
+                                     db: OpaquePointer) throws -> String {
+        guard let key = unresolvedKey(row),
+              let account = (row["account_id"] as? String).flatMap(Int64.init),
+              account > 0,
+              let data = try? JSONSerialization.data(withJSONObject: row, options: [.sortedKeys]),
+              let payload = String(data: data, encoding: .utf8) else { return "invalid" }
+        let sql = """
+        INSERT OR IGNORE INTO bridge_unknown_channels_v1
+            (event_key,account_id,peer_id,payload,created_at)
+        VALUES(?,?,?,?,?);
+        """
+        var ptr: OpaquePointer?
+        let rc = sqlite3_prepare_v2(db, sql, -1, &ptr, nil)
+        guard rc == SQLITE_OK, let stmt = ptr else {
+            if let ptr { sqlite3_finalize(ptr) }
+            throw GoldgramHistoryStore.StorageError.sqlite(rc)
+        }
+        defer { sqlite3_finalize(stmt) }
+        try bind(key, to: stmt, at: 1)
+        guard sqlite3_bind_int64(stmt, 2, account) == SQLITE_OK,
+              sqlite3_bind_int64(stmt, 3, peerId) == SQLITE_OK else {
+            throw GoldgramHistoryStore.StorageError.sqlite(SQLITE_ERROR)
+        }
+        try bind(payload, to: stmt, at: 4)
+        guard sqlite3_bind_int64(stmt, 5, Int64(Date().timeIntervalSince1970 * 1000)) == SQLITE_OK else {
+            throw GoldgramHistoryStore.StorageError.sqlite(SQLITE_ERROR)
+        }
+        guard sqlite3_step(stmt) == SQLITE_DONE else {
+            throw GoldgramHistoryStore.StorageError.sqlite(sqlite3_errcode(db))
+        }
+        return sqlite3_changes(db) == 1 ? "deferredChannels" : "duplicates"
+    }
+
+    // Remove from the pending queue only inside the SAME successful import
+    // transaction. A crash/ROLLBACK leaves the original payload for retry.
+    private static func clearUnknown(_ row: [String: Any], db: OpaquePointer) throws {
+        guard let key = unresolvedKey(row) else { return }
+        var ptr: OpaquePointer?
+        let rc = sqlite3_prepare_v2(db,
+            "DELETE FROM bridge_unknown_channels_v1 WHERE event_key=?;", -1, &ptr, nil)
+        guard rc == SQLITE_OK, let stmt = ptr else {
+            if let ptr { sqlite3_finalize(ptr) }
+            throw GoldgramHistoryStore.StorageError.sqlite(rc)
+        }
+        defer { sqlite3_finalize(stmt) }
+        try bind(key, to: stmt, at: 1)
+        guard sqlite3_step(stmt) == SQLITE_DONE else {
+            throw GoldgramHistoryStore.StorageError.sqlite(sqlite3_errcode(db))
+        }
+    }
+
+    // Only retry entries whose native dialog now has exactly ONE matching
+    // peer kind. Bound each attempt to 40 records; no network or other DB.
+    static func replayUnknown(accountId: Int64,
+                              completion: @escaping ([String: Int]) -> Void) {
+        func finish(_ result: [String: Int]) {
+            DispatchQueue.main.async { completion(result) }
+        }
+        GoldgramHistoryStore.enqueueArchiveWork {
+            guard GoldgramArchiveReader.activeAccountId()?.int64Value == accountId,
+                  UserDefaults.standard.bool(forKey: "GoldgramSQLiteCaptureEnabled"),
+                  GoldgramHistoryStore.archiveIsOpen else {
+                finish(["disabled": 1]); return
+            }
+            do {
+                let db = try GoldgramHistoryStore.archiveConnection(for: accountId)
+                let sql = """
+                SELECT q.payload FROM bridge_unknown_channels_v1 q
+                WHERE q.account_id=?
+                  AND (SELECT COUNT(*) FROM dialogs d
+                       WHERE d.peer_id=q.peer_id AND d.peer_kind IN (2,3))=1
+                ORDER BY q.created_at,q.event_key LIMIT 40;
+                """
+                var ptr: OpaquePointer?
+                let rc = sqlite3_prepare_v2(db, sql, -1, &ptr, nil)
+                guard rc == SQLITE_OK, let stmt = ptr else {
+                    if let ptr { sqlite3_finalize(ptr) }
+                    if rc == SQLITE_ERROR &&
+                        String(cString: sqlite3_errmsg(db)).contains("no such table") {
+                        finish([:]); return
+                    }
+                    finish(["error": 1]); return
+                }
+                guard sqlite3_bind_int64(stmt, 1, accountId) == SQLITE_OK else {
+                    sqlite3_finalize(stmt); finish(["error": 1]); return
+                }
+                var rows: [[String: Any]] = []
+                var step: Int32 = SQLITE_DONE
+                while true {
+                    step = sqlite3_step(stmt)
+                    if step != SQLITE_ROW { break }
+                    if let raw = sqlite3_column_text(stmt, 0) {
+                        let data = Data(bytes: raw, count: Int(sqlite3_column_bytes(stmt, 0)))
+                        if let row = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+                            rows.append(row)
+                        }
+                    }
+                }
+                sqlite3_finalize(stmt)
+                guard step == SQLITE_DONE else { finish(["error": 1]); return }
+                if rows.isEmpty { finish([:]); return }
+                let data = try JSONSerialization.data(withJSONObject: [
+                    "format": "goldgram_bridge_v2", "records": rows
+                ])
+                DispatchQueue.main.async {
+                    importBundle(data, accountId: accountId, completion: completion)
+                }
+            } catch { finish(["error": 1]) }
+        }
+    }
+
     // A source edit older than the first local observation cannot certify
     // the claimed original. Hold the entire message scope for manual chronology
     // reconciliation without inserting any misleading original/revision.
@@ -2414,12 +2544,13 @@ private enum GoldgramPhone8Bridge {
             guard step == SQLITE_DONE else {
                 throw GoldgramHistoryStore.StorageError.sqlite(step)
             }
-            guard kinds.count == 1 else { return "unknownChannels" }
+            guard kinds.count == 1 else { return try deferUnknown(row, peerId: peerId, db: db) }
             peerKind = kinds[0]
         } else {
             return "invalid"
         }
         let scope: [Int64] = [Int64(peerKind), peerId, Int64(mid)]
+        try clearUnknown(row, db: db)
         // This ID is per original deletion event, not a message-wide cursor.
         let identity = "\(peerKind):\(peerId):\(mid):\(token)"
         let digest = SHA256.hash(data: Data(identity.utf8))
@@ -2558,6 +2689,19 @@ private enum GoldgramPhone8Bridge {
                     );
                     """, db: db, ints: [])
                     try GoldgramHistoryStore.archiveSQL("""
+                    CREATE TABLE IF NOT EXISTS bridge_unknown_channels_v1 (
+                        event_key TEXT PRIMARY KEY,
+                        account_id INTEGER NOT NULL,
+                        peer_id INTEGER NOT NULL,
+                        payload TEXT NOT NULL,
+                        created_at INTEGER NOT NULL
+                    );
+                    """, db: db, ints: [])
+                    try GoldgramHistoryStore.archiveSQL("""
+                    CREATE INDEX IF NOT EXISTS idx_bridge_unknown_peers_v1
+                    ON bridge_unknown_channels_v1(account_id,peer_id,created_at);
+                    """, db: db, ints: [])
+                    try GoldgramHistoryStore.archiveSQL("""
                     CREATE TABLE IF NOT EXISTS bridge_chronology_holds_v1 (
                         peer_kind INTEGER NOT NULL,
                         peer_id INTEGER NOT NULL,
@@ -2593,6 +2737,8 @@ private enum GoldgramPhone8Bridge {
                             counts[status, default: 0] += 1
                             if status == "pending" {
                                 counts["conflicts", default: 0] += 1
+                            } else if status == "deferredChannels" {
+                                counts["pending", default: 0] += 1
                             }
                             continue
                         }
@@ -2644,7 +2790,12 @@ private enum GoldgramPhone8Bridge {
                             }
                             sqlite3_finalize(stmt)
                             guard kinds.count == 1 else {
-                                counts["unknownChannels", default: 0] += 1; continue
+                                let outcome = try deferUnknown(row, peerId: peerId, db: db)
+                                counts[outcome, default: 0] += 1
+                                if outcome == "deferredChannels" {
+                                    counts["pending", default: 0] += 1
+                                }
+                                continue
                             }
                             peerKind = kinds[0]
                         } else {
@@ -2660,6 +2811,7 @@ private enum GoldgramPhone8Bridge {
                             counts["invalid", default: 0] += 1; continue
                         }
                         let scope = [Int64(peerKind), peerId, Int64(id)]
+                        try clearUnknown(row, db: db)
                         // Cryptographically stable fingerprint. With V2 the source
                         // event ID + server time differentiates A→B→A transitions;
                         // V1 has no way to prove such repeated transitions.
@@ -2831,6 +2983,11 @@ extension GoldgramHistoryStore {
     static func importPhone8Bundle(_ data: Data, accountId: Int64,
                                    completion: @escaping ([String: Int]) -> Void) {
         GoldgramPhone8Bridge.importBundle(data, accountId: accountId, completion: completion)
+    }
+
+    static func replayPhone8Unknown(accountId: Int64,
+                                    completion: @escaping ([String: Int]) -> Void) {
+        GoldgramPhone8Bridge.replayUnknown(accountId: accountId, completion: completion)
     }
 }
 
@@ -3078,8 +3235,9 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
                     let changes = (result["edits"] ?? 0) + (result["deletions"] ?? 0)
                     let imported = result["imported"] ?? 0
                     let pending = result["pending"] ?? 0
+                    let deferred = result["deferredChannels"] ?? 0
                     let chronologyPending = result["chronologyPending"] ?? 0
-                    self.status("Live: +\(changes) событий, +\(imported) оригиналов, спорных \(pending) (хронология: \(chronologyPending)), курсоры \(nextEdits)/\(nextDeletes)")
+                    self.status("Live: +\(changes) событий, +\(imported) оригиналов, отложено каналов \(deferred), спорных \(pending) (хронология: \(chronologyPending)), курсоры \(nextEdits)/\(nextDeletes)")
                     // Catch up the old archive quickly without waiting one
                     // 12-second interval per historical batch. Limited by
                     // the importer transaction and its single in-flight gate.
@@ -3091,7 +3249,8 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
                     }
                 }
                 if rows.isEmpty {
-                    commitCursor([:])
+                    GoldgramHistoryStore.replayPhone8Unknown(
+                        accountId: account, completion: commitCursor)
                     return
                 }
                 GoldgramHistoryStore.importPhone8Bundle(data, accountId: account,

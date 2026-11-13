@@ -255,6 +255,81 @@ struct NativeCaptureFixture {
         precondition(editedIDs == Set([6, 1002, 1503]),
                      "fast edit folder must exclude deleted and unverified originals")
 
+
+        // Bridge regression: an unknown PeerChannel MUST NOT block the entire
+        // Live cursor or be silently lost. It is durable in this account's
+        // SQLite and replays only after native dialog classification is unique.
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let first = formatter.string(from: Date().addingTimeInterval(-180))
+        let editedAt = formatter.string(from: Date().addingTimeInterval(-100))
+        let observed = formatter.string(from: Date().addingTimeInterval(-90))
+        let unknownEdit: [String: Any] = [
+            "record_kind": "edit", "source": "iphone8_telethon",
+            "account_id": String(account), "peer_kind": "PeerChannel",
+            "chat_id": "-100770077", "message_id": "2001",
+            "edit_event_id": "edit:2001", "first_seen_at": first,
+            "original_text": "Unmodified pre-edit text",
+            "latest_text": "Modified channel text",
+            "server_edit_at": editedAt, "event_observed_at": observed
+        ]
+        let unknownDelete: [String: Any] = [
+            "record_kind": "delete", "source": "iphone8_telethon",
+            "account_id": String(account), "peer_kind": "PeerChannel",
+            "chat_id": "-100770077", "message_id": "2002",
+            "edit_event_id": "delete:2002", "first_seen_at": first,
+            "original_text": "Unmodified deleted text",
+            "event_observed_at": observed
+        ]
+        func bridgeResult(_ records: [[String: Any]]) throws -> [String: Int] {
+            let data = try JSONSerialization.data(withJSONObject: [
+                "format": "goldgram_bridge_v2", "records": records
+            ])
+            var reply: [String: Int]?
+            GoldgramHistoryStore.importPhone8Bundle(data, accountId: account) { reply = $0 }
+            let until = Date().addingTimeInterval(10)
+            while reply == nil && Date() < until {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+            }
+            precondition(reply != nil, "bridge import completion timed out")
+            return reply!
+        }
+        func replayResult() -> [String: Int] {
+            var reply: [String: Int]?
+            GoldgramHistoryStore.replayPhone8Unknown(accountId: account) { reply = $0 }
+            let until = Date().addingTimeInterval(10)
+            while reply == nil && Date() < until {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+            }
+            precondition(reply != nil, "pending replay completion timed out")
+            return reply!
+        }
+        let deferred = try bridgeResult([unknownEdit, unknownDelete])
+        precondition(deferred["deferredChannels"] == 2 && deferred["unknownChannels", default: 0] == 0,
+                     "unknown PeerChannel packets must be durably queued, not reject Live cursor")
+        precondition(row("SELECT COUNT(*) FROM bridge_unknown_channels_v1") == ["2"],
+                     "unresolved bridge events remain in same archive SQLite")
+        precondition(row("SELECT COUNT(*) FROM messages WHERE peer_id=770077") == ["0"],
+                     "do not guess channel or supergroup while mapping unknown")
+        let repeated = try bridgeResult([unknownEdit, unknownDelete])
+        precondition(repeated["duplicates"] == 2, "replay of unresolved batch is idempotent")
+        precondition(row("SELECT COUNT(*) FROM bridge_unknown_channels_v1") == ["2"])
+        precondition(replayResult().isEmpty, "unknown peer kinds must remain safely held")
+
+        precondition(sqlite3_exec(db,
+            "INSERT INTO dialogs(peer_kind,peer_id) VALUES(2,770077);",
+            nil, nil, nil) == SQLITE_OK)
+        let recovered = replayResult()
+        precondition(recovered["edits"] == 1 && recovered["deletions"] == 1 &&
+                     recovered["imported"] == 1, "known dialog replays edit and deletion")
+        precondition(row("SELECT COUNT(*) FROM bridge_unknown_channels_v1") == ["0"],
+                     "successful merge must clear pending in same transaction")
+        precondition(row("SELECT original_text, original_observed FROM messages WHERE peer_kind=2 AND peer_id=770077 AND message_id=2001") ==
+                     ["Unmodified pre-edit text","1"], "real original survives deferred replay")
+        precondition(row("SELECT is_deleted FROM messages WHERE peer_kind=2 AND peer_id=770077 AND message_id=2002") == ["1"])
+        precondition(row("SELECT COUNT(*) FROM events WHERE peer_kind=2 AND peer_id=770077") == ["2"])
+        precondition(replayResult().isEmpty, "idempotent after successful replay")
+
         // Simulate the existing account-clear cascade on the same SQLite.
         precondition(sqlite3_exec(db, "PRAGMA foreign_keys=ON; DELETE FROM dialogs;",
                                   nil, nil, nil) == SQLITE_OK)
