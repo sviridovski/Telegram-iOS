@@ -2525,6 +2525,39 @@ private enum GoldgramPhone8Bridge {
         """, db: db, ints: [sender] + scope)
     }
 
+    // Bridge sends trusted Telethon Message.date (not first_seen_at or edit_date)
+    // plus direct Telegram reply IDs. These are optional and never overwrite
+    // verified native metadata. Original provenance and revision policy stay intact.
+    private static func mergeTrustedBridgeMetadata(
+        _ row: [String: Any], db: OpaquePointer, scope: [Int64],
+        now: Int64, parse: (String) -> Date?
+    ) throws {
+        try mergeVerifiedUserSender(row, db: db, scope: scope)
+        let sent: Int64 = {
+            guard let iso = row["telegram_sent_at"] as? String,
+                  let date = parse(iso) else { return 0 }
+            let ms = date.timeIntervalSince1970 * 1000
+            guard ms.isFinite, ms > 0, ms <= Double(now) + 300_000 else { return 0 }
+            return Int64(ms)
+        }()
+        func messageId(_ key: String) -> Int64 {
+            guard let raw = row[key] as? String,
+                  let value = Int64(raw), value > 0,
+                  value <= Int64(Int32.max) else { return 0 }
+            return value
+        }
+        let replyId = messageId("reply_to_message_id")
+        let topicTop = messageId("topic_top_message_id")
+        guard sent > 0 || replyId > 0 || topicTop > 0 else { return }
+        try GoldgramHistoryStore.archiveSQL("""
+            UPDATE messages SET
+                sent_at = COALESCE(sent_at, NULLIF(?, 0)),
+                reply_to_message_id = COALESCE(reply_to_message_id, NULLIF(?, 0)),
+                thread_id = COALESCE(thread_id, NULLIF(?, 0))
+            WHERE peer_kind=? AND peer_id=? AND message_id=?;
+        """, db: db, ints: [sent, replyId, topicTop] + scope)
+    }
+
     private static func importDelete(_ row: [String: Any], db: OpaquePointer,
                                      now: Int64, parse: (String) -> Date?) throws -> String {
         guard row["source"] as? String == "iphone8_telethon",
@@ -2579,7 +2612,7 @@ private enum GoldgramPhone8Bridge {
         let key = "iphone8.delete.v2.\(digest)"
         if let status = try receiptStatus(db: db, key: key),
            status == "applied" || status == "already_present" {
-            try mergeVerifiedUserSender(row, db: db, scope: scope)
+            try mergeTrustedBridgeMetadata(row, db: db, scope: scope, now: now, parse: parse)
             return "duplicates"
         }
         let original = (row["original_text"] as? String) ?? ""
@@ -2611,7 +2644,7 @@ private enum GoldgramPhone8Bridge {
         try GoldgramHistoryStore.archiveSQL(
             "INSERT OR IGNORE INTO messages(peer_kind,peer_id,message_id,first_seen_at,last_seen_at,original_observed,capture_provenance,is_deleted) VALUES(?,?,?,?,?,0,0,1);",
             db: db, ints: scope + [atFirst, now])
-        try mergeVerifiedUserSender(row, db: db, scope: scope)
+        try mergeTrustedBridgeMetadata(row, db: db, scope: scope, now: now, parse: parse)
         if safeOriginal && knownOriginal == nil {
             try GoldgramHistoryStore.archiveSQL(
                 "UPDATE messages SET original_text=?4,original_observed=1,capture_provenance=CASE WHEN capture_provenance=0 THEN 3 ELSE capture_provenance END WHERE peer_kind=?1 AND peer_id=?2 AND message_id=?3 AND original_observed=0;",
@@ -2848,7 +2881,7 @@ private enum GoldgramPhone8Bridge {
                         let oldKey = "iphone8.edit.\(peerKind).\(peerId).\(id)"
                         let receipt = try receiptStatus(db: db, key: key)
                         if receipt == "applied" || receipt == "already_present" {
-                            try mergeVerifiedUserSender(row, db: db, scope: scope)
+                            try mergeTrustedBridgeMetadata(row, db: db, scope: scope, now: now, parse: parse)
                             counts["duplicates", default: 0] += 1; continue
                         }
                         // If Telegram's server edit predates the FIRST observation
@@ -2924,7 +2957,7 @@ private enum GoldgramPhone8Bridge {
                         try GoldgramHistoryStore.archiveSQL(
                             "INSERT OR IGNORE INTO messages(peer_kind,peer_id,message_id,first_seen_at,last_seen_at,original_observed,capture_provenance,original_text) VALUES(?,?,?,?,?,1,3,?);",
                             db: db, ints: scope + [first, now], text: original)
-                        try mergeVerifiedUserSender(row, db: db, scope: scope)
+                        try mergeTrustedBridgeMetadata(row, db: db, scope: scope, now: now, parse: parse)
                         if firstOriginal {
                             try GoldgramHistoryStore.archiveSQL(
                                 "UPDATE messages SET original_observed=1,original_text=?4,capture_provenance=CASE WHEN capture_provenance=0 THEN 3 ELSE capture_provenance END WHERE peer_kind=?1 AND peer_id=?2 AND message_id=?3 AND original_observed=0;",

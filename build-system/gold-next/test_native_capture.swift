@@ -336,9 +336,36 @@ struct NativeCaptureFixture {
         // overwrite a sender from a previous committed import.
         var changedSender = unknownEdit
         changedSender["sender_id"] = "999999"
+        // #214: metadata may arrive after an earlier Live receipt. Only
+        // verified server send date and actual reply IDs can fill NULL fields.
+        let serverSentAt = formatter.string(from: Date().addingTimeInterval(-900))
+        let expectedSentMs = Int64(formatter.date(from: serverSentAt)!.timeIntervalSince1970 * 1000)
+        changedSender["telegram_sent_at"] = serverSentAt
+        changedSender["reply_to_message_id"] = "1999"
+        changedSender["topic_top_message_id"] = "1900"
         let senderDuplicate = try bridgeResult([changedSender])
         precondition(senderDuplicate["duplicates"] == 1)
         precondition(row("SELECT sender_id FROM messages WHERE peer_kind=2 AND peer_id=770077 AND message_id=2001") == ["424242"])
+        let expectedMetadata = [String(expectedSentMs), "1999", "1900"]
+        let metadataSQL = "SELECT sent_at,reply_to_message_id,thread_id FROM messages WHERE peer_kind=2 AND peer_id=770077 AND message_id=2001"
+        precondition(row(metadataSQL) == expectedMetadata,
+                     "duplicate Live receipt enriches missing server date and reply metadata")
+        var competingMetadata = changedSender
+        competingMetadata["telegram_sent_at"] = formatter.string(from: Date().addingTimeInterval(-800))
+        competingMetadata["reply_to_message_id"] = "1998"
+        competingMetadata["topic_top_message_id"] = "1800"
+        let repeatedMetadata = try bridgeResult([competingMetadata])
+        precondition(repeatedMetadata["duplicates"] == 1)
+        precondition(row(metadataSQL) == expectedMetadata,
+                     "retransmission cannot overwrite first trusted metadata")
+        var invalidMetadata = unknownDelete
+        invalidMetadata["telegram_sent_at"] = "not-a-server-date"
+        invalidMetadata["reply_to_message_id"] = "-3"
+        invalidMetadata["topic_top_message_id"] = "0"
+        let invalidMetadataResult = try bridgeResult([invalidMetadata])
+        precondition(invalidMetadataResult["duplicates"] == 1)
+        precondition(row("SELECT sent_at,reply_to_message_id,thread_id FROM messages WHERE peer_kind=2 AND peer_id=770077 AND message_id=2002") == ["NULL","NULL","NULL"],
+                     "invalid bridge metadata must not replace unknown values")
         precondition(replayResult().isEmpty, "idempotent after successful replay")
 
         // Simulate the existing account-clear cascade on the same SQLite.
