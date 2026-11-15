@@ -1509,16 +1509,6 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
 
     private func openMessage(_ entry: [String: Any], accountId: Int64) {
         guard !openingMessage else { return }
-        // A deleted Telegram message cannot be opened remotely. Use only the
-        // retained archive copy, without bypassing the account boundary.
-        if (entry["deleted"] as? NSNumber)?.boolValue == true {
-            guard GoldgramArchiveReader.activeAccountId()?.int64Value == accountId else {
-                showLocalRecord(entry, accountChanged: true)
-                return
-            }
-            showLocalRecord(entry)
-            return
-        }
         openingMessage = true
         var request: [AnyHashable: Any] = ["action": "prepare_jump", "accountId": NSNumber(value: accountId), "items": [entry]]
         goldgramResolveNativeMetadata(request) { [weak self] response in
