@@ -985,7 +985,7 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
         let enabled = bridge.isEnabled(account: account)
         let report = "Состояние: \(enabled ? "включено" : "выключено")\n" +
             "\(bridge.lastStatus)\n\n" +
-            "Live работает через HTTPS в одной локальной сети. " +
+            "Live работает по HTTPS через локальную сеть или личный VPS. " +
             "Пока Swiftgram активен, проверки выполняются примерно раз в 12 секунд. " +
             "При приостановке iOS события накапливаются на iPhone 8."
         let alert = UIAlertController(title: "Goldgram Bridge Live",
@@ -1013,11 +1013,12 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
         let bridge = GoldgramLiveBridge.shared
         let alert = UIAlertController(
             title: "iPhone 8 · защищённое подключение",
-            message: "Введи локальный IP iPhone 8, SHA-256 сертификата и " +
-                "64-значный секрет из live_bridge_secret.txt. Порт 8873.",
+            message: "Введи IP iPhone 8 или VPS 194.87.235.144, SHA-256 сертификата и " +
+                "секрет подключения. Порты: локально 8873, VPS 443. " +
+                "При смене адреса существующий секрет можно не вводить.",
             preferredStyle: .alert)
         alert.addTextField { field in
-            field.placeholder = "192.168.1.20"
+            field.placeholder = "192.168.1.102 или 194.87.235.144"
             field.text = bridge.configuredHost(account: account)
             field.keyboardType = .numbersAndPunctuation
             field.autocorrectionType = .no
@@ -1029,7 +1030,7 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
             field.autocapitalizationType = .none
         }
         alert.addTextField { field in
-            field.placeholder = "Секрет подключения — 64 символа"
+            field.placeholder = "Секрет (пусто — сохранить прежний)"
             field.isSecureTextEntry = true
             field.autocorrectionType = .no
             field.autocapitalizationType = .none
