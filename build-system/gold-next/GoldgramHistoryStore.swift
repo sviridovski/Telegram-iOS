@@ -3088,6 +3088,16 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
             (octets[0] == 192 && octets[1] == 168)
     }
 
+    // Only this explicitly approved public relay is supported; TLS remains
+    // end-to-end pinned to the existing iPhone 8 certificate.
+    static func supportedHost(_ value: String) -> Bool {
+        privateIPv4(value) || value == "194.87.235.144"
+    }
+
+    private static func port(for host: String) -> Int {
+        host == "194.87.235.144" ? 443 : 8873
+    }
+
     func configuredHost(account: Int64) -> String {
         defaults.string(forKey: key(account, "host")) ?? ""
     }
@@ -3137,18 +3147,31 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
         let normalizedHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedPin = pin.lowercased().filter { !$0.isWhitespace && $0 != ":" }
         let normalizedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard account > 0, Self.privateIPv4(normalizedHost),
+        guard account > 0, Self.supportedHost(normalizedHost),
               normalizedPin.count == 64,
-              normalizedPin.allSatisfy({ $0.isHexDigit }),
-              normalizedToken.count == 64,
-              normalizedToken.allSatisfy({ $0.isHexDigit }),
-              storeSecret(normalizedToken, account: account) else {
-            lastStatus = "Неверный IP, отпечаток сертификата или код подключения"
+              normalizedPin.allSatisfy({ $0.isHexDigit }) else {
+            lastStatus = "Неверный IP или отпечаток сертификата"
             return false
         }
-        let oldHost = configuredHost(account: account)
+        // Re-pairing to the same pinned iPhone 8 through the VPS does not
+        // require copying the existing Keychain secret again.
+        if normalizedToken.isEmpty {
+            guard readSecret(account: account) != nil else {
+                lastStatus = "Не задан секрет подключения"
+                return false
+            }
+        } else {
+            guard normalizedToken.count == 64,
+                  normalizedToken.allSatisfy({ $0.isHexDigit }),
+                  storeSecret(normalizedToken, account: account) else {
+                lastStatus = "Неверный секрет подключения"
+                return false
+            }
+        }
         let oldPin = configuredPin(account: account)
-        if oldHost != normalizedHost || oldPin != normalizedPin {
+        // The source identity is the certificate, not its LAN/WAN address.
+        // Keep committed import cursors when switching to the same pinned host.
+        if oldPin != normalizedPin {
             defaults.removeObject(forKey: key(account, "editsCursor"))
             defaults.removeObject(forKey: key(account, "deletionsCursor"))
         }
@@ -3178,7 +3201,7 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
 
     func start(account: Int64) {
         guard account > 0, isEnabled(account: account),
-              Self.privateIPv4(configuredHost(account: account)),
+              Self.supportedHost(configuredHost(account: account)),
               configuredPin(account: account).count == 64,
               readSecret(account: account) != nil else {
             return
@@ -3243,7 +3266,7 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
         let edits = max(0, defaults.integer(forKey: key(account, "editsCursor")))
         let deletions = max(0, defaults.integer(forKey: key(account, "deletionsCursor")))
         let host = configuredHost(account: account)
-        guard let url = URL(string: "https://\(host):8873/v1/events?edits_after=\(edits)&deletions_after=\(deletions)") else {
+        guard let url = URL(string: "https://\(host):\(Self.port(for: host))/v1/events?edits_after=\(edits)&deletions_after=\(deletions)") else {
             return
         }
         inFlight = true
