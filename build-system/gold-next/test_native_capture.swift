@@ -8,6 +8,24 @@ import Darwin
 @main
 struct NativeCaptureFixture {
     static func main() throws {
+        // #225: HTTP limits must be respected across route/TLS retries.
+        precondition(GoldgramLiveRetryPolicy.httpDelay(
+            429, retryAfter: "120", failures: 1) == 120)
+        precondition(GoldgramLiveRetryPolicy.httpDelay(
+            429, retryAfter: "1", failures: 1) == 30)
+        precondition(GoldgramLiveRetryPolicy.httpDelay(
+            429, retryAfter: nil, failures: 2) == 60)
+        precondition(GoldgramLiveRetryPolicy.httpDelay(
+            503, retryAfter: nil, failures: 1) == 8)
+        precondition(GoldgramLiveRetryPolicy.httpDelay(
+            503, retryAfter: "90", failures: 1) == 90)
+        precondition(GoldgramLiveRetryPolicy.httpDelay(
+            401, retryAfter: nil, failures: 1) == 300)
+        precondition(GoldgramLiveRetryPolicy.networkDelay(1) == 3)
+        precondition(GoldgramLiveRetryPolicy.networkDelay(10) == 120)
+        precondition(GoldgramLiveRetryPolicy.isTLSError(-1200))
+        precondition(GoldgramLiveRetryPolicy.isConnectionError(-1005))
+        precondition(!GoldgramLiveRetryPolicy.isConnectionError(-1202))
         // #224: LAN catch-up is fast; the public relay retains backoff.
         precondition(GoldgramLiveBridge.catchupDelayMs(host: "192.168.1.102") == 100)
         precondition(GoldgramLiveBridge.catchupDelayMs(host: "10.8.0.1") == 100)

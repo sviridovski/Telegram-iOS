@@ -6,6 +6,9 @@ import Foundation
 import SQLite3
 import CryptoKit
 import Security
+#if canImport(Network)
+import Network
+#endif
 #if canImport(UIKit)
 import UIKit
 #endif
@@ -3335,6 +3338,60 @@ extension GoldgramHistoryStore {
 // Goldgram Live receiver: foreground-only TLS-pinned pull from jailbroken iPhone 8.
 // No second SQLite; receipts and edits use the existing Goldgram import transaction.
 // No reliance on a persistent SSH/Termius session or on iOS running while suspended.
+
+// #225: pure, bounded retry decisions for the existing pinned Live transport.
+// A rate limit is never bypassed by rebuilding TLS or by changing networks.
+enum GoldgramLiveRetryPolicy {
+    static func retryAfterSeconds(_ value: String?, now: Date = Date()) -> TimeInterval? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else { return nil }
+        if let seconds = TimeInterval(value), seconds.isFinite, seconds >= 0 {
+            return min(86_400, seconds)
+        }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        if let date = formatter.date(from: value) {
+            return min(86_400, max(0, date.timeIntervalSince(now)))
+        }
+        return nil
+    }
+
+    static func exponential(_ failureCount: Int, initial: Int, cap: Int) -> Int {
+        let shift = max(0, min(7, failureCount - 1))
+        return min(cap, initial * (1 << shift))
+    }
+
+    static func httpDelay(_ code: Int, retryAfter: String?,
+                          failures: Int, now: Date = Date()) -> TimeInterval {
+        let suggested = retryAfterSeconds(retryAfter, now: now)
+        if code == 429 {
+            return min(86_400, max(30, suggested ?? Double(exponential(
+                failures, initial: 30, cap: 1_800))))
+        }
+        if (500...599).contains(code) {
+            return min(86_400, max(
+                Double(exponential(failures, initial: 8, cap: 300)),
+                suggested ?? 0))
+        }
+        // Unauthorized or malformed response: don't hammer the endpoint.
+        return 300
+    }
+
+    static func networkDelay(_ failures: Int) -> TimeInterval {
+        Double(exponential(failures, initial: 3, cap: 120))
+    }
+
+    static func isTLSError(_ code: Int) -> Bool {
+        (-1206 ... -1200).contains(code)
+    }
+
+    static func isConnectionError(_ code: Int) -> Bool {
+        [-1001, -1003, -1004, -1005, -1009, -1200].contains(code)
+    }
+}
+
 final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
     static let shared = GoldgramLiveBridge()
     private let defaults = UserDefaults.standard
@@ -3344,7 +3401,21 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
     private var runningAccount: Int64?
     private var inFlight = false
     private var runToken: UInt64 = 0
+    // Only the Main queue mutates the transport state; URLSession's challenge
+    // delegate uses this lock solely for the expected certificate hash.
+    private let pinLock = NSLock()
     private var expectedPin = ""
+    private var pinRejected = false
+    private var retryNotBefore: TimeInterval = 0
+    private var rateLimitedUntil: TimeInterval = 0
+    private var consecutiveFailures = 0
+    private var certificateBlocked = false
+    #if canImport(Network) && os(iOS)
+    private var networkMonitor: NWPathMonitor?
+    private let networkMonitorQueue = DispatchQueue(label: "goldgram.live.path", qos: .utility)
+    private var previousNetworkSignature: String?
+    private var networkChangeWork: DispatchWorkItem?
+    #endif
     private(set) var lastStatus = "Live не настроен"
 
     private override init() {
@@ -3354,6 +3425,117 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
             selector: #selector(activated),
             name: UIApplication.didBecomeActiveNotification, object: nil)
         #endif
+        #if canImport(Network) && os(iOS)
+        // VPN/Wi-Fi/LTE route changes may not throw a URLSession error until
+        // the next request. Rebuild the transport (not its SQLite cursors)
+        // when the monitored route changes. Keep HTTP 429 backoff intact.
+        let monitor = NWPathMonitor()
+        networkMonitor = monitor
+        monitor.pathUpdateHandler = { [weak self] path in
+            let signature = "\(path.status):\(path.usesInterfaceType(.wifi)):\(path.usesInterfaceType(.cellular)):\(path.usesInterfaceType(.other))"
+            let available = path.status == .satisfied
+            DispatchQueue.main.async { [weak self] in
+                self?.networkPathChanged(signature: signature, available: available)
+            }
+        }
+        monitor.start(queue: networkMonitorQueue)
+        #endif
+    }
+
+    #if canImport(Network) && os(iOS)
+    private func networkPathChanged(signature: String, available: Bool) {
+        let previous = previousNetworkSignature
+        previousNetworkSignature = signature
+        guard let previous, previous != signature, runningAccount != nil,
+              !certificateBlocked else { return }
+        networkChangeWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.runningAccount != nil else { return }
+            self.renewSession()
+            if available {
+                // A change of route may clear a transport failure, but a
+                // server-enforced rate limit survives the network change.
+                let now = ProcessInfo.processInfo.systemUptime
+                if self.rateLimitedUntil <= now {
+                    self.retryNotBefore = 0
+                    self.consecutiveFailures = 0
+                }
+                self.poll()
+            } else {
+                self.status("Live: сеть недоступна; HTTPS восстановится при подключении")
+            }
+        }
+        networkChangeWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(400), execute: work)
+    }
+    #endif
+
+    private func setExpectedPin(_ pin: String) {
+        pinLock.lock()
+        expectedPin = pin
+        pinRejected = false
+        pinLock.unlock()
+    }
+
+    private func didRejectCertificate() -> Bool {
+        pinLock.lock()
+        defer { pinLock.unlock() }
+        return pinRejected
+    }
+
+    // Recreate just URLSession; never touch the paired identity, archive,
+    // imported records or event cursors. Old callbacks are rejected by token.
+    private func createHTTPSession(host: String) -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        let local = Self.privateIPv4(host)
+        configuration.timeoutIntervalForRequest = local ? 10 : 20
+        configuration.timeoutIntervalForResource = local ? 15 : 35
+        configuration.waitsForConnectivity = !local
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        return URLSession(configuration: configuration,
+                          delegate: self, delegateQueue: nil)
+    }
+
+    private func renewSession() {
+        guard runningAccount != nil else { return }
+        runToken &+= 1
+        let old = session
+        session = createHTTPSession(host: configuredHost(account: runningAccount!))
+        inFlight = false
+        old?.invalidateAndCancel()
+    }
+
+    private func failTransport(_ reason: String, errorCode: Int, shouldRenew: Bool) {
+        inFlight = false
+        if didRejectCertificate() {
+            certificateBlocked = true
+            status("Live TLS: сертификат не совпал с закреплённым SHA-256; автоматические повторы остановлены")
+            return
+        }
+        consecutiveFailures = min(20, consecutiveFailures + 1)
+        let delay = GoldgramLiveRetryPolicy.networkDelay(consecutiveFailures)
+        retryNotBefore = ProcessInfo.processInfo.systemUptime + delay
+        if shouldRenew { renewSession() }
+        let category = GoldgramLiveRetryPolicy.isTLSError(errorCode) ? "TLS" : "HTTPS"
+        status("Live \(category): \(reason) [\(errorCode)]; повтор через \(Int(delay)) с")
+    }
+
+    private func failHTTP(_ code: Int, retryAfter: String?) {
+        inFlight = false
+        consecutiveFailures = min(20, consecutiveFailures + 1)
+        let delay = GoldgramLiveRetryPolicy.httpDelay(
+            code, retryAfter: retryAfter, failures: consecutiveFailures)
+        retryNotBefore = ProcessInfo.processInfo.systemUptime + delay
+        if code == 429 {
+            rateLimitedUntil = retryNotBefore
+        }
+        if code == 502 || code == 503 || code == 504 {
+            renewSession()
+        }
+        let detail = code == 429 ? "лимит запросов" :
+            (500...599).contains(code) ? "временная ошибка сервера" :
+            (code == 401 || code == 403) ? "доступ запрещён" : "неожиданный ответ"
+        status("Live HTTP \(code): \(detail); повтор через \(Int(ceil(delay))) с")
     }
 
     private func key(_ account: Int64, _ name: String) -> String {
@@ -3479,6 +3661,14 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
         session = nil
         runningAccount = nil
         inFlight = false
+        retryNotBefore = 0
+        rateLimitedUntil = 0
+        consecutiveFailures = 0
+        certificateBlocked = false
+        #if canImport(Network) && os(iOS)
+        networkChangeWork?.cancel()
+        networkChangeWork = nil
+        #endif
     }
 
     func disable(account: Int64) {
@@ -3497,14 +3687,8 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
         if runningAccount == account && timer != nil { return }
         stop()
         runningAccount = account
-        expectedPin = configuredPin(account: account)
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 10
-        configuration.timeoutIntervalForResource = 15
-        configuration.waitsForConnectivity = false
-        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        session = URLSession(configuration: configuration,
-                             delegate: self, delegateQueue: nil)
+        setExpectedPin(configuredPin(account: account))
+        session = createHTTPSession(host: configuredHost(account: account))
         let source = DispatchSource.makeTimerSource(queue: .main)
         source.schedule(deadline: .now(), repeating: .seconds(12),
                         leeway: .seconds(2))
@@ -3531,6 +3715,15 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
         guard let account = GoldgramArchiveReader.activeAccountId()?.int64Value,
               account > 0 else { return }
         start(account: account)
+        if certificateBlocked {
+            status("Live TLS: сертификат не совпадает с сохранённым; проверь подключение")
+            return
+        }
+        let remain = retryNotBefore - ProcessInfo.processInfo.systemUptime
+        if remain > 0 {
+            status("Live: повторный запрос через \(Int(ceil(remain))) с (ограничение сервера или восстановление сети)")
+            return
+        }
         poll()
     }
 
@@ -3543,7 +3736,9 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
     }
 
     private func poll() {
-        guard !inFlight, let account = runningAccount,
+        guard !certificateBlocked,
+              ProcessInfo.processInfo.systemUptime >= retryNotBefore,
+              !inFlight, let account = runningAccount,
               GoldgramArchiveReader.activeAccountId()?.int64Value == account,
               defaults.bool(forKey: "GoldgramSQLiteCaptureEnabled"),
               let token = readSecret(account: account),
@@ -3569,12 +3764,24 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
                 guard let self else { return }
                 guard self.runningAccount == account, self.runToken == ticket else { return }
                 if let error {
-                    self.inFlight = false
-                    self.status("Сбой HTTPS: \(error.localizedDescription)")
+                    let nsError = error as NSError
+                    self.failTransport(
+                        nsError.domain == NSURLErrorDomain ? "ошибка соединения" : "ошибка транспорта",
+                        errorCode: nsError.code,
+                        shouldRenew: nsError.domain == NSURLErrorDomain &&
+                            GoldgramLiveRetryPolicy.isConnectionError(nsError.code))
                     return
                 }
-                guard (response as? HTTPURLResponse)?.statusCode == 200,
-                      let data, data.count <= 1_000_000,
+                guard let httpResponse = response as? HTTPURLResponse else {
+                    self.failHTTP(503, retryAfter: nil)
+                    return
+                }
+                if httpResponse.statusCode != 200 {
+                    self.failHTTP(httpResponse.statusCode,
+                        retryAfter: httpResponse.value(forHTTPHeaderField: "Retry-After"))
+                    return
+                }
+                guard let data, data.count <= 1_000_000,
                       let payload = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
                       payload["format"] as? String == "goldgram_bridge_v2",
                       let rows = payload["records"] as? [[String: Any]],
@@ -3582,8 +3789,7 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
                       let nextEdits = payload["next_edit_cursor"] as? Int,
                       let nextDeletes = payload["next_delete_cursor"] as? Int,
                       nextEdits >= edits, nextDeletes >= deletions else {
-                    self.inFlight = false
-                    self.status("Live: неверный или отклонённый HTTPS-ответ")
+                    self.failHTTP(422, retryAfter: nil)
                     return
                 }
                 func commitCursor(_ result: [String: Int]) {
@@ -3601,6 +3807,9 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
                         return
                     }
                     // The importer callback follows the SQLite COMMIT.
+                    self.consecutiveFailures = 0
+                    self.retryNotBefore = 0
+                    self.rateLimitedUntil = 0
                     self.defaults.set(nextEdits, forKey: self.key(account, "editsCursor"))
                     self.defaults.set(nextDeletes, forKey: self.key(account, "deletionsCursor"))
                     let changes = (result["edits"] ?? 0) + (result["deletions"] ?? 0)
@@ -3648,7 +3857,11 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
         }
         let digest = SHA256.hash(data: SecCertificateCopyData(cert) as Data)
             .map { String(format: "%02x", $0) }.joined()
-        guard digest == expectedPin else {
+        pinLock.lock()
+        let matchingPin = digest == expectedPin
+        if !matchingPin { pinRejected = true }
+        pinLock.unlock()
+        guard matchingPin else {
             completionHandler(.cancelAuthenticationChallenge, nil)
             return
         }
