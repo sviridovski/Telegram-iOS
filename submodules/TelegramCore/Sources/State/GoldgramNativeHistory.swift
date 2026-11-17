@@ -883,6 +883,144 @@ public func goldgramNativeHistoryEnabled() -> Bool {
     return goldgramNativeHistoryHostV1() == 1 && goldgramNativeWriter() != nil && UserDefaults.standard.bool(forKey: "GoldgramSQLiteCaptureEnabled")
 }
 
+
+// Goldgram #223: merge confirmed revisions already imported by iPhone 8 into
+// the same Postbox presentation attribute used by gray chat "Изменение N" rows.
+// The Telegram-owned message text is never rewritten. This runs off the UI
+// thread, with an account-scoped, message-scoped guard and no SQLite I/O in layout.
+private struct GoldgramVerifiedInlineHistory: Decodable {
+    let baseline: String
+    let revisions: [String]
+    let dates: [Int32]
+}
+private typealias GoldgramVerifiedInlineHistoryRead = @convention(c)
+    (Int64, Int32, Int64, Int32) -> UnsafeMutablePointer<CChar>?
+
+private func goldgramReadVerifiedInlineHistory(
+    accountId: Int64, kind: Int32, peerId: Int64, messageId: Int32
+) -> GoldgramVerifiedInlineHistory? {
+    guard let handle = dlopen(nil, RTLD_NOW) else { return nil }
+    defer { dlclose(handle) }
+    guard let symbol = dlsym(handle, "goldgram_verified_inline_history_v1") else { return nil }
+    let reader = unsafeBitCast(symbol, to: GoldgramVerifiedInlineHistoryRead.self)
+    guard let pointer = reader(accountId, kind, peerId, messageId) else { return nil }
+    defer { free(pointer) }
+    return try? JSONDecoder().decode(
+        GoldgramVerifiedInlineHistory.self, from: Data(bytes: pointer, count: strlen(pointer)))
+}
+
+private func goldgramApplyVerifiedInlineHistory(
+    accountPeerId: PeerId, transaction: Transaction, id: MessageId
+) {
+    guard let message = transaction.getMessage(id),
+          let kind = goldgramKind(id.peerId, transaction.getPeer(id.peerId)),
+          let verified = goldgramReadVerifiedInlineHistory(
+              accountId: accountPeerId.id._internalGetInt64Value(),
+              kind: kind, peerId: id.peerId.id._internalGetInt64Value(),
+              messageId: id.id),
+          !verified.revisions.isEmpty,
+          verified.revisions.count == verified.dates.count else { return }
+    // The local server message must agree with the latest committed revision.
+    // If the phone has a newer Telegram edit, leave its view intact until the
+    // independent archive catches up, rather than misordering the chain.
+    guard goldgramArchiveText(message.text, message.media) == verified.revisions.last else { return }
+    let existing = message.attributes.compactMap {
+        $0 as? GoldgramMessageHistoryAttribute
+    }.first
+    if let existing {
+        if existing.originalObserved && existing.baseline != verified.baseline { return }
+        // The archived sequence must contain every locally observed revision in
+        // its original order; never silently throw away a native-only edit.
+        var localIndex = 0
+        for revision in verified.revisions where localIndex < existing.revisions.count {
+            if revision == existing.revisions[localIndex] { localIndex += 1 }
+        }
+        guard localIndex == existing.revisions.count else { return }
+        if existing.originalObserved && existing.baseline == verified.baseline &&
+           existing.revisions == verified.revisions { return }
+    }
+    let entities = existing?.baseline == verified.baseline
+        ? (existing?.entities ?? []) : []
+    let history = GoldgramMessageHistoryAttribute(
+        baseline: verified.baseline, originalObserved: true, entities: entities,
+        revisions: verified.revisions, editDates: verified.dates)
+    transaction.updateMessage(id, preprocess: false, update: { current in
+        let attrs = current.attributes.filter { !($0 is GoldgramMessageHistoryAttribute) }
+        return .update(goldgramStoredMessage(current, localTags: current.localTags)
+            .withUpdatedAttributes(attrs + [history]))
+    })
+    if let updated = transaction.getMessage(id) {
+        _ = goldgramSaveSnapshot(transaction: transaction,
+            message: goldgramStoredMessage(updated, localTags: updated.localTags))
+    }
+}
+
+private final class GoldgramTrackedInlineMessage {
+    weak var account: Account?
+    let id: MessageId
+    init(account: Account, id: MessageId) {
+        self.account = account
+        self.id = id
+    }
+}
+
+private enum GoldgramInlineArchiveReconciler {
+    private static let queue = DispatchQueue(label: "goldgram.inline.archive.reconcile", qos: .utility)
+    private static var tracked: [String: GoldgramTrackedInlineMessage] = [:]
+    private static var checked = Set<String>()
+    private static var observer: NSObjectProtocol?
+
+    private static func reconcile(_ account: Account, _ id: MessageId) {
+        let _ = (account.postbox.transaction { transaction -> Void in
+            guard goldgramNativeHistoryEnabled() else { return }
+            goldgramApplyVerifiedInlineHistory(
+                accountPeerId: account.peerId, transaction: transaction, id: id)
+        }).start()
+    }
+
+    static func watch(account: Account, id: MessageId) {
+        guard id.namespace == Namespaces.Message.Cloud, id.id > 0,
+              goldgramNativeHistoryEnabled() else { return }
+        queue.async {
+            if observer == nil {
+                observer = NotificationCenter.default.addObserver(
+                    forName: Notification.Name("GoldgramArchiveChanged"),
+                    object: nil, queue: nil) { note in
+                    let changedAccount = (note.object as? NSNumber)?.int64Value
+                    queue.async {
+                        for (key, trackedMessage) in Array(tracked) {
+                            guard let active = trackedMessage.account else {
+                                tracked.removeValue(forKey: key)
+                                checked.remove(key)
+                                continue
+                            }
+                            if let changedAccount,
+                               active.peerId.id._internalGetInt64Value() != changedAccount { continue }
+                            checked.remove(key)
+                            if checked.insert(key).inserted {
+                                reconcile(active, trackedMessage.id)
+                            }
+                        }
+                    }
+                }
+            }
+            let key = "\(account.peerId.toInt64()):\(id.peerId.toInt64()):\(id.namespace):\(id.id)"
+            if tracked[key] == nil && tracked.count >= 512 {
+                tracked.removeAll(keepingCapacity: true)
+                checked.removeAll(keepingCapacity: true)
+            }
+            tracked[key] = GoldgramTrackedInlineMessage(account: account, id: id)
+            if checked.insert(key).inserted { reconcile(account, id) }
+        }
+    }
+}
+
+/// Called by the existing text bubble after its message is available. Actual
+/// archive reads and Postbox writes run asynchronously, never inside layout.
+public func goldgramWatchInlineArchiveHistory(account: Account, id: MessageId) {
+    GoldgramInlineArchiveReconciler.watch(account: account, id: id)
+}
+
 // The notification service has its own defaults and does not load Mx. Share
 // explicit account-local consent through Postbox, never infer it from a push.
 private struct GoldgramCaptureSettings: Codable, Equatable {

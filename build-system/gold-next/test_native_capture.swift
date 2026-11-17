@@ -433,6 +433,23 @@ struct NativeCaptureFixture {
                      "cached chat count is stable on layout")
         precondition(goldgramChatEditCountV1(channelPeerKey - 1, 3018) == -1,
                      "same message id in a different peer cannot inherit history")
+        // #223: the actual chat inline-reader must return all intermediate edits
+        // from the same verified SQLite, not just the native session's last edit.
+        let inlinePointer = goldgramVerifiedInlineHistoryV1(account, 2, 99, 3018)
+        precondition(inlinePointer != nil, "confirmed inline history is readable")
+        let inlineJSON = String(cString: inlinePointer!)
+        free(inlinePointer)
+        let inline = try JSONSerialization.jsonObject(with: Data(inlineJSON.utf8))
+            as! [String: Any]
+        precondition(inline["baseline"] as? String == "1")
+        precondition(inline["revisions"] as? [String] == ["12", "123"],
+                     "chat displays both edits in chronological order")
+        precondition(goldgramVerifiedInlineHistoryV1(account, 2, 98, 3018) == nil,
+                     "identical message ID in another dialog must not leak")
+        precondition(goldgramVerifiedInlineHistoryV1(account, 3, 99, 3018) == nil,
+                     "different peer classification must not inherit history")
+        precondition(goldgramVerifiedInlineHistoryV1(account, 2, 99, 2) == nil,
+                     "never label an unverified first-seen edit as original")
         precondition(replayResult().isEmpty, "restored receipt is idempotent")
 
         // Simulate the existing account-clear cascade on the same SQLite.

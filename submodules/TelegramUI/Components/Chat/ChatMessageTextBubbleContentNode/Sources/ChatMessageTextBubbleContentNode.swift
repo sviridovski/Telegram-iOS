@@ -428,6 +428,16 @@ public class ChatMessageTextBubbleContentNode: ChatMessageBubbleContentNode {
                 }
                 
                 
+                // Goldgram #223: on chat display, asynchronously reconcile
+                // iPhone 8's committed intermediate edits with the local-only
+                // history attribute that already draws the gray edit rows.
+                // Never read SQLite or mutate a message on this layout path.
+                if item.message.id.namespace == Namespaces.Message.Cloud &&
+                   item.message.attributes.contains(where: {
+                       $0 is EditedMessageAttribute || $0 is GoldgramMessageHistoryAttribute
+                   }) {
+                    goldgramWatchInlineArchiveHistory(account: item.context.account, id: item.message.id)
+                }
                 let goldgramHistory = item.message.attributes.first(where: { $0 is GoldgramMessageHistoryAttribute }) as? GoldgramMessageHistoryAttribute
                 var goldgramAllowsHistory = true
                 if let subject = item.associatedData.subject, case .messageOptions = subject { goldgramAllowsHistory = false }

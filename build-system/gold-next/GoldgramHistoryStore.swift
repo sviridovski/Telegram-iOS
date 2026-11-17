@@ -3180,6 +3180,93 @@ private enum GoldgramPhone8Bridge {
     }
 }
 
+
+// Goldgram #223: a verified, bounded read for the existing gray inline
+// "Изменение N" rows in chat. Called only from a background Postbox transaction,
+// never from chat layout. The caller owns the returned JSON and frees it.
+// No new database, cursor changes, or in-memory guess of missing versions.
+@_cdecl("goldgram_verified_inline_history_v1")
+public func goldgramVerifiedInlineHistoryV1(
+    _ accountId: Int64, _ peerKind: Int32, _ peerId: Int64, _ messageId: Int32
+) -> UnsafeMutablePointer<CChar>? {
+    guard accountId > 0, (0...3).contains(peerKind), peerId > 0, messageId > 0,
+          UserDefaults.standard.bool(forKey: "GoldgramSQLiteCaptureEnabled"),
+          GoldgramArchiveReader.activeAccountId()?.int64Value == accountId else { return nil }
+    return GoldgramHistoryStore.storageQueue.sync {
+        guard GoldgramHistoryStore.archiveIsOpen,
+              let db = try? GoldgramHistoryStore.archiveConnection(for: accountId) else { return nil }
+        var head: OpaquePointer?
+        let headSQL = """
+        SELECT original_text FROM messages
+        WHERE peer_kind=? AND peer_id=? AND message_id=?
+          AND original_observed=1 AND original_text IS NOT NULL LIMIT 1;
+        """
+        guard sqlite3_prepare_v2(db, headSQL, -1, &head, nil) == SQLITE_OK,
+              let header = head else {
+            if let head { sqlite3_finalize(head) }
+            return nil
+        }
+        defer { sqlite3_finalize(header) }
+        guard sqlite3_bind_int(header, 1, peerKind) == SQLITE_OK,
+              sqlite3_bind_int64(header, 2, peerId) == SQLITE_OK,
+              sqlite3_bind_int(header, 3, messageId) == SQLITE_OK,
+              sqlite3_step(header) == SQLITE_ROW,
+              let originalBytes = sqlite3_column_text(header, 0),
+              sqlite3_column_bytes(header, 0) <= 65536 else { return nil }
+        let original = String(decoding: UnsafeBufferPointer(
+            start: originalBytes, count: Int(sqlite3_column_bytes(header, 0))), as: UTF8.self)
+
+        var rows: OpaquePointer?
+        let revisionsSQL = """
+        SELECT version_index, content, server_edit_at FROM revisions
+        WHERE peer_kind=? AND peer_id=? AND message_id=?
+        ORDER BY version_index ASC LIMIT 250;
+        """
+        guard sqlite3_prepare_v2(db, revisionsSQL, -1, &rows, nil) == SQLITE_OK,
+              let revisionsStmt = rows else {
+            if let rows { sqlite3_finalize(rows) }
+            return nil
+        }
+        defer { sqlite3_finalize(revisionsStmt) }
+        guard sqlite3_bind_int(revisionsStmt, 1, peerKind) == SQLITE_OK,
+              sqlite3_bind_int64(revisionsStmt, 2, peerId) == SQLITE_OK,
+              sqlite3_bind_int(revisionsStmt, 3, messageId) == SQLITE_OK else { return nil }
+        var revisions: [String] = []
+        var dates: [Int32] = []
+        var expectedIndex: Int64 = 0
+        var totalBytes = original.utf8.count
+        var outcome: Int32 = SQLITE_DONE
+        while true {
+            outcome = sqlite3_step(revisionsStmt)
+            if outcome != SQLITE_ROW { break }
+            guard sqlite3_column_int64(revisionsStmt, 0) == expectedIndex,
+                  let bytes = sqlite3_column_text(revisionsStmt, 1),
+                  sqlite3_column_bytes(revisionsStmt, 1) <= 65536 else { return nil }
+            let body = String(decoding: UnsafeBufferPointer(
+                start: bytes, count: Int(sqlite3_column_bytes(revisionsStmt, 1))), as: UTF8.self)
+            totalBytes += body.utf8.count
+            guard totalBytes <= 300000 else { return nil }
+            if expectedIndex == 0 {
+                // A confirmed original must occupy slot zero; never relabel an edit.
+                guard original == body else { return nil }
+            } else {
+                revisions.append(body)
+                let milliseconds = sqlite3_column_type(revisionsStmt, 2) == SQLITE_NULL
+                    ? Int64(0) : sqlite3_column_int64(revisionsStmt, 2)
+                dates.append(milliseconds > 0 ? Int32(clamping: milliseconds / 1000) : 0)
+            }
+            expectedIndex += 1
+        }
+        guard outcome == SQLITE_DONE, expectedIndex >= 2, !revisions.isEmpty,
+              let json = try? JSONSerialization.data(withJSONObject: [
+                  "baseline": original, "revisions": revisions, "dates": dates
+              ]),
+              json.count <= 350000,
+              let text = String(data: json, encoding: .utf8) else { return nil }
+        return strdup(text)
+    }
+}
+
 extension GoldgramHistoryStore {
     // #218: full local history, read on the existing account SQLite queue.
     static func readPhone8RevisionHistory(
