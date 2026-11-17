@@ -372,11 +372,9 @@ struct NativeCaptureFixture {
         // delivers the intermediate edit, then replays a #217 pending receipt.
         try send(3018, event: 0, text: "1", known: true)
         let nativeFinal = Date().addingTimeInterval(-35)
-        GoldgramHistoryStore.archiveEdit(
-            accountId: account, peerId: 99, messageId: 3018,
-            text: "123", senderId: 42, sentAt: 0, threadId: 0,
-            editedAt: Int64(nativeFinal.timeIntervalSince1970 * 1000),
-            peerKind: 2)
+        // Exercise the same production native capture entrypoint as the
+        // preceding tests instead of calling fileprivate archiveEdit.
+        try send(3018, event: 1, text: "123", known: true, before: "1")
         GoldgramHistoryStore.storageQueue.sync {}
         let oldEdit: [String: Any] = [
             "record_kind": "edit", "source": "iphone8_telethon",
