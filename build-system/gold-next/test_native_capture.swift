@@ -368,6 +368,59 @@ struct NativeCaptureFixture {
                      "invalid bridge metadata must not replace unknown values")
         precondition(replayResult().isEmpty, "idempotent after successful replay")
 
+        // #218: native Swiftgram observes the FINAL edit before the Bridge
+        // delivers the intermediate edit, then replays a #217 pending receipt.
+        try send(3018, event: 0, text: "1", known: true)
+        let nativeFinal = Date().addingTimeInterval(-35)
+        GoldgramHistoryStore.archiveEdit(
+            accountId: account, peerId: 99, messageId: 3018,
+            text: "123", senderId: 42, sentAt: 0, threadId: 0,
+            editedAt: Int64(nativeFinal.timeIntervalSince1970 * 1000),
+            peerKind: 2)
+        GoldgramHistoryStore.storageQueue.sync {}
+        let oldEdit: [String: Any] = [
+            "record_kind": "edit", "source": "iphone8_telethon",
+            "account_id": String(account), "peer_kind": "PeerChannel",
+            "chat_id": "-10099", "message_id": "3018",
+            "edit_event_id": "edit:3018",
+            "first_seen_at": formatter.string(from: Date().addingTimeInterval(-120)),
+            "original_text": "1", "latest_text": "12",
+            "server_edit_at": formatter.string(from: Date().addingTimeInterval(-70)),
+            "event_observed_at": formatter.string(from: Date().addingTimeInterval(-65))
+        ]
+        // Make the native timestamp temporarily unknowable to exercise
+        // the exact pending receipt path from the installed #217.
+        precondition(sqlite3_exec(db,
+            "UPDATE revisions SET server_edit_at=NULL WHERE peer_kind=2 AND peer_id=99 AND message_id=3018 AND version_index=1;",
+            nil, nil, nil) == SQLITE_OK)
+        let initiallyPending = try bridgeResult([oldEdit])
+        precondition(initiallyPending["pending"] == 1,
+                     "unknown native timing must keep an older edit pending")
+        precondition(row("SELECT COUNT(*) FROM revisions WHERE message_id=3018") == ["2"])
+        let resetSQL = "UPDATE revisions SET server_edit_at=\(Int64(nativeFinal.timeIntervalSince1970 * 1000)) WHERE peer_kind=2 AND peer_id=99 AND message_id=3018 AND version_index=1;"
+        precondition(sqlite3_exec(db, resetSQL, nil, nil, nil) == SQLITE_OK)
+        let repaired = replayResult()
+        precondition(repaired["edits"] == 1,
+                     "replay must restore a held earlier Bridge edit without cursor reset")
+        precondition(row("SELECT group_concat(content, '>') FROM (SELECT content FROM revisions WHERE message_id=3018 ORDER BY version_index)") == ["1>12>123"],
+                     "Bridge backfills the historical revision before native latest")
+        precondition(row("SELECT COUNT(*) FROM bridge_merge_receipts_v2 WHERE status='pending' AND event_key LIKE 'iphone8.merge.v2.%'") == ["0"],
+                     "recovered edit receipt becomes applied")
+        precondition(try bridgeResult([oldEdit])["duplicates"] == 1,
+                     "repeated import of an earlier edit must not duplicate it")
+        precondition(row("SELECT COUNT(*) FROM revisions WHERE message_id=3018") == ["3"])
+        var versionResults: [[String: Any]]?
+        GoldgramHistoryStore.readPhone8RevisionHistory(
+            accountId: account, peerKind: 2, peerId: 99, messageId: 3018
+        ) { versionResults = $0 }
+        let versionsDeadline = Date().addingTimeInterval(10)
+        while versionResults == nil && Date() < versionsDeadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+        precondition(versionResults?.compactMap { $0["text"] as? String } ==
+                     ["1", "12", "123"], "history viewer exposes every restored revision")
+        precondition(replayResult().isEmpty, "restored receipt is idempotent")
+
         // Simulate the existing account-clear cascade on the same SQLite.
         precondition(sqlite3_exec(db, "PRAGMA foreign_keys=ON; DELETE FROM dialogs;",
                                   nil, nil, nil) == SQLITE_OK)

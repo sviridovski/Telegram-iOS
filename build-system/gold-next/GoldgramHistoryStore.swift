@@ -2322,7 +2322,7 @@ private enum GoldgramPhone8Bridge {
                 WHERE q.account_id=?
                   AND (SELECT COUNT(*) FROM dialogs d
                        WHERE d.peer_id=q.peer_id AND d.peer_kind IN (2,3))=1
-                ORDER BY q.created_at,q.event_key LIMIT 40;
+                ORDER BY q.created_at,q.event_key LIMIT 20;
                 """
                 var ptr: OpaquePointer?
                 let rc = sqlite3_prepare_v2(db, sql, -1, &ptr, nil)
@@ -2351,6 +2351,38 @@ private enum GoldgramPhone8Bridge {
                 }
                 sqlite3_finalize(stmt)
                 guard step == SQLITE_DONE else { finish(["error": 1]); return }
+                // #218: replay older #217 pending receipts without rewinding
+                // the already committed Live cursors. Existing account,
+                // original-evidence and chronology checks remain in force.
+                let pendingSQL = """
+                SELECT payload FROM bridge_merge_receipts_v2
+                WHERE status='pending' AND payload IS NOT NULL
+                ORDER BY updated_at,event_key LIMIT 20;
+                """
+                var pendingPtr: OpaquePointer?
+                let pendingRC = sqlite3_prepare_v2(db, pendingSQL, -1, &pendingPtr, nil)
+                if pendingRC == SQLITE_OK, let pendingStmt = pendingPtr {
+                    var pendingStep: Int32 = SQLITE_DONE
+                    while true {
+                        pendingStep = sqlite3_step(pendingStmt)
+                        if pendingStep != SQLITE_ROW { break }
+                        guard let raw = sqlite3_column_text(pendingStmt, 0) else { continue }
+                        let payload = Data(bytes: raw,
+                            count: Int(sqlite3_column_bytes(pendingStmt, 0)))
+                        guard let packet = (try? JSONSerialization.jsonObject(
+                            with: payload)) as? [String: Any],
+                            packet["account_id"] as? String == String(accountId),
+                            packet["record_kind"] as? String == "edit" else { continue }
+                        rows.append(packet)
+                    }
+                    sqlite3_finalize(pendingStmt)
+                    guard pendingStep == SQLITE_DONE else { finish(["error": 1]); return }
+                } else {
+                    if let pendingPtr { sqlite3_finalize(pendingPtr) }
+                    if !String(cString: sqlite3_errmsg(db)).contains("no such table") {
+                        finish(["error": 1]); return
+                    }
+                }
                 if rows.isEmpty { finish([:]); return }
                 let data = try JSONSerialization.data(withJSONObject: [
                     "format": "goldgram_bridge_v2", "records": rows
@@ -2439,6 +2471,103 @@ private enum GoldgramPhone8Bridge {
         }
         return sqlite3_column_type(stmt, 0) == SQLITE_NULL
             ? nil : sqlite3_column_int64(stmt, 0)
+    }
+
+
+    // #218: restore an older, timestamped Bridge edit BEFORE an already
+    // stored newer native edit. Ambiguous chronology must remain pending.
+    // All mutations run in the caller's single SQLite transaction.
+    private static func restoreEarlierBridgeRevision(
+        db: OpaquePointer, scope: [Int64], original: String, latest: String,
+        edited: Int64, observed: Int64, key: String
+    ) throws -> String? {
+        guard edited > 0 else { return nil }
+        let sql = """
+        SELECT version_index,content,server_edit_at FROM revisions
+        WHERE peer_kind=? AND peer_id=? AND message_id=?
+        ORDER BY version_index ASC LIMIT 1002;
+        """
+        var ptr: OpaquePointer?
+        let rc = sqlite3_prepare_v2(db, sql, -1, &ptr, nil)
+        guard rc == SQLITE_OK, let stmt = ptr else {
+            if let ptr { sqlite3_finalize(ptr) }
+            throw GoldgramHistoryStore.StorageError.sqlite(rc)
+        }
+        var versions: [(index: Int64, text: String, time: Int64?)] = []
+        for (i, value) in scope.enumerated() {
+            guard sqlite3_bind_int64(stmt, Int32(i + 1), value) == SQLITE_OK else {
+                sqlite3_finalize(stmt)
+                throw GoldgramHistoryStore.StorageError.sqlite(SQLITE_ERROR)
+            }
+        }
+        var step: Int32 = SQLITE_DONE
+        while true {
+            step = sqlite3_step(stmt)
+            if step != SQLITE_ROW { break }
+            guard let raw = sqlite3_column_text(stmt, 1) else {
+                sqlite3_finalize(stmt)
+                throw GoldgramHistoryStore.StorageError.sqlite(SQLITE_CORRUPT)
+            }
+            let text = String(decoding: UnsafeBufferPointer(
+                start: raw, count: Int(sqlite3_column_bytes(stmt, 1))), as: UTF8.self)
+            versions.append((
+                sqlite3_column_int64(stmt, 0), text,
+                sqlite3_column_type(stmt, 2) == SQLITE_NULL
+                    ? nil : sqlite3_column_int64(stmt, 2)
+            ))
+        }
+        sqlite3_finalize(stmt)
+        guard step == SQLITE_DONE else {
+            throw GoldgramHistoryStore.StorageError.sqlite(step)
+        }
+        guard versions.count >= 2, versions.count <= 1000,
+              versions[0].index == 0, versions[0].text == original,
+              versions[0].time == nil else { return nil }
+        var insertion: Int64?
+        var previousTime: Int64 = 0
+        for position in 1..<versions.count {
+            let version = versions[position]
+            guard version.index == Int64(position),
+                  let time = version.time, time > previousTime else { return nil }
+            if time == edited {
+                if version.text == latest {
+                    try saveReceipt(db: db, key: key,
+                                    status: "already_present", payload: nil)
+                    return "duplicates"
+                }
+                return nil
+            }
+            if time > edited && insertion == nil { insertion = version.index }
+            previousTime = time
+        }
+        guard let slot = insertion, let last = versions.last?.index,
+              last < Int64.max else { return nil }
+        // Descending single-row shifts respect the composite UNIQUE key.
+        for index in stride(from: last, through: slot, by: -1) {
+            try GoldgramHistoryStore.archiveSQL("""
+                UPDATE revisions SET version_index=version_index+1
+                WHERE peer_kind=? AND peer_id=? AND message_id=?
+                  AND version_index=?;
+                """, db: db, ints: scope + [index])
+            guard sqlite3_changes(db) == 1 else {
+                throw GoldgramHistoryStore.StorageError.sqlite(SQLITE_CONSTRAINT)
+            }
+        }
+        try GoldgramHistoryStore.archiveSQL("""
+            INSERT INTO revisions
+              (peer_kind,peer_id,message_id,version_index,observed_at,
+               server_edit_at,revision_provenance,content)
+            VALUES(?,?,?,?,?,?,3,?);
+            """, db: db, ints: scope + [slot, observed, edited], text: latest)
+        try GoldgramHistoryStore.archiveSQL("""
+            INSERT OR IGNORE INTO events
+              (peer_kind,peer_id,message_id,event_kind,source,
+               server_time,observed_at,event_key)
+            VALUES(?,?,?,1,'goldgram_iphone8_bridge_v1',?,?,?);
+            """, db: db, ints: scope + [edited, observed], text: key)
+        let inserted = sqlite3_changes(db) == 1
+        try saveReceipt(db: db, key: key, status: "applied", payload: nil)
+        return inserted ? "edits" : "duplicates"
     }
 
     private static func hasEdit(db: OpaquePointer, scope: [Int64]) throws -> Bool {
@@ -2950,6 +3079,20 @@ private enum GoldgramPhone8Bridge {
                             counts["pending", default: 0] += 1
                             continue
                         }
+                        // #218: native Swiftgram may already know the final edit.
+                        // Backfill only with a verified original and strict
+                        // source/server chronology; no guesswork for ambiguous edits.
+                        if !latestAlreadySeen && !canAppend &&
+                            knownOriginal == original, let sourceTime = edited,
+                            let recovered = try restoreEarlierBridgeRevision(
+                                db: db, scope: scope, original: original,
+                                latest: latest, edited: sourceTime, observed: observed,
+                                key: key) {
+                            try mergeTrustedBridgeMetadata(row, db: db, scope: scope,
+                                                           now: now, parse: parse)
+                            counts[recovered, default: 0] += 1
+                            continue
+                        }
                         let firstOriginal = knownOriginal == nil
                         try GoldgramHistoryStore.archiveSQL(
                             "INSERT OR IGNORE INTO dialogs(peer_kind,peer_id) VALUES(?,?);",
@@ -3038,6 +3181,58 @@ private enum GoldgramPhone8Bridge {
 }
 
 extension GoldgramHistoryStore {
+    // #218: full local history, read on the existing account SQLite queue.
+    static func readPhone8RevisionHistory(
+        accountId: Int64, peerKind: Int32, peerId: Int64, messageId: Int32,
+        completion: @escaping ([[String: Any]]) -> Void
+    ) {
+        func finish(_ value: [[String: Any]]) {
+            DispatchQueue.main.async { completion(value) }
+        }
+        guard accountId > 0, (0...3).contains(peerKind),
+              peerId > 0, messageId > 0 else { finish([]); return }
+        enqueueArchiveWork {
+            guard GoldgramArchiveReader.activeAccountId()?.int64Value == accountId,
+                  self.archiveIsOpen else { finish([]); return }
+            do {
+                let db = try archiveConnection(for: accountId)
+                var ptr: OpaquePointer?
+                let sql = """
+                SELECT version_index,content,server_edit_at FROM revisions
+                WHERE peer_kind=? AND peer_id=? AND message_id=?
+                ORDER BY version_index ASC LIMIT 250;
+                """
+                let rc = sqlite3_prepare_v2(db, sql, -1, &ptr, nil)
+                guard rc == SQLITE_OK, let stmt = ptr else {
+                    if let ptr { sqlite3_finalize(ptr) }
+                    finish([]); return
+                }
+                for (i, value) in [Int64(peerKind), peerId, Int64(messageId)].enumerated() {
+                    if sqlite3_bind_int64(stmt, Int32(i + 1), value) != SQLITE_OK {
+                        sqlite3_finalize(stmt); finish([]); return
+                    }
+                }
+                var versions: [[String: Any]] = []
+                var step: Int32 = SQLITE_DONE
+                while true {
+                    step = sqlite3_step(stmt)
+                    if step != SQLITE_ROW { break }
+                    guard let raw = sqlite3_column_text(stmt, 1) else { continue }
+                    let body = String(decoding: UnsafeBufferPointer(start: raw,
+                        count: Int(sqlite3_column_bytes(stmt, 1))), as: UTF8.self)
+                    versions.append([
+                        "index": NSNumber(value: sqlite3_column_int64(stmt, 0)),
+                        "text": body,
+                        "edited": sqlite3_column_type(stmt, 2) == SQLITE_NULL
+                            ? NSNull() : NSNumber(value: sqlite3_column_int64(stmt, 2))
+                    ])
+                }
+                sqlite3_finalize(stmt)
+                finish(step == SQLITE_DONE ? versions : [])
+            } catch { finish([]) }
+        }
+    }
+
     static func importPhone8Bundle(_ data: Data, accountId: Int64,
                                    completion: @escaping ([String: Int]) -> Void) {
         GoldgramPhone8Bridge.importBundle(data, accountId: accountId, completion: completion)

@@ -1362,9 +1362,60 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
         guard sources != nil, displayItems.indices.contains(indexPath.row) else { return nil }
         let entry = displayItems[indexPath.row]
         return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { _ in
-            UIMenu(children: [UIAction(title: "Маршрут оригинала") { [weak self] _ in
-                self?.showTrace(entry)
-            }])
+            let count = (entry["revisionCount"] as? NSNumber)?.intValue ?? 0
+            return UIMenu(children: [
+                UIAction(title: "Вся история редакций (\(count))",
+                         image: UIImage(systemName: "text.book.closed")) { [weak self] _ in
+                    self?.showRevisionHistory(entry)
+                },
+                UIAction(title: "Маршрут оригинала") { [weak self] _ in
+                    self?.showTrace(entry)
+                }
+            ])
+        }
+    }
+
+    private func showRevisionHistory(_ entry: [String: Any]) {
+        guard let account = GoldgramArchiveReader.activeAccountId()?.int64Value,
+              account == boundAccount,
+              let kind = (entry["peerKind"] as? NSNumber)?.int32Value,
+              let peer = (entry["peerId"] as? NSNumber)?.int64Value,
+              let id = (entry["messageId"] as? NSNumber)?.int32Value else { return }
+        GoldgramHistoryStore.readPhone8RevisionHistory(
+            accountId: account, peerKind: kind, peerId: peer, messageId: id
+        ) { [weak self] revisions in
+            guard let self, self.boundAccount == account,
+                  GoldgramArchiveReader.activeAccountId()?.int64Value == account else { return }
+            let confirmed = (entry["originalObserved"] as? NSNumber)?.boolValue == true
+            let lines: [String] = revisions.map { version in
+                let n = (version["index"] as? NSNumber)?.intValue ?? 0
+                let label = n == 0 && confirmed ? "Оригинал" : "Редакция \(n)"
+                let date = (version["edited"] as? NSNumber).map {
+                    self.dateFormatter.string(from: Date(timeIntervalSince1970:
+                        Double($0.int64Value) / 1000))
+                }
+                return label + (date.map { " · " + $0 } ?? "") +
+                    "\n" + ((version["text"] as? String) ?? "")
+            }
+            let controller = UIViewController()
+            controller.title = "История редакций"
+            controller.view.backgroundColor = .systemBackground
+            let text = UITextView(frame: .zero)
+            text.isEditable = false
+            text.isSelectable = true
+            text.font = UIFont.preferredFont(forTextStyle: .body)
+            text.text = lines.isEmpty ? "История пока недоступна" :
+                lines.joined(separator: "\n\n— — —\n\n")
+            text.translatesAutoresizingMaskIntoConstraints = false
+            controller.view.addSubview(text)
+            NSLayoutConstraint.activate([
+                text.topAnchor.constraint(equalTo: controller.view.safeAreaLayoutGuide.topAnchor),
+                text.bottomAnchor.constraint(equalTo: controller.view.bottomAnchor),
+                text.leadingAnchor.constraint(equalTo: controller.view.leadingAnchor),
+                text.trailingAnchor.constraint(equalTo: controller.view.trailingAnchor)
+            ])
+            self.preserveListOnNextAppearance = true
+            self.navigationController?.pushViewController(controller, animated: true)
         }
     }
 
