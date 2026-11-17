@@ -406,7 +406,8 @@ struct NativeCaptureFixture {
                      "Bridge backfills the historical revision before native latest")
         precondition(row("SELECT COUNT(*) FROM bridge_merge_receipts_v2 WHERE status='pending' AND event_key LIKE 'iphone8.merge.v2.%'") == ["0"],
                      "recovered edit receipt becomes applied")
-        precondition(try bridgeResult([oldEdit])["duplicates"] == 1,
+        let replayedDuplicate = try bridgeResult([oldEdit])
+        precondition(replayedDuplicate["duplicates"] == 1,
                      "repeated import of an earlier edit must not duplicate it")
         precondition(row("SELECT COUNT(*) FROM revisions WHERE message_id=3018") == ["3"])
         var versionResults: [[String: Any]]?
