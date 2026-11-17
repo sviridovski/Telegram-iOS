@@ -105,7 +105,6 @@ patch_chat_badge(
     int32_t verifiedEdits = goldgramVerifiedChatEditCount(msgId, peerKey);
     NSUInteger edits = mxVersions > 1 ? mxVersions - 1 : 0;
     if (verifiedEdits > 0) edits = MAX(edits, (NSUInteger)verifiedEdits);
-    NSUInteger versions = edits + 1;
     BOOL hasHistory = edits > 0;""",
     "badge counts")
 patch_chat_badge(
