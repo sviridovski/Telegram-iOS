@@ -8,6 +8,10 @@ import Darwin
 @main
 struct NativeCaptureFixture {
     static func main() throws {
+        // #224: LAN catch-up is fast; the public relay retains backoff.
+        precondition(GoldgramLiveBridge.catchupDelayMs(host: "192.168.1.102") == 100)
+        precondition(GoldgramLiveBridge.catchupDelayMs(host: "10.8.0.1") == 100)
+        precondition(GoldgramLiveBridge.catchupDelayMs(host: "194.87.235.144") == 600)
         let account = Int64.random(in: 7_000_000_000_000 ... 8_000_000_000_000)
         let url = try GoldgramHistoryStore.createOrOpen(accountId: account)
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }

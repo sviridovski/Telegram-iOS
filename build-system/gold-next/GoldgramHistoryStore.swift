@@ -3372,6 +3372,12 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
 
     // Only this explicitly approved public relay is supported; TLS remains
     // end-to-end pinned to the existing iPhone 8 certificate.
+    // #224: fast LAN catch-up only. Keep the gentler backoff for the VPS.
+    // Both paths retain the single in-flight gate and cursor-after-COMMIT.
+    static func catchupDelayMs(host: String) -> Int {
+        privateIPv4(host) ? 100 : 600
+    }
+
     static func supportedHost(_ value: String) -> Bool {
         privateIPv4(value) || value == "194.87.235.144"
     }
@@ -3556,7 +3562,9 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
         var request = URLRequest(url: url)
         request.setValue(token, forHTTPHeaderField: "X-Goldgram-Token")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let requestStartedAt = ProcessInfo.processInfo.systemUptime
         let task = session.dataTask(with: request) { [weak self] data, response, error in
+            let responseReceivedAt = ProcessInfo.processInfo.systemUptime
             DispatchQueue.main.async {
                 guard let self else { return }
                 guard self.runningAccount == account, self.runToken == ticket else { return }
@@ -3600,12 +3608,18 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
                     let pending = result["pending"] ?? 0
                     let deferred = result["deferredChannels"] ?? 0
                     let chronologyPending = result["chronologyPending"] ?? 0
-                    self.status("Live: +\(changes) событий, +\(imported) оригиналов, отложено каналов \(deferred), спорных \(pending) (хронология: \(chronologyPending)), курсоры \(nextEdits)/\(nextDeletes)")
+                    // Monotonic, content-free timings: receive + SQLite import/
+                    // replay. No message text, credentials or peer IDs in status.
+                    let now = ProcessInfo.processInfo.systemUptime
+                    let networkMs = max(0, Int((responseReceivedAt - requestStartedAt) * 1000))
+                    let importMs = max(0, Int((now - responseReceivedAt) * 1000))
+                    self.status("Live: +\(changes) событий, +\(imported) оригиналов, отложено каналов \(deferred), спорных \(pending) (хронология: \(chronologyPending)), курсоры \(nextEdits)/\(nextDeletes); сеть \(networkMs) мс, импорт \(importMs) мс")
                     // Catch up the old archive quickly without waiting one
                     // 12-second interval per historical batch. Limited by
                     // the importer transaction and its single in-flight gate.
                     if nextEdits > edits || nextDeletes > deletions {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(600)) { [weak self] in
+                        DispatchQueue.main.asyncAfter(
+                            deadline: .now() + .milliseconds(Self.catchupDelayMs(host: host))) { [weak self] in
                             guard let self, self.runToken == ticket else { return }
                             self.poll()
                         }

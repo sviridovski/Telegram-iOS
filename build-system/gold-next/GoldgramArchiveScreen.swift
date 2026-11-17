@@ -151,6 +151,9 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
     private var generation = 0
     private var openingMessage = false
     private var preserveListOnNextAppearance = false
+    // #224: coalesce consecutive Live commits into one visible archive refresh.
+    // The work item never queries SQLite on the UI thread.
+    private var liveRefreshWork: DispatchWorkItem?
     private var status = "Загрузка истории…"
     // Folder summaries contain NO message text. Retain only a bounded first
     // page per account/category so repeated navigation has a zero-I/O first
@@ -194,6 +197,11 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
     }
 
     required init?(coder: NSCoder) { return nil }
+
+    deinit {
+        liveRefreshWork?.cancel()
+        NotificationCenter.default.removeObserver(self)
+    }
 
     // #137: -1 means enabled until explicitly stopped. Legacy positive
     // deadlines are honored so an already-running timed session is not lost.
@@ -1127,6 +1135,9 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
 
     public override func viewDidLoad() {
         super.viewDidLoad()
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(didCommitLiveArchiveChange(_:)),
+            name: Notification.Name("GoldgramArchiveChanged"), object: nil)
         let testButton = UIBarButtonItem(
             title: "Тест", style: .plain, target: self, action: #selector(captureDiagnosticMenu))
         let bridgeButton = UIBarButtonItem(image: UIImage(systemName: "square.and.arrow.down"),
@@ -1145,7 +1156,9 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
 
     public override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-        GoldgramLiveBridge.shared.tryStartForVisibleArchive()
+        // On an already-running Live session, merely starting the timer can
+        // leave us waiting for its next 12-second tick. Poll immediately.
+        GoldgramLiveBridge.shared.pollNow()
         if let account = GoldgramArchiveReader.activeAccountId()?.int64Value {
             restoreFolderSnapshot(account: account)
         }
@@ -1156,6 +1169,26 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
         }
         self.preserveListOnNextAppearance = false
         load(reset: true)
+    }
+
+    // Only refresh the visible archive of the account whose SQLite COMMIT
+    // succeeded. Rapid catch-up batches are debounced so the list isn't
+    // repeatedly redrawn while the backlog is still being imported.
+    @objc private func didCommitLiveArchiveChange(_ note: Notification) {
+        guard let account = (note.object as? NSNumber)?.int64Value,
+              account == boundAccount,
+              GoldgramArchiveReader.activeAccountId()?.int64Value == account,
+              isViewLoaded, view.window != nil else { return }
+        liveRefreshWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.isViewLoaded, self.view.window != nil,
+                  self.boundAccount == account,
+                  GoldgramArchiveReader.activeAccountId()?.int64Value == account else { return }
+            self.liveRefreshWork = nil
+            self.load(reset: true)
+        }
+        liveRefreshWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(350), execute: work)
     }
 
     private static func key(_ row: [String: Any]) -> String {
