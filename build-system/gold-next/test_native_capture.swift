@@ -418,6 +418,21 @@ struct NativeCaptureFixture {
         }
         precondition(versionResults?.compactMap { $0["text"] as? String } ==
                      ["1", "12", "123"], "history viewer exposes every restored revision")
+        // #221: the regular chat's pencil must show the same two edits as
+        // the persisted Goldgram SQLite, even if the MX tracker saw only one.
+        // The badge getter is cached and MUST NOT do SQLite I/O on layout.
+        let channelPeerKey = -(Int64(1_000_000_000_000) + 99)
+        let badgeDeadline = Date().addingTimeInterval(10)
+        var badgeEdits = goldgramChatEditCountV1(channelPeerKey, 3018)
+        while badgeEdits == -1 && Date() < badgeDeadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+            badgeEdits = goldgramChatEditCountV1(channelPeerKey, 3018)
+        }
+        precondition(badgeEdits == 2, "chat badge must show two verified edits")
+        precondition(goldgramChatEditCountV1(channelPeerKey, 3018) == 2,
+                     "cached chat count is stable on layout")
+        precondition(goldgramChatEditCountV1(channelPeerKey - 1, 3018) == -1,
+                     "same message id in a different peer cannot inherit history")
         precondition(replayResult().isEmpty, "restored receipt is idempotent")
 
         // Simulate the existing account-clear cascade on the same SQLite.

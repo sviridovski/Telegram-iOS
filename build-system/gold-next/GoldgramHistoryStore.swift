@@ -3555,3 +3555,198 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
         completionHandler(.useCredential, URLCredential(trust: trust))
     }
 }
+
+
+// Goldgram #221 — chat badge bridge. The UI never performs SQLite I/O
+// during chat layout; the keyed cache loads on the existing archive queue.
+// No Telegram requests, second database, duplicate message body storage,
+// or changes to MX's independent edit-history tracker.
+fileprivate enum GoldgramChatEditBadge {
+    struct Entry {
+        let count: Int32
+        let peerKind: Int32
+        let peerId: Int64
+    }
+    private static let lock = NSLock()
+    private static var cache: [String: Entry] = [:]
+    private static var pending = Set<String>()
+    private static var epoch: UInt64 = 0
+
+    static func reset() {
+        lock.lock()
+        epoch &+= 1
+        cache.removeAll(keepingCapacity: true)
+        pending.removeAll(keepingCapacity: true)
+        lock.unlock()
+    }
+
+    static func entry(peerKey: Int64, messageId: Int32) -> Entry? {
+        guard let account = GoldgramArchiveReader.activeAccountId()?.int64Value,
+              account > 0, peerKey != 0, messageId > 0,
+              UserDefaults.standard.bool(forKey: "GoldgramSQLiteCaptureEnabled") else { return nil }
+        let key = "\(account):\(peerKey):\(messageId)"
+        lock.lock()
+        if let cached = cache[key] {
+            lock.unlock()
+            return cached.count >= 0 ? cached : nil
+        }
+        if pending.contains(key) {
+            lock.unlock()
+            return nil
+        }
+        pending.insert(key)
+        let requestedEpoch = epoch
+        lock.unlock()
+
+        GoldgramHistoryStore.storageQueue.async {
+            let result = try? load(account: account, peerKey: peerKey, messageId: messageId)
+            lock.lock()
+            let valid = epoch == requestedEpoch
+            if valid {
+                cache[key] = result ?? Entry(count: -1, peerKind: 0, peerId: 0)
+                // Cap idle cache growth without touching the production SQLite.
+                if cache.count > 2500 { cache.removeAll(keepingCapacity: true) }
+                pending.remove(key)
+            }
+            lock.unlock()
+            if valid {
+                DispatchQueue.main.async {
+                    NotificationCenter.default.post(
+                        name: Notification.Name("GoldgramChatHistoryBadgeChanged"),
+                        object: nil, userInfo: ["ids": [NSNumber(value: messageId)]])
+                }
+            }
+        }
+        return nil
+    }
+
+    private static func load(
+        account: Int64, peerKey: Int64, messageId: Int32
+    ) throws -> Entry? {
+        guard GoldgramHistoryStore.archiveIsOpen else { return nil }
+        let db = try GoldgramHistoryStore.archiveConnection(for: account)
+        let peerKind: Int32
+        let peerId: Int64
+        if peerKey > 0 {
+            peerKind = 0
+            peerId = peerKey
+        } else if peerKey < -1_000_000_000_000 &&
+                  peerKey > -2_000_000_000_000 {
+            peerId = -(peerKey + 1_000_000_000_000)
+            // PeerChannel may mean broadcast channel OR supergroup.
+            // Require exactly one known native dialog classification.
+            var kinds: OpaquePointer?
+            let rc = sqlite3_prepare_v2(db,
+                "SELECT peer_kind FROM dialogs WHERE peer_id=? AND peer_kind IN (2,3);",
+                -1, &kinds, nil)
+            guard rc == SQLITE_OK, let stmt = kinds else {
+                if let kinds { sqlite3_finalize(kinds) }
+                return nil
+            }
+            defer { sqlite3_finalize(stmt) }
+            guard sqlite3_bind_int64(stmt, 1, peerId) == SQLITE_OK,
+                  sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+            let found = sqlite3_column_int(stmt, 0)
+            guard sqlite3_step(stmt) == SQLITE_DONE else { return nil }
+            peerKind = found
+        } else if peerKey < 0 {
+            peerKind = 1
+            peerId = -peerKey
+        } else {
+            return nil
+        }
+        var ptr: OpaquePointer?
+        let sql = """
+        SELECT m.original_observed,
+               (SELECT COUNT(*) FROM revisions r
+                WHERE r.peer_kind=m.peer_kind AND r.peer_id=m.peer_id
+                  AND r.message_id=m.message_id)
+        FROM messages m
+        WHERE m.peer_kind=? AND m.peer_id=? AND m.message_id=?
+        LIMIT 1;
+        """
+        let rc = sqlite3_prepare_v2(db, sql, -1, &ptr, nil)
+        guard rc == SQLITE_OK, let stmt = ptr else {
+            if let ptr { sqlite3_finalize(ptr) }
+            return nil
+        }
+        defer { sqlite3_finalize(stmt) }
+        guard sqlite3_bind_int(stmt, 1, peerKind) == SQLITE_OK,
+              sqlite3_bind_int64(stmt, 2, peerId) == SQLITE_OK,
+              sqlite3_bind_int(stmt, 3, messageId) == SQLITE_OK,
+              sqlite3_step(stmt) == SQLITE_ROW,
+              sqlite3_column_int(stmt, 0) == 1 else { return nil }
+        let total = sqlite3_column_int(stmt, 1)
+        return Entry(count: max(0, total - 1), peerKind: peerKind, peerId: peerId)
+    }
+}
+
+@_cdecl("goldgram_chat_edit_count_v1")
+public func goldgramChatEditCountV1(_ peerKey: Int64, _ messageId: Int32) -> Int32 {
+    GoldgramChatEditBadge.entry(peerKey: peerKey, messageId: messageId)?.count ?? -1
+}
+
+@_cdecl("goldgram_chat_edit_cache_reset_v1")
+public func goldgramChatEditCacheResetV1() {
+    GoldgramChatEditBadge.reset()
+}
+
+// Only used on a genuine user tap, never during a chat layout pass.
+@_cdecl("goldgram_chat_show_revisions_v1")
+public func goldgramChatShowRevisionsV1(_ peerKey: Int64, _ messageId: Int32) -> Int32 {
+    #if canImport(UIKit)
+    guard let account = GoldgramArchiveReader.activeAccountId()?.int64Value,
+          account > 0,
+          let entry = GoldgramChatEditBadge.entry(peerKey: peerKey, messageId: messageId),
+          entry.count > 0 else { return 0 }
+    GoldgramHistoryStore.readPhone8RevisionHistory(
+        accountId: account, peerKind: entry.peerKind,
+        peerId: entry.peerId, messageId: messageId
+    ) { versions in
+        guard GoldgramArchiveReader.activeAccountId()?.int64Value == account,
+              UIApplication.shared.applicationState == .active,
+              versions.count > 1 else { return }
+        let rows = versions.map { row -> String in
+            let index = (row["index"] as? NSNumber)?.intValue ?? 0
+            let label = index == 0 ? "Оригинал" : "Изменение \(index)"
+            let date = (row["edited"] as? NSNumber).map { stamp in
+                DateFormatter.localizedString(
+                    from: Date(timeIntervalSince1970: stamp.doubleValue / 1000.0),
+                    dateStyle: .short, timeStyle: .medium)
+            }
+            return label + (date.map { " · " + $0 } ?? "") +
+                "\n" + (row["text"] as? String ?? "")
+        }
+        let controller = UIViewController()
+        controller.title = "История редакций"
+        controller.view.backgroundColor = .systemBackground
+        let textView = UITextView(frame: .zero)
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.font = UIFont.preferredFont(forTextStyle: .body)
+        textView.text = rows.joined(separator: "\n\n────────\n\n")
+        textView.translatesAutoresizingMaskIntoConstraints = false
+        controller.view.addSubview(textView)
+        NSLayoutConstraint.activate([
+            textView.topAnchor.constraint(equalTo: controller.view.safeAreaLayoutGuide.topAnchor),
+            textView.bottomAnchor.constraint(equalTo: controller.view.bottomAnchor),
+            textView.leadingAnchor.constraint(equalTo: controller.view.leadingAnchor),
+            textView.trailingAnchor.constraint(equalTo: controller.view.trailingAnchor)
+        ])
+        let nav = UINavigationController(rootViewController: controller)
+        nav.modalPresentationStyle = .pageSheet
+        controller.navigationItem.rightBarButtonItem = UIBarButtonItem(
+            barButtonSystemItem: .done, target: nil, action: nil)
+        controller.navigationItem.rightBarButtonItem?.primaryAction = UIAction(
+            title: "Готово") { [weak nav] _ in nav?.dismiss(animated: true) }
+        guard let root = UIApplication.shared.windows.first(where: { $0.isKeyWindow })?
+                .rootViewController else { return }
+        var presenter = root
+        while let next = presenter.presentedViewController { presenter = next }
+        presenter.present(nav, animated: true)
+    }
+    return 1
+    #else
+    return 0
+    #endif
+}

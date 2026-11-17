@@ -46,6 +46,116 @@ replace_once(
     '        customLog2(@"[Mx] unmatched label: %@", label);',
     '        // Ordinary accessibility labels are intentionally not logged.',
 )
+# Goldgram #221: expose the verified SQLite revision count on the EXISTING
+# Mx pencil badge beside a chat message. The chat layout only checks an
+# in-memory cache; SQLite is read asynchronously on the Goldgram storage queue.
+# Keep the original Mx tracker and its fallback menu fully intact.
+def patch_chat_badge(before, after, name):
+    global source
+    if source.count(before) != 1:
+        raise SystemExit("Goldgram #221 chat badge anchor mismatch: " + name)
+    source = source.replace(before, after, 1)
+
+patch_chat_badge(
+    "#import <objc/message.h>",
+    "#import <objc/message.h>\n#import <dlfcn.h>",
+    "dlfcn")
+patch_chat_badge(
+    "static const NSInteger kMxEditBadgeTag = 8899;",
+    """static int32_t goldgramVerifiedChatEditCount(NSNumber *msgId, NSNumber *peerKey) {
+    if (!msgId || !peerKey) return -1;
+    typedef int32_t (*CountFn)(int64_t, int32_t);
+    static CountFn counter = NULL;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        counter = (CountFn)dlsym(RTLD_DEFAULT, "goldgram_chat_edit_count_v1");
+    });
+    return counter ? counter(peerKey.longLongValue, msgId.intValue) : -1;
+}
+static BOOL goldgramShowChatRevisions(NSNumber *msgId, NSNumber *peerKey) {
+    if (!msgId || !peerKey) return NO;
+    typedef int32_t (*ShowFn)(int64_t, int32_t);
+    static ShowFn show = NULL;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        show = (ShowFn)dlsym(RTLD_DEFAULT, "goldgram_chat_show_revisions_v1");
+    });
+    return show && show(peerKey.longLongValue, msgId.intValue) == 1;
+}
+
+static const NSInteger kMxEditBadgeTag = 8899;""",
+    "cache bridge")
+patch_chat_badge(
+    "    NSArray<NSString *> *versions = [TLParser editHistoryForId:msgId peer:peerKey];\n"
+    "    if (versions.count < 2) return;",
+    "    // Prefer the full account-scoped Goldgram history when present.\n"
+    "    // The legacy Mx Anti-Edit dialog remains the fallback.\n"
+    "    if (goldgramShowChatRevisions(msgId, peerKey)) return;\n"
+    "    NSArray<NSString *> *versions = [TLParser editHistoryForId:msgId peer:peerKey];\n"
+    "    if (versions.count < 2) return;",
+    "tap fallback")
+patch_chat_badge(
+    """    NSUInteger versions = (msgId != nil)
+        ? [TLParser editHistoryForId:msgId peer:peerKey].count
+        : 0;
+    BOOL hasHistory = (versions > 1);""",
+    """    NSUInteger mxVersions = (msgId != nil)
+        ? [TLParser editHistoryForId:msgId peer:peerKey].count
+        : 0;
+    int32_t verifiedEdits = goldgramVerifiedChatEditCount(msgId, peerKey);
+    NSUInteger edits = mxVersions > 1 ? mxVersions - 1 : 0;
+    if (verifiedEdits > 0) edits = MAX(edits, (NSUInteger)verifiedEdits);
+    NSUInteger versions = edits + 1;
+    BOOL hasHistory = edits > 0;""",
+    "badge counts")
+patch_chat_badge(
+    """    objc_setAssociatedObject(badge, &kMxEditMsgIdKey, msgId, OBJC_ASSOCIATION_RETAIN_NONATOMIC);""",
+    """    // Show the actual number of known edits without opening the archive.
+    // Never place message text or peer identity in the visual badge.
+    [badge setImage:nil forState:UIControlStateNormal];
+    [badge setTitle:[NSString stringWithFormat:@"✎%lu", (unsigned long)edits]
+          forState:UIControlStateNormal];
+    badge.titleLabel.font = [UIFont boldSystemFontOfSize:12.0];
+    badge.accessibilityLabel = [NSString stringWithFormat:@"Редакций: %lu",
+                                (unsigned long)edits];
+    objc_setAssociatedObject(badge, &kMxEditMsgIdKey, msgId, OBJC_ASSOCIATION_RETAIN_NONATOMIC);""",
+    "badge title")
+patch_chat_badge(
+    """        [[NSNotificationCenter defaultCenter] addObserver:instance selector:@selector(handleMessagesChanged:) name:@"MxMessageEditedRealtime" object:nil];""",
+    """        [[NSNotificationCenter defaultCenter] addObserver:instance selector:@selector(handleMessagesChanged:) name:@"MxMessageEditedRealtime" object:nil];
+        [[NSNotificationCenter defaultCenter] addObserver:instance selector:@selector(handleMessagesChanged:) name:@"GoldgramChatHistoryBadgeChanged" object:nil];
+        [[NSNotificationCenter defaultCenter] addObserver:instance selector:@selector(handleGoldgramArchiveChanged:) name:@"GoldgramArchiveChanged" object:nil];""",
+    "badge notifications")
+patch_chat_badge(
+    """}
+@end
+
+// ============================================================
+// Edit history: a pencil badge""",
+    """}
+- (void)handleGoldgramArchiveChanged:(NSNotification *)note {
+    // Bridge COMMIT finished. Drop stale counts; every visible message can
+    // refresh without running SQLite queries on the UI/layout thread.
+    typedef void (*ResetFn)(void);
+    ResetFn reset = (ResetFn)dlsym(RTLD_DEFAULT,
+                                  "goldgram_chat_edit_cache_reset_v1");
+    if (reset) reset();
+    NSHashTable *copy = nil;
+    @synchronized(activeMessageNodes) { copy = [activeMessageNodes copy]; }
+    for (ASDisplayNode *node in copy) {
+        NSNumber *mid = [TLParser getMessageIdFromNode:node];
+        if (!mid) continue;
+        NSNumber *peer = [TLParser getMessagePeerKeyFromNode:node];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            updateMxEditBadge(node, mid, peer);
+        });
+    }
+}
+@end
+
+// ============================================================
+// Edit history: a pencil badge""",
+    "archive refresh")
 path.write_text(source)
 
 # The message-bubble layout hook asks for an ID on every layout pass.
