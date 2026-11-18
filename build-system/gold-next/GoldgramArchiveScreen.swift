@@ -991,7 +991,9 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
         }
         let bridge = GoldgramLiveBridge.shared
         let enabled = bridge.isEnabled(account: account)
+        let automatic = bridge.automaticRoutingEnabled(account: account)
         let report = "Состояние: \(enabled ? "включено" : "выключено")\n" +
+            "Маршрут: \(bridge.currentRouteDescription(account: account))\n" +
             "\(bridge.lastStatus)\n\n" +
             "Live работает по HTTPS через локальную сеть или личный VPS. " +
             "Пока Swiftgram активен, проверки выполняются примерно раз в 12 секунд. " +
@@ -1002,6 +1004,16 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
             self?.showLivePairing(account: account)
         })
         if enabled {
+            alert.addAction(UIAlertAction(
+                title: automatic ? "Отключить авто-маршрут" : "Авто: Wi-Fi → F3 Cloud",
+                style: .default) { [weak self] _ in
+                let ok = bridge.setAutomaticRouting(account: account, enabled: !automatic)
+                self?.showPhone8ImportResult(ok
+                    ? (!automatic
+                        ? "Автомаршрут включён: сначала домашний Wi-Fi, при недоступности — F3 Cloud. TLS PIN, токен и курсоры общие."
+                        : "Автомаршрут выключен; используется адрес, сохранённый вручную.")
+                    : "Не удалось изменить маршрут; проверь настройки Live.")
+            })
             alert.addAction(UIAlertAction(title: "Синхронизировать сейчас", style: .default) { _ in
                 bridge.pollNow()
             })
@@ -1024,7 +1036,8 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
             message: "Введи IP iPhone 8, F3 Cloud 179.253.88.30 или " +
                 "резервный RUVDS 194.87.235.144, SHA-256 сертификата и " +
                 "секрет подключения. Порты: локально 8873, VPS 443. " +
-                "При смене адреса существующий секрет можно не вводить.",
+                "При смене адреса существующий секрет можно не вводить. " +
+                "После подключения можно включить автоматический маршрут в меню Live.",
             preferredStyle: .alert)
         alert.addTextField { field in
             field.placeholder = "192.168.1.102 или 179.253.88.30"

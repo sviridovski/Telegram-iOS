@@ -3392,6 +3392,20 @@ enum GoldgramLiveRetryPolicy {
     }
 }
 
+// #227: pure route selection. Both endpoints are the SAME pinned iPhone 8
+// archive; no independent cursors or speculative parallel import.
+enum GoldgramLiveRoutePolicy {
+    static let f3Host = "179.253.88.30"
+    static let defaultLANHost = "192.168.1.102"
+    static let localRetrySeconds: TimeInterval = 120
+    static let localPinRetrySeconds: TimeInterval = 600
+
+    static func selectedHost(wifi: Bool, localHost: String,
+                             now: TimeInterval, localRetryAt: TimeInterval) -> String {
+        wifi && now >= localRetryAt ? localHost : f3Host
+    }
+}
+
 final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
     static let shared = GoldgramLiveBridge()
     private let defaults = UserDefaults.standard
@@ -3406,6 +3420,10 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
     private let pinLock = NSLock()
     private var expectedPin = ""
     private var pinRejected = false
+    private var activePinnedSession: ObjectIdentifier?
+    private var sessionHost: String?
+    private var wifiAvailable = false
+    private var localRetryAt: TimeInterval = 0
     private var retryNotBefore: TimeInterval = 0
     private var rateLimitedUntil: TimeInterval = 0
     private var consecutiveFailures = 0
@@ -3434,8 +3452,10 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
         monitor.pathUpdateHandler = { [weak self] path in
             let signature = "\(path.status):\(path.usesInterfaceType(.wifi)):\(path.usesInterfaceType(.cellular)):\(path.usesInterfaceType(.other))"
             let available = path.status == .satisfied
+            let wifi = available && path.usesInterfaceType(.wifi)
             DispatchQueue.main.async { [weak self] in
-                self?.networkPathChanged(signature: signature, available: available)
+                self?.networkPathChanged(signature: signature,
+                                         available: available, wifi: wifi)
             }
         }
         monitor.start(queue: networkMonitorQueue)
@@ -3443,10 +3463,22 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
     }
 
     #if canImport(Network) && os(iOS)
-    private func networkPathChanged(signature: String, available: Bool) {
+    private func networkPathChanged(signature: String, available: Bool, wifi: Bool) {
+        let wasWiFi = wifiAvailable
+        wifiAvailable = wifi
+        if wifi && !wasWiFi { localRetryAt = 0 }
         let previous = previousNetworkSignature
         previousNetworkSignature = signature
-        guard let previous, previous != signature, runningAccount != nil,
+        if previous == nil {
+            // The first path event may arrive after a remote request started.
+            // Restart it with the preferred route without moving cursors.
+            if runningAccount != nil && !certificateBlocked {
+                renewSession()
+                poll()
+            }
+            return
+        }
+        guard previous != signature, runningAccount != nil,
               !certificateBlocked else { return }
         networkChangeWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
@@ -3474,6 +3506,7 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
         pinLock.lock()
         expectedPin = pin
         pinRejected = false
+        activePinnedSession = nil
         pinLock.unlock()
     }
 
@@ -3481,6 +3514,12 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
         pinLock.lock()
         defer { pinLock.unlock() }
         return pinRejected
+    }
+
+    private func clearPinRejection() {
+        pinLock.lock()
+        pinRejected = false
+        pinLock.unlock()
     }
 
     // Recreate just URLSession; never touch the paired identity, archive,
@@ -3492,29 +3531,62 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
         configuration.timeoutIntervalForResource = local ? 15 : 35
         configuration.waitsForConnectivity = !local
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        return URLSession(configuration: configuration,
-                          delegate: self, delegateQueue: nil)
+        let newSession = URLSession(configuration: configuration,
+                                    delegate: self, delegateQueue: nil)
+        pinLock.lock()
+        activePinnedSession = ObjectIdentifier(newSession)
+        pinRejected = false
+        pinLock.unlock()
+        return newSession
     }
 
-    private func renewSession() {
-        guard runningAccount != nil else { return }
+    private func renewSession(host override: String? = nil) {
+        guard let account = runningAccount else { return }
+        let host = override ?? selectedHost(account: account)
         runToken &+= 1
         let old = session
-        session = createHTTPSession(host: configuredHost(account: runningAccount!))
+        session = createHTTPSession(host: host)
+        sessionHost = host
         inFlight = false
         old?.invalidateAndCancel()
     }
 
-    private func failTransport(_ reason: String, errorCode: Int, shouldRenew: Bool) {
+    private func failTransport(_ reason: String, errorCode: Int,
+                               shouldRenew: Bool, attemptedHost: String) {
         inFlight = false
-        if didRejectCertificate() {
+        let pinMismatch = didRejectCertificate()
+        let now = ProcessInfo.processInfo.systemUptime
+        if let account = runningAccount,
+           automaticRoutingEnabled(account: account),
+           attemptedHost == automaticLANHost(account: account),
+           wifiAvailable {
+            // On an unfamiliar Wi-Fi, 192.168.1.102 may not be our phone.
+            // A failed TLS challenge sends no HTTP token. The next F3
+            // connection independently requires the SAME pinned certificate.
+            localRetryAt = now + (pinMismatch
+                ? GoldgramLiveRoutePolicy.localPinRetrySeconds
+                : GoldgramLiveRoutePolicy.localRetrySeconds)
+            clearPinRejection()
+            retryNotBefore = max(rateLimitedUntil, now + 2)
+            renewSession(host: GoldgramLiveRoutePolicy.f3Host)
+            let ticket = runToken
+            status(pinMismatch
+                ? "Live авто: чужой TLS-сертификат в локальной сети; пробуем F3 с прежним PIN"
+                : "Live авто: локальный iPhone 8 недоступен [\(errorCode)]; подключаем F3")
+            DispatchQueue.main.asyncAfter(deadline: .now() + .seconds(2)) { [weak self] in
+                guard let self, self.runToken == ticket else { return }
+                self.poll()
+            }
+            return
+        }
+        if pinMismatch {
             certificateBlocked = true
             status("Live TLS: сертификат не совпал с закреплённым SHA-256; автоматические повторы остановлены")
             return
         }
         consecutiveFailures = min(20, consecutiveFailures + 1)
         let delay = GoldgramLiveRetryPolicy.networkDelay(consecutiveFailures)
-        retryNotBefore = ProcessInfo.processInfo.systemUptime + delay
+        retryNotBefore = max(rateLimitedUntil, now + delay)
         if shouldRenew { renewSession() }
         let category = GoldgramLiveRetryPolicy.isTLSError(errorCode) ? "TLS" : "HTTPS"
         status("Live \(category): \(reason) [\(errorCode)]; повтор через \(Int(delay)) с")
@@ -3540,6 +3612,45 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
 
     private func key(_ account: Int64, _ name: String) -> String {
         "GoldgramLiveV1.\(account).\(name)"
+    }
+
+    func automaticRoutingEnabled(account: Int64) -> Bool {
+        defaults.bool(forKey: key(account, "automaticRoute"))
+    }
+
+    private func automaticLANHost(account: Int64) -> String {
+        let stored = defaults.string(forKey: key(account, "lastLANHost")) ?? ""
+        return Self.privateIPv4(stored) ? stored : GoldgramLiveRoutePolicy.defaultLANHost
+    }
+
+    private func selectedHost(account: Int64) -> String {
+        guard automaticRoutingEnabled(account: account) else {
+            return configuredHost(account: account)
+        }
+        return GoldgramLiveRoutePolicy.selectedHost(
+            wifi: wifiAvailable, localHost: automaticLANHost(account: account),
+            now: ProcessInfo.processInfo.systemUptime, localRetryAt: localRetryAt)
+    }
+
+    func currentRouteDescription(account: Int64) -> String {
+        guard automaticRoutingEnabled(account: account) else {
+            return "Ручной: \(configuredHost(account: account))"
+        }
+        let host = runningAccount == account ? (sessionHost ?? selectedHost(account: account)) :
+            selectedHost(account: account)
+        return host == GoldgramLiveRoutePolicy.f3Host ?
+            "Авто: F3 Cloud (HTTPS/443)" : "Авто: локальный Wi-Fi (\(host):8873)"
+    }
+
+    @discardableResult
+    func setAutomaticRouting(account: Int64, enabled: Bool) -> Bool {
+        guard account > 0, isEnabled(account: account),
+              readSecret(account: account) != nil else { return false }
+        defaults.set(enabled, forKey: key(account, "automaticRoute"))
+        stop()
+        start(account: account)
+        poll()
+        return true
     }
 
     static func privateIPv4(_ value: String) -> Bool {
@@ -3652,6 +3763,9 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
             defaults.removeObject(forKey: key(account, "deletionsCursor"))
         }
         defaults.set(normalizedHost, forKey: key(account, "host"))
+        if Self.privateIPv4(normalizedHost) {
+            defaults.set(normalizedHost, forKey: key(account, "lastLANHost"))
+        }
         defaults.set(normalizedPin, forKey: key(account, "pin"))
         defaults.set(true, forKey: key(account, "enabled"))
         stop()
@@ -3665,8 +3779,14 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
         timer = nil
         session?.invalidateAndCancel()
         session = nil
+        sessionHost = nil
+        pinLock.lock()
+        activePinnedSession = nil
+        pinRejected = false
+        pinLock.unlock()
         runningAccount = nil
         inFlight = false
+        localRetryAt = 0
         retryNotBefore = 0
         rateLimitedUntil = 0
         consecutiveFailures = 0
@@ -3694,7 +3814,9 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
         stop()
         runningAccount = account
         setExpectedPin(configuredPin(account: account))
-        session = createHTTPSession(host: configuredHost(account: account))
+        let host = selectedHost(account: account)
+        session = createHTTPSession(host: host)
+        sessionHost = host
         let source = DispatchSource.makeTimerSource(queue: .main)
         source.schedule(deadline: .now(), repeating: .seconds(12),
                         leeway: .seconds(2))
@@ -3747,15 +3869,16 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
               !inFlight, let account = runningAccount,
               GoldgramArchiveReader.activeAccountId()?.int64Value == account,
               defaults.bool(forKey: "GoldgramSQLiteCaptureEnabled"),
-              let token = readSecret(account: account),
-              let session else { return }
+              let token = readSecret(account: account) else { return }
         #if os(iOS)
         guard UIApplication.shared.applicationState == .active else { return }
         #endif
         let edits = max(0, defaults.integer(forKey: key(account, "editsCursor")))
         let deletions = max(0, defaults.integer(forKey: key(account, "deletionsCursor")))
-        let host = configuredHost(account: account)
-        guard let url = URL(string: "https://\(host):\(Self.port(for: host))/v1/events?edits_after=\(edits)&deletions_after=\(deletions)") else {
+        let host = selectedHost(account: account)
+        if sessionHost != host { renewSession(host: host) }
+        guard let session, let url = URL(string:
+            "https://\(host):\(Self.port(for: host))/v1/events?edits_after=\(edits)&deletions_after=\(deletions)") else {
             return
         }
         inFlight = true
@@ -3763,6 +3886,11 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
         var request = URLRequest(url: url)
         request.setValue(token, forHTTPHeaderField: "X-Goldgram-Token")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        // Bound the initial local attempt so a dead LAN doesn't stall F3.
+        if automaticRoutingEnabled(account: account),
+           host == automaticLANHost(account: account) {
+            request.timeoutInterval = 5
+        }
         let requestStartedAt = ProcessInfo.processInfo.systemUptime
         let task = session.dataTask(with: request) { [weak self] data, response, error in
             let responseReceivedAt = ProcessInfo.processInfo.systemUptime
@@ -3775,7 +3903,8 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
                         nsError.domain == NSURLErrorDomain ? "ошибка соединения" : "ошибка транспорта",
                         errorCode: nsError.code,
                         shouldRenew: nsError.domain == NSURLErrorDomain &&
-                            GoldgramLiveRetryPolicy.isConnectionError(nsError.code))
+                            GoldgramLiveRetryPolicy.isConnectionError(nsError.code),
+                        attemptedHost: host)
                     return
                 }
                 guard let httpResponse = response as? HTTPURLResponse else {
@@ -3828,7 +3957,9 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
                     let now = ProcessInfo.processInfo.systemUptime
                     let networkMs = max(0, Int((responseReceivedAt - requestStartedAt) * 1000))
                     let importMs = max(0, Int((now - responseReceivedAt) * 1000))
-                    self.status("Live: +\(changes) событий, +\(imported) оригиналов, отложено каналов \(deferred), спорных \(pending) (хронология: \(chronologyPending)), курсоры \(nextEdits)/\(nextDeletes); сеть \(networkMs) мс, импорт \(importMs) мс")
+                    let routeLabel = self.automaticRoutingEnabled(account: account) ?
+                        (host == GoldgramLiveRoutePolicy.f3Host ? "F3 Cloud" : "Wi-Fi") : "ручной \(host)"
+                    self.status("Live [\(routeLabel)]: +\(changes) событий, +\(imported) оригиналов, отложено каналов \(deferred), спорных \(pending) (хронология: \(chronologyPending)), курсоры \(nextEdits)/\(nextDeletes); сеть \(networkMs) мс, импорт \(importMs) мс")
                     // Catch up the old archive quickly without waiting one
                     // 12-second interval per historical batch. Limited by
                     // the importer transaction and its single in-flight gate.
@@ -3864,8 +3995,9 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
         let digest = SHA256.hash(data: SecCertificateCopyData(cert) as Data)
             .map { String(format: "%02x", $0) }.joined()
         pinLock.lock()
-        let matchingPin = digest == expectedPin
-        if !matchingPin { pinRejected = true }
+        let currentSession = activePinnedSession == ObjectIdentifier(session)
+        let matchingPin = currentSession && digest == expectedPin
+        if currentSession && !matchingPin { pinRejected = true }
         pinLock.unlock()
         guard matchingPin else {
             completionHandler(.cancelAuthenticationChallenge, nil)

@@ -8,6 +8,21 @@ import Darwin
 @main
 struct NativeCaptureFixture {
     static func main() throws {
+        // #227: deterministic route choice, shared cursor, one poll at a time.
+        precondition(GoldgramLiveRoutePolicy.selectedHost(
+            wifi: true, localHost: "192.168.1.102", now: 1_000, localRetryAt: 0)
+            == "192.168.1.102")
+        precondition(GoldgramLiveRoutePolicy.selectedHost(
+            wifi: false, localHost: "192.168.1.102", now: 1_000, localRetryAt: 0)
+            == "179.253.88.30")
+        precondition(GoldgramLiveRoutePolicy.selectedHost(
+            wifi: true, localHost: "192.168.1.102", now: 1_000, localRetryAt: 1_120)
+            == "179.253.88.30")
+        precondition(GoldgramLiveRoutePolicy.selectedHost(
+            wifi: true, localHost: "192.168.1.102", now: 1_120, localRetryAt: 1_120)
+            == "192.168.1.102")
+        precondition(GoldgramLiveRoutePolicy.localRetrySeconds == 120)
+        precondition(GoldgramLiveRoutePolicy.localPinRetrySeconds == 600)
         // #226: the F3 migration keeps the old public relay as fallback;
         // only the explicitly approved public IPs use TLS passthrough 443.
         precondition(GoldgramLiveBridge.supportedHost("192.168.1.102"))
