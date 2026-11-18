@@ -1884,6 +1884,17 @@ public final class GoldgramArchiveReader: NSObject {
 @_cdecl("goldgram_bind_active_account_v1")
 public func goldgramBindActiveAccountV1(_ id: Int64) {
     GoldgramArchiveReader.updateSelectedAccount(id)
+    // #228: account binding also happens on ordinary chat startup. Previously
+    // the Live singleton was only started by opening the archive/Live menu,
+    // leaving regular channel chats without the 12-second polling timer after
+    // a cold launch. Start only for an already paired and explicitly enabled
+    // account, never change the pinned identity, route or committed cursors.
+    guard id > 0, UserDefaults.standard.bool(
+        forKey: "GoldgramLiveV1.\(id).enabled") else { return }
+    DispatchQueue.main.async {
+        guard GoldgramArchiveReader.activeAccountId()?.int64Value == id else { return }
+        GoldgramLiveBridge.shared.start(account: id)
+    }
 }
 
 
