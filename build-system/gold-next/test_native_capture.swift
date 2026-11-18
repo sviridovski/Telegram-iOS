@@ -8,6 +8,17 @@ import Darwin
 @main
 struct NativeCaptureFixture {
     static func main() throws {
+        // #226: the F3 migration keeps the old public relay as fallback;
+        // only the explicitly approved public IPs use TLS passthrough 443.
+        precondition(GoldgramLiveBridge.supportedHost("192.168.1.102"))
+        precondition(GoldgramLiveBridge.supportedHost("194.87.235.144"))
+        precondition(GoldgramLiveBridge.supportedHost("179.253.88.30"))
+        precondition(!GoldgramLiveBridge.supportedHost("179.253.88.31"))
+        precondition(!GoldgramLiveBridge.supportedHost("8.8.8.8"))
+        precondition(GoldgramLiveBridge.port(for: "192.168.1.102") == 8873)
+        precondition(GoldgramLiveBridge.port(for: "194.87.235.144") == 443)
+        precondition(GoldgramLiveBridge.port(for: "179.253.88.30") == 443)
+        precondition(GoldgramLiveBridge.catchupDelayMs(host: "179.253.88.30") == 600)
         // #225: HTTP limits must be respected across route/TLS retries.
         precondition(GoldgramLiveRetryPolicy.httpDelay(
             429, retryAfter: "120", failures: 1) == 120)

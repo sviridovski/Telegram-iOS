@@ -3552,8 +3552,14 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
             (octets[0] == 192 && octets[1] == 168)
     }
 
-    // Only this explicitly approved public relay is supported; TLS remains
-    // end-to-end pinned to the existing iPhone 8 certificate.
+    // #226: two explicitly approved public TCP relays for the same pinned
+    // iPhone 8 source. Each relay only forwards TLS; neither is trusted to
+    // change the certificate, token, account or committed SQLite cursors.
+    private static let publicRelays: Set<String> = [
+        "194.87.235.144", // RUVDS — preserved fallback
+        "179.253.88.30"   // F3 Cloud
+    ]
+
     // #224: fast LAN catch-up only. Keep the gentler backoff for the VPS.
     // Both paths retain the single in-flight gate and cursor-after-COMMIT.
     static func catchupDelayMs(host: String) -> Int {
@@ -3561,11 +3567,11 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
     }
 
     static func supportedHost(_ value: String) -> Bool {
-        privateIPv4(value) || value == "194.87.235.144"
+        privateIPv4(value) || publicRelays.contains(value)
     }
 
-    private static func port(for host: String) -> Int {
-        host == "194.87.235.144" ? 443 : 8873
+    static func port(for host: String) -> Int {
+        publicRelays.contains(host) ? 443 : 8873
     }
 
     func configuredHost(account: Int64) -> String {

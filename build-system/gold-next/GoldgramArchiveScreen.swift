@@ -1021,12 +1021,13 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
         let bridge = GoldgramLiveBridge.shared
         let alert = UIAlertController(
             title: "iPhone 8 · защищённое подключение",
-            message: "Введи IP iPhone 8 или VPS 194.87.235.144, SHA-256 сертификата и " +
+            message: "Введи IP iPhone 8, F3 Cloud 179.253.88.30 или " +
+                "резервный RUVDS 194.87.235.144, SHA-256 сертификата и " +
                 "секрет подключения. Порты: локально 8873, VPS 443. " +
                 "При смене адреса существующий секрет можно не вводить.",
             preferredStyle: .alert)
         alert.addTextField { field in
-            field.placeholder = "192.168.1.102 или 194.87.235.144"
+            field.placeholder = "192.168.1.102 или 179.253.88.30"
             field.text = bridge.configuredHost(account: account)
             field.keyboardType = .numbersAndPunctuation
             field.autocorrectionType = .no
