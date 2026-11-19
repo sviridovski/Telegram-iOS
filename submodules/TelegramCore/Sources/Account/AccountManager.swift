@@ -1,7 +1,7 @@
 import Foundation
 import Postbox
 import SwiftSignalKit
-import TelegramApi
+internal import TelegramApi
 import MtProtoKit
 
 private enum AccountKind {
@@ -133,7 +133,9 @@ private var declaredEncodables: Void = {
     declareEncodable(StickerPackItem.self, f: { StickerPackItem(decoder: $0) })
     declareEncodable(LocalFileReferenceMediaResource.self, f: { LocalFileReferenceMediaResource(decoder: $0) })
     declareEncodable(OutgoingMessageInfoAttribute.self, f: { OutgoingMessageInfoAttribute(decoder: $0) })
+    declareEncodable(PendingWalletTransferMessageAttribute.self, f: { PendingWalletTransferMessageAttribute(decoder: $0) })
     declareEncodable(EphemeralMessageAttribute.self, f: { EphemeralMessageAttribute(decoder: $0) })
+    declareEncodable(EphemeralReplacementMessageAttribute.self, f: { EphemeralReplacementMessageAttribute(decoder: $0) })
     declareEncodable(EphemeralOutgoingMessageAttribute.self, f: { EphemeralOutgoingMessageAttribute(decoder: $0) })
     declareEncodable(ForwardSourceInfoAttribute.self, f: { ForwardSourceInfoAttribute(decoder: $0) })
     declareEncodable(SourceReferenceMessageAttribute.self, f: { SourceReferenceMessageAttribute(decoder: $0) })
@@ -185,6 +187,7 @@ private var declaredEncodables: Void = {
     declareEncodable(SynchronizeAppLogEventsOperation.self, f: { SynchronizeAppLogEventsOperation(decoder: $0) })
     declareEncodable(TelegramMediaPoll.self, f: { TelegramMediaPoll(decoder: $0) })
     declareEncodable(TelegramMediaUnsupported.self, f: { TelegramMediaUnsupported(decoder: $0) })
+    declareEncodable(TelegramMediaWidget.self, f: { TelegramMediaWidget(decoder: $0) })
     declareEncodable(EmojiKeywordCollectionInfo.self, f: { EmojiKeywordCollectionInfo(decoder: $0) })
     declareEncodable(EmojiKeywordItem.self, f: { EmojiKeywordItem(decoder: $0) })
     declareEncodable(SynchronizeEmojiKeywordsOperation.self, f: { SynchronizeEmojiKeywordsOperation(decoder: $0) })
@@ -222,8 +225,7 @@ private var declaredEncodables: Void = {
     declareEncodable(AuthSessionInfoAttribute.self, f: { AuthSessionInfoAttribute(decoder: $0) })
     declareEncodable(TranslationMessageAttribute.self, f: { TranslationMessageAttribute(decoder: $0) })
     declareEncodable(TranslationMessageAttribute.Additional.self, f: { TranslationMessageAttribute.Additional(decoder: $0) })
-    // MARK: Swiftgram
-    declareEncodable(QuickTranslationMessageAttribute.self, f: { QuickTranslationMessageAttribute(decoder: $0) })
+    declareEncodable(QuickTranslationMessageAttribute.self, f: { QuickTranslationMessageAttribute(decoder: $0) }) // MARK: Swiftgram
     declareEncodable(SynchronizeAutosaveItemOperation.self, f: { SynchronizeAutosaveItemOperation(decoder: $0) })
     declareEncodable(TelegramMediaStory.self, f: { TelegramMediaStory(decoder: $0) })
     declareEncodable(SynchronizeViewStoriesOperation.self, f: { SynchronizeViewStoriesOperation(decoder: $0) })

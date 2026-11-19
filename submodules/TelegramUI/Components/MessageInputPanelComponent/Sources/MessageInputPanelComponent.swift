@@ -1,7 +1,6 @@
-// MARK: Swiftgram
 import class SwiftUI.UIHostingController
 import SGSimpleSettings
-import SGInputToolbar
+import SGInputToolbar // MARK: Swiftgram
 
 import Foundation
 import UIKit
@@ -248,6 +247,9 @@ public final class MessageInputPanelComponent: Component {
     public let queryTypes: ContextQueryTypes
     public let alwaysDarkWhenHasText: Bool
     public let useGrayBackground: Bool
+    public let displayGiftSendButton: Bool
+    public let returnKeyType: UIReturnKeyType?
+    public let returnKeyAction: (() -> Void)?
     public let resetInputContents: SendMessageInput?
     public let nextInputMode: (Bool) -> InputMode?
     public let areVoiceMessagesAvailable: Bool
@@ -318,6 +320,9 @@ public final class MessageInputPanelComponent: Component {
         queryTypes: ContextQueryTypes,
         alwaysDarkWhenHasText: Bool,
         useGrayBackground: Bool = false,
+        displayGiftSendButton: Bool = false,
+        returnKeyType: UIReturnKeyType? = nil,
+        returnKeyAction: (() -> Void)? = nil,
         resetInputContents: SendMessageInput?,
         nextInputMode: @escaping (Bool) -> InputMode?,
         areVoiceMessagesAvailable: Bool,
@@ -388,6 +393,9 @@ public final class MessageInputPanelComponent: Component {
         self.queryTypes = queryTypes
         self.alwaysDarkWhenHasText = alwaysDarkWhenHasText
         self.useGrayBackground = useGrayBackground
+        self.displayGiftSendButton = displayGiftSendButton
+        self.returnKeyType = returnKeyType
+        self.returnKeyAction = returnKeyAction
         self.resetInputContents = resetInputContents
         self.areVoiceMessagesAvailable = areVoiceMessagesAvailable
         self.presentController = presentController
@@ -480,6 +488,15 @@ public final class MessageInputPanelComponent: Component {
             return false
         }
         if lhs.useGrayBackground != rhs.useGrayBackground {
+            return false
+        }
+        if lhs.displayGiftSendButton != rhs.displayGiftSendButton {
+            return false
+        }
+        if lhs.returnKeyType != rhs.returnKeyType {
+            return false
+        }
+        if (lhs.returnKeyAction == nil) != (rhs.returnKeyAction == nil) {
             return false
         }
         if lhs.resetInputContents != rhs.resetInputContents {
@@ -614,8 +631,7 @@ public final class MessageInputPanelComponent: Component {
         private let counter = ComponentView<Empty>()
         private var header: ComponentView<Empty>?
         
-        // MARK: Swiftgram
-        private var toolbarView: UIView?
+        private var toolbarView: UIView? // MARK: Swiftgram
         
         private var disabledPlaceholder: ComponentView<Empty>?
         private var textClippingView = UIView()
@@ -670,6 +686,10 @@ public final class MessageInputPanelComponent: Component {
             return self.likeButton.view
         }
         
+        public var inputActionButtonView: UIView? {
+            return self.inputActionButton.view
+        }
+        
         public var likeIconView: UIView? {
             return (self.likeButton.view as? MessageInputActionButtonComponent.View)?.likeIconView
         }
@@ -722,8 +742,7 @@ public final class MessageInputPanelComponent: Component {
                 }
             )
             
-            // MARK: Swiftgram
-            self.initToolbarIfNeeded(context: context)
+            self.initToolbarIfNeeded(context: context) // MARK: Swiftgram
         }
         
         required init?(coder: NSCoder) {
@@ -937,6 +956,7 @@ public final class MessageInputPanelComponent: Component {
             if result == nil, let toolbarView = self.toolbarView, let toolbarResult = toolbarView.hitTest(self.convert(point, to: toolbarView), with: event) {
                 return toolbarResult
             }
+            //
              
             return result
         }
@@ -1234,12 +1254,15 @@ public final class MessageInputPanelComponent: Component {
             var mediaInsets = UIEdgeInsets(top: insets.top, left: textFieldSideInset, bottom: insets.bottom, right: 41.0)
             if case .gift = component.style {
                 mediaInsets.right = textFieldSideInset
+                insets.right = textFieldSideInset
             }
             if case .videoChat = component.style {
                 mediaInsets.right = 54.0
             }
             
             let baseFieldHeight: CGFloat = 40.0
+            let giftSendButtonContainerSize = CGSize(width: 40.0, height: 40.0)
+            let giftSendButtonRightInset: CGFloat = 2.0
             
             var transition = transition
             let previousComponent = self.component
@@ -1293,6 +1316,18 @@ public final class MessageInputPanelComponent: Component {
                 formatMenuAvailability = .available([.bold, .italic, .strikethrough, .underline, .spoiler])
             }
             self.textField.parentState = state
+
+            let returnKeyType = component.returnKeyType ?? ([.videoChat, .gift].contains(component.style) ? UIReturnKeyType.send : UIReturnKeyType.default)
+            let returnKeyAction: (() -> Void)?
+            if let customReturnKeyAction = component.returnKeyAction {
+                returnKeyAction = customReturnKeyAction
+            } else if [.videoChat, .gift].contains(component.style) {
+                returnKeyAction = { [weak self] in
+                    self?.sendMessageAction()
+                }
+            } else {
+                returnKeyAction = nil
+            }
             
             let textColor: UIColor
             let accentColor: UIColor
@@ -1315,7 +1350,7 @@ public final class MessageInputPanelComponent: Component {
                     fontSize: 17.0,
                     textColor: textColor,
                     accentColor: accentColor,
-                    insets: UIEdgeInsets(top: 9.0, left: 8.0, bottom: 10.0, right: 48.0),
+                    insets: UIEdgeInsets(top: 9.0, left: 8.0, bottom: 10.0, right: component.style == .gift ? (component.displayGiftSendButton ? 32.0 + giftSendButtonContainerSize.width + giftSendButtonRightInset + 4.0 : 32.0) : 48.0),
                     hideKeyboard: component.hideKeyboard,
                     customInputView: component.customInputView,
                     resetText: component.resetInputContents.flatMap { resetInputContents in
@@ -1327,7 +1362,7 @@ public final class MessageInputPanelComponent: Component {
                     isOneLineWhenUnfocused: component.style == .media,
                     emptyLineHandling: [.videoChat, .gift].contains(component.style) ? .notAllowed : .allowed,
                     formatMenuAvailability: formatMenuAvailability,
-                    returnKeyType: [.videoChat, .gift].contains(component.style) ? .send : .default,
+                    returnKeyType: returnKeyType,
                     lockedFormatAction: {
                         component.presentTextFormattingTooltip?()
                     },
@@ -1337,9 +1372,7 @@ public final class MessageInputPanelComponent: Component {
                     paste: { data in
                         component.paste(data)
                     },
-                    returnKeyAction: [.videoChat, .gift].contains(component.style) ? { [weak self] in
-                        self?.sendMessageAction()
-                    } : nil
+                    returnKeyAction: returnKeyAction
                 )),
                 environment: {},
                 containerSize: availableTextFieldSize
@@ -1587,6 +1620,9 @@ public final class MessageInputPanelComponent: Component {
                 if placeholderView.superview == nil {
                     placeholderView.isUserInteractionEnabled = false
                     placeholderView.layer.anchorPoint = CGPoint()
+                    // VoiceOver: the text field reads these words as its label; the drawn placeholder is not read.
+                    placeholderView.accessibilityElementsHidden = true
+                    vibrancyPlaceholderView.accessibilityElementsHidden = true
                     self.addSubview(placeholderView)
                 }
                 transition.setPosition(view: placeholderView, position: placeholderFrame.origin.offsetBy(dx: self.fieldBackgroundView.frame.minX, dy: self.fieldBackgroundView.frame.minY))
@@ -1685,6 +1721,21 @@ public final class MessageInputPanelComponent: Component {
             }
             
             if let textFieldView = self.textField.view as? TextFieldComponent.View {
+                let accessibilityPlaceholder: String
+                switch component.placeholder {
+                case let .plain(text):
+                    accessibilityPlaceholder = text
+                case let .counter(items):
+                    accessibilityPlaceholder = items.map { item -> String in
+                        switch item.content {
+                        case let .text(text):
+                            return text
+                        case let .number(value, _):
+                            return "\(value)"
+                        }
+                    }.joined()
+                }
+                textFieldView.setAccessibilityFieldLabel(accessibilityPlaceholder)
                 if textFieldView.superview == nil {
                     self.textClippingView.addSubview(textFieldView)
                     
@@ -1867,7 +1918,12 @@ public final class MessageInputPanelComponent: Component {
                     containerSize: availableTextFieldSize
                 )
                 var counterFrame = CGRect(origin: CGPoint(x: availableSize.width - insets.right + floorToScreenPixels((insets.right - counterSize.width) * 0.5), y: size.height - insets.bottom - baseFieldHeight - counterSize.height - 5.0), size: counterSize)
-                if case .videoChat = component.style {
+                if component.style == .gift && component.displayGiftSendButton {
+                    let giftSendButtonCenterX = fieldBackgroundFrame.maxX - giftSendButtonRightInset - giftSendButtonContainerSize.width * 0.5
+                    counterFrame.origin.x = floorToScreenPixels(giftSendButtonCenterX - counterSize.width * 0.5)
+                } else if component.style == .gift {
+                    counterFrame.origin.x = floorToScreenPixels(fieldBackgroundFrame.maxX - 20.0 - counterSize.width * 0.5)
+                } else if case .videoChat = component.style {
                     counterFrame.origin.x -= 7.0
                 }
                 if let counterView = self.counter.view {
@@ -2048,8 +2104,9 @@ public final class MessageInputPanelComponent: Component {
             var inputActionButtonAlpha = 1.0
             let inputActionButtonMode: MessageInputActionButtonComponent.Mode
             if case .gift = component.style {
-                inputActionButtonAlpha = 0.0
-                inputActionButtonMode = .apply
+                inputActionButtonAlpha = component.displayGiftSendButton ? 1.0 : 0.0
+                inputActionButtonMode = .send
+                inputActionButtonAvailableSize = giftSendButtonContainerSize
             } else if case .editor = component.style {
                 if isEditing {
                     inputActionButtonMode = .apply
@@ -2090,7 +2147,9 @@ public final class MessageInputPanelComponent: Component {
                 }
             }
             let inputActionButtonStyle: MessageInputActionButtonComponent.Style
-            if component.style == .videoChat {
+            if component.style == .gift {
+                inputActionButtonStyle = .accent
+            } else if component.style == .videoChat {
                 inputActionButtonStyle = .glass(isTinted: true)
             } else if component.style == .story {
                 inputActionButtonStyle = .legacy
@@ -2119,7 +2178,7 @@ public final class MessageInputPanelComponent: Component {
                                     component.sendMessageAction(nil)
                                 } else if component.hasRecordedVideoPreview {
                                     component.sendMessageAction(nil)
-                                } else if case let .text(string) = self.getSendMessageInput(), string.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                } else if !(component.style == .gift && component.displayGiftSendButton), case let .text(string) = self.getSendMessageInput(), string.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                                 } else {
                                     self.sendMessageAction()
                                 }
@@ -2222,7 +2281,9 @@ public final class MessageInputPanelComponent: Component {
                     inputActionButtonOriginX -= 46.0
                 }
             } else {
-                if component.setMediaRecordingActive != nil || isEditing || component.style == .videoChat {
+                if component.style == .gift {
+                    inputActionButtonOriginX = fieldBackgroundFrame.maxX - inputActionButtonSize.width - giftSendButtonRightInset
+                } else if component.setMediaRecordingActive != nil || isEditing || component.style == .videoChat {
                     switch component.style {
                     case .videoChat:
                         inputActionButtonOriginX = fieldBackgroundFrame.maxX + 6.0
@@ -2252,6 +2313,12 @@ public final class MessageInputPanelComponent: Component {
                 transition.setPosition(view: inputActionButtonView, position: inputActionButtonFrame.center)
                 transition.setBounds(view: inputActionButtonView, bounds: CGRect(origin: CGPoint(), size: inputActionButtonFrame.size))
                 transition.setAlpha(view: inputActionButtonView, alpha: likeActionReplacesInputAction ? 0.0 : inputActionButtonAlpha)
+                if component.style == .gift {
+                    let targetScale: CGFloat = component.displayGiftSendButton ? 1.0 : 0.01
+                    let endRasterization: ((Bool) -> Void)? = transition.animation.isImmediate || inputActionButtonView.layer.transform.m11 == targetScale ? nil : inputActionButtonView.layer.beginRasterizedAnimation()
+                    transition.setScale(view: inputActionButtonView, scale: targetScale, completion: endRasterization)
+                    inputActionButtonView.isUserInteractionEnabled = component.displayGiftSendButton
+                }
                 
                 if rightButtonsOffsetX != 0.0 {
                     if hasLikeAction {
@@ -2313,6 +2380,9 @@ public final class MessageInputPanelComponent: Component {
             }
         
             var fieldIconNextX = fieldBackgroundFrame.maxX - 4.0
+            if component.style == .gift && component.displayGiftSendButton {
+                fieldIconNextX = fieldBackgroundFrame.maxX - inputActionButtonSize.width - giftSendButtonRightInset - 8.0
+            }
             
             var inputModeVisible = false
             if isEditing {
@@ -2403,6 +2473,18 @@ public final class MessageInputPanelComponent: Component {
                 if stickerButtonView.superview == nil {
                     self.addSubview(stickerButtonView)
                 }
+                // VoiceOver: the glyph shows the input the button switches to.
+                switch inputMode {
+                case .text:
+                    stickerButtonView.accessibilityLabel = component.strings.VoiceOver_Keyboard
+                case .stickers:
+                    stickerButtonView.accessibilityLabel = component.strings.VoiceOver_Stickers
+                case .emoji:
+                    stickerButtonView.accessibilityLabel = component.strings.EmojiInput_TabEmoji
+                case .none:
+                    stickerButtonView.accessibilityLabel = nil
+                }
+                stickerButtonView.accessibilityElementsHidden = hasMediaRecording || hasMediaEditing || !inputModeVisible || component.disabledPlaceholder != nil
                 let stickerIconFrame = CGRect(origin: CGPoint(x: fieldIconNextX - stickerButtonSize.width, y: fieldBackgroundFrame.maxY - 4.0 - stickerButtonSize.height), size: stickerButtonSize)
                 transition.setPosition(view: stickerButtonView, position: stickerIconFrame.center)
                 transition.setBounds(view: stickerButtonView, bounds: CGRect(origin: CGPoint(), size: stickerIconFrame.size))
@@ -2435,6 +2517,7 @@ public final class MessageInputPanelComponent: Component {
                         ),
                         tag: timeoutButtonTag,
                         minSize: CGSize(width: 32.0, height: 32.0),
+                        accessibility: component.style == .media ? ComponentAccessibility(label: component.timeoutSelected ? component.strings.VoiceOver_SelfDestructTimerOn(timeoutValue).string : component.strings.VoiceOver_SelfDestructTimerOff) : ComponentAccessibility(label: component.strings.VoiceOver_MessageInput_Timer, value: timeoutValue, traits: component.timeoutSelected ? .selected : []),
                         action: { view, gesture in
                             timeoutAction(view, gesture)
                         }
@@ -3082,8 +3165,7 @@ public final class MessageInputPanelComponent: Component {
                 }
             }
             
-            // MARK: Swiftgram
-            size = self.layoutToolbar(transition: transition, layoutFromTop: layoutFromTop, size: size, availableSize: availableSize, defaultInsets: defaultInsets, textFieldSize: textFieldSize, previousComponent: previousComponent)
+            size = self.layoutToolbar(transition: transition, layoutFromTop: layoutFromTop, size: size, availableSize: availableSize, defaultInsets: defaultInsets, textFieldSize: textFieldSize, previousComponent: previousComponent) // MARK: Swiftgram
             
             return size
         }
@@ -3139,60 +3221,19 @@ final class ViewForOverlayContent: UIView {
     }
 }
 
-
+// MARK: Swiftgram
 extension MessageInputPanelComponent.View {
     func initToolbarIfNeeded(context: AccountContext) {
         guard #available(iOS 13.0, *) else { return }
         guard SGSimpleSettings.shared.inputToolbar else { return }
         guard context.sharedContext.immediateSGStatus.status > 1 else { return }
         guard self.toolbarView == nil else { return }
-        let notificationName = Notification.Name("sgToolbarAction")
         let toolbar = ChatToolbarView(
-            onQuote: { [weak self] in
-                guard let _ = self else { return }
-                NotificationCenter.default.post(name: notificationName, object: nil, userInfo: ["action": "quote"])
-            },
-            onSpoiler: { [weak self] in
-                guard let _ = self else { return }
-                NotificationCenter.default.post(name: notificationName, object: nil, userInfo: ["action": "spoiler"])
-            },
-            onBold: { [weak self] in
-                guard let _ = self else { return }
-                NotificationCenter.default.post(name: notificationName, object: nil, userInfo: ["action": "bold"])
-            },
-            onItalic: { [weak self] in
-                guard let _ = self else { return }
-                NotificationCenter.default.post(name: notificationName, object: nil, userInfo: ["action": "italic"])
-            },
-            onMonospace: { [weak self] in
-                guard let _ = self else { return }
-                NotificationCenter.default.post(name: notificationName, object: nil, userInfo: ["action": "monospace"])
-            },
-            onLink: { [weak self] in
-                guard let _ = self else { return }
-                NotificationCenter.default.post(name: notificationName, object: nil, userInfo: ["action": "link"])
-            },
-            onStrikethrough: { [weak self]
-                in guard let _ = self else { return }
-                NotificationCenter.default.post(name: notificationName, object: nil, userInfo: ["action": "strikethrough"])
-            },
-            onUnderline: { [weak self] in
-                guard let _ = self else { return }
-                NotificationCenter.default.post(name: notificationName, object: nil, userInfo: ["action": "underline"])
-            },
-            onCode: { [weak self] in
-                guard let _ = self else { return }
-                NotificationCenter.default.post(name: notificationName, object: nil, userInfo: ["action": "code"])
-            },
-            onNewLine: { [weak self] in
-                guard let _ = self else { return }
-                NotificationCenter.default.post(name: notificationName, object: nil, userInfo: ["action": "newline"])
-            },
             // TODO(swiftgram): Binding
             showNewLine: .constant(true), //.constant(self.sendWithReturnKey)
-            onClearFormatting: { [weak self] in
-                guard let _ = self else { return }
-                NotificationCenter.default.post(name: notificationName, object: nil, userInfo: ["action": "clearFormatting"])
+            onAction: { [weak self] action in
+                guard let self, let textFieldView = self.textField.view as? TextFieldComponent.View else { return }
+                textFieldView.sgToolbarAction(action)
             }
         ).colorScheme(.dark)
 
@@ -3244,3 +3285,4 @@ extension MessageInputPanelComponent.View {
         return size
     }
 }
+//

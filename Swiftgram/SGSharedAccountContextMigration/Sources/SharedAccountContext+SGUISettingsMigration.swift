@@ -5,7 +5,7 @@ import SGSimpleSettings
 import SwiftSignalKit
 import TelegramUIPreferences
 import AccountContext
-import Postbox
+import TelegramCore
 import Foundation
 
 extension SharedAccountContextImpl {
@@ -24,11 +24,11 @@ extension SharedAccountContextImpl {
         }
         self.didPerformSGUISettingsMigration = true
         
-        let sgPreferences: Signal<PreferencesView, NoError> = sgPrimary.account.postbox.preferencesView(keys: [ApplicationSpecificPreferencesKeys.SGUISettings])
+        let sgPreferences = sgPrimary.engine.data.subscribe(TelegramEngine.EngineData.Item.Configuration.ApplicationSpecificPreference(key: ApplicationSpecificPreferencesKeys.SGUISettings))
         let _ = (sgPreferences
         |> take(1)
         |> deliverOnMainQueue).start(next: { view in
-            let sgSettings: SGUISettings = view.values[ApplicationSpecificPreferencesKeys.SGUISettings]?.get(SGUISettings.self) ?? .default
+            let sgSettings: SGUISettings = view?.get(SGUISettings.self) ?? .default
             let sgDefaults = UserDefaults.standard
             let sgDomainName = sgBaseBundleIdentifier()
             let sgDomain = sgDefaults.persistentDomain(forName: sgDomainName) ?? [:]

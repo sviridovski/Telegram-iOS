@@ -2,7 +2,6 @@ import Foundation
 import UndoUI
 import AccountContext
 import TelegramCore
-import Postbox
 import Display
 import SwiftSignalKit
 import TelegramPresentationData
@@ -28,7 +27,7 @@ struct SessionBackup: Codable {
     }
     
     var userId: Int64 {
-        return PeerId(peerIdInternal).id._internalGetInt64Value()
+        return EnginePeer.Id(peerIdInternal).id._internalGetInt64Value()
     }
 }
 
@@ -472,7 +471,7 @@ func backupSessionsFromView(_ view: AccountRecordsView<TelegramAccountManagerTyp
     
     for (peerId, record) in recordsToBackup {
         var backupName: String? = nil
-        if let accountWithInfo = accountsWithInfo.first(where: { $0.peer.id == PeerId(peerId) }) {
+        if let accountWithInfo = accountsWithInfo.first(where: { $0.peer.id == EnginePeer.Id(peerId) }) {
             if let username = accountWithInfo.peer.addressName {
                 backupName = "@\(username)"
             } else {

@@ -5,7 +5,6 @@ import UndoUI
 import AccountContext
 import Display
 import TelegramCore
-import Postbox
 import ItemListUI
 import SwiftSignalKit
 import TelegramPresentationData
@@ -47,6 +46,7 @@ private enum SGDebugToggles: String {
     case forceImmediateShareSheet
     case legacyNotificationsFix
     case inputToolbar
+    case translatorLogs
 }
 
 
@@ -68,6 +68,7 @@ private func SGDebugControllerEntries(presentationData: PresentationData) -> [SG
 
     entries.append(.action(id: id.count, section: .base, actionType: .clearRegDateCache, text: "Clear Regdate cache", kind: .generic))
     entries.append(.action(id: id.count, section: .base, actionType: .clearOutgoingTranslationLanguageCache, text: "Clear Outgoing Translation cache", kind: .generic))
+    entries.append(.toggle(id: id.count, section: .base, settingName: .translatorLogs, value: SGSimpleSettings.shared.translatorLogsEnabled, text: "Translator logs", enabled: true))
     entries.append(.toggle(id: id.count, section: .base, settingName: .forceImmediateShareSheet, value: SGSimpleSettings.shared.forceSystemSharing, text: "Force System Share Sheet", enabled: true))
     
     entries.append(.action(id: id.count, section: .base, actionType: .restorePurchases, text: "PayWall.RestorePurchases".i18n(presentationData.strings.baseLanguageCode), kind: .generic))
@@ -99,6 +100,12 @@ public func sgDebugController(context: AccountContext) -> ViewController {
                 SGSimpleSettings.shared.synchronizeShared()
             case .inputToolbar:
                 SGSimpleSettings.shared.inputToolbar = value
+            case .translatorLogs:
+                SGSimpleSettings.shared.setTranslatorLogsEnabled(value)
+                if value {
+                    let presentationData = context.sharedContext.currentPresentationData.with { $0 }
+                    presentControllerImpl?(okUndoController("Logging enabled for 24 hours", presentationData), nil)
+                }
         }
     }, setOneFromManyValue: { setting in
         let presentationData = context.sharedContext.currentPresentationData.with { $0 }
@@ -220,5 +227,3 @@ public func sgDebugController(context: AccountContext) -> ViewController {
     
     return controller
 }
-
-

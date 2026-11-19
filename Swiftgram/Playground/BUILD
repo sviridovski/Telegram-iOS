@@ -1,3 +1,5 @@
+load("@rules_cc//cc:objc_library.bzl", "objc_library")
+
 load("@bazel_skylib//rules:common_settings.bzl",
     "bool_flag",
 )
@@ -75,7 +77,6 @@ ios_application(
 xcodeproj(
     bazel_path = telegram_bazel_path,
     name = "Playground_xcodeproj",
-    build_mode = "bazel",
     project_name = "Playground",
     tags = ["manual"],
     top_level_targets = top_level_targets(

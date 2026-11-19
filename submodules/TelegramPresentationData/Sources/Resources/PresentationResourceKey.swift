@@ -19,6 +19,7 @@ public enum PresentationResourceKey: Int32 {
     case navigationInfoIcon
     case navigationShareIcon
     case navigationSearchIcon
+    case navigationSearchTagIcon
     case navigationCompactSearchIcon
     case navigationCompactSearchWhiteIcon
     case navigationCompactTagsSearchIcon
@@ -408,6 +409,7 @@ public enum PresentationResourceParameterKey: Hashable {
     case chatListBadgeBackgroundMention(CGFloat)
     case badgeBackgroundReactions(CGFloat)
     case badgeBackgroundInactiveReactions(CGFloat)
+    case badgeBackgroundGram(CGFloat, Bool)
     case badgeBackgroundPollVotes(CGFloat)
     case badgeBackgroundInactivePollVotes(CGFloat)
     case chatListBadgeBackgroundInactiveMention(CGFloat)

@@ -10,6 +10,7 @@ import sqlite3
 
 source = (Path(__file__).parent / "GoldgramHistoryStore.swift").read_text()
 host = (Path(__file__).parents[2] / "submodules/TelegramCore/Sources/State/AccountStateManagementUtils.swift").read_text()
+host += (Path(__file__).parents[2] / "submodules/TelegramCore/Sources/State/Sync/UpdateInterpreter+Messages.swift").read_text()
 def schema(which):
     m = re.search(r"private static let " + which + r' = """\n(.*?)\n    """', source, re.S)
     assert m, which
@@ -27,7 +28,7 @@ def new_db():
 
 assert 'goldgram_archive_edit_v1' in source
 assert 'goldgramArchivePrivateEdit(' in host
-assert 'case let .updateEditMessage(updateEditMessageData):' in host
+assert 'mutating func applyEditMessage(' in host
 assert re.search(r"original_text\s*,\s*original_observed", source), ("Original columns not found in Goldgram Swift SQL")
 assert 'lastSavedRevision(' in source
 
