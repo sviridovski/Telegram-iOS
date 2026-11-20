@@ -560,6 +560,28 @@ struct NativeCaptureFixture {
         let finalDuplicate = try bridgeResult([lateEdit])
         precondition(finalDuplicate["duplicates"] == 1)
         precondition(row("SELECT COUNT(*) FROM revisions WHERE message_id=3329") == ["3"])
+        // #232: proof of a duplicate must retrigger display reconciliation,
+        // and an idle Live poll must find old confirmed history locally.
+        let scopeCountBeforeDuplicate = deliveredScopes.filter {
+            $0["messageId"] == 3329
+        }.count
+        let redelivered = try bridgeResult([lateEdit])
+        precondition(redelivered["duplicates"] == 1,
+                     "repeat delivery must remain idempotent")
+        precondition(deliveredScopes.filter { $0["messageId"] == 3329 }.count >
+                     scopeCountBeforeDuplicate,
+                     "committed receipt must re-notify Postbox after duplicate delivery")
+        let beforeSweep = deliveredScopes.filter { $0["messageId"] == 3329 }.count
+        GoldgramHistoryStore.notifyPreviouslyImportedInline(accountId: account)
+        let sweepDeadline = Date().addingTimeInterval(10)
+        while deliveredScopes.filter({ $0["messageId"] == 3329 }).count <= beforeSweep &&
+                Date() < sweepDeadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+        precondition(deliveredScopes.filter { $0["messageId"] == 3329 }.count > beforeSweep,
+                     "idle local backfill includes previously imported confirmed history")
+        precondition(row("SELECT COUNT(*) FROM revisions WHERE message_id=3329") == ["3"],
+                     "local backfill must not insert duplicate revisions")
         precondition(deliveredScopes.contains(where: {
             $0["peerKind"] == 2 && $0["peerId"] == 99 && $0["messageId"] == 3329
         }), "scoped Postbox update must follow the archive COMMIT")

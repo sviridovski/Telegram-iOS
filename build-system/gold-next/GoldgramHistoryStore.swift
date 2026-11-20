@@ -3043,6 +3043,11 @@ private enum GoldgramPhone8Bridge {
                         let receipt = try receiptStatus(db: db, key: key)
                         if receipt == "applied" || receipt == "already_present" {
                             try mergeTrustedBridgeMetadata(row, db: db, scope: scope, now: now, parse: parse)
+                            // #232: a committed receipt may have been delivered
+                            // before the Postbox message was locally available.
+                            // Retry inline reconciliation without duplicating
+                            // the original, revisions or the Live cursor.
+                            markChanged(scope)
                             counts["duplicates", default: 0] += 1; continue
                         }
                         // If Telegram's server edit predates the FIRST observation
@@ -3365,6 +3370,74 @@ extension GoldgramHistoryStore {
                 sqlite3_finalize(stmt)
                 finish(step == SQLITE_DONE ? versions : [])
             } catch { finish([]) }
+        }
+    }
+
+    // #232: local-only, incremental catch-up of history imported before #231.
+    // Walk newest archived messages first, never reset Live/MTProto cursors.
+    // A poll touches at most 48 verified message IDs, not the entire history.
+    // Candidate content stays in SQLite; only peer/message IDs enter the
+    // already account-scoped GoldgramArchiveChanged notification.
+    static func notifyPreviouslyImportedInline(accountId: Int64) {
+        guard accountId > 0 else { return }
+        storageQueue.async {
+            guard GoldgramArchiveReader.activeAccountId()?.int64Value == accountId,
+                  UserDefaults.standard.bool(forKey: "GoldgramSQLiteCaptureEnabled"),
+                  archiveIsOpen,
+                  let db = try? archiveConnection(for: accountId) else { return }
+            let key = "GoldgramInlineBackfillRowidV1.\(accountId)"
+            let cursor = (UserDefaults.standard.object(forKey: key) as? NSNumber)?.int64Value
+                ?? Int64.max
+            let sql = """
+            SELECT m.rowid, m.peer_kind, m.peer_id, m.message_id
+            FROM messages m
+            WHERE m.rowid < ?
+              AND m.original_observed=1 AND m.original_text IS NOT NULL
+              AND EXISTS (
+                  SELECT 1 FROM revisions r
+                  WHERE r.peer_kind=m.peer_kind AND r.peer_id=m.peer_id
+                    AND r.message_id=m.message_id AND r.version_index=1
+              )
+            ORDER BY m.rowid DESC LIMIT 48;
+            """
+            var pointer: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &pointer, nil) == SQLITE_OK,
+                  let stmt = pointer else {
+                if let pointer { sqlite3_finalize(pointer) }
+                return
+            }
+            defer { sqlite3_finalize(stmt) }
+            guard sqlite3_bind_int64(stmt, 1, cursor) == SQLITE_OK else { return }
+            var scopes: [[String: Int64]] = []
+            var lastRowid: Int64?
+            var result: Int32 = SQLITE_DONE
+            while true {
+                result = sqlite3_step(stmt)
+                guard result == SQLITE_ROW else { break }
+                let rowid = sqlite3_column_int64(stmt, 0)
+                let kind = sqlite3_column_int64(stmt, 1)
+                let peer = sqlite3_column_int64(stmt, 2)
+                let message = sqlite3_column_int64(stmt, 3)
+                lastRowid = rowid
+                if (0...3).contains(kind), peer > 0, message > 0 {
+                    scopes.append([
+                        "peerKind": kind, "peerId": peer, "messageId": message
+                    ])
+                }
+            }
+            guard result == SQLITE_DONE else { return }
+            // The next idle poll starts at the newest record after the end.
+            // This deliberately cycles: a suspended Postbox transaction gets
+            // another opportunity without depending on the user scrolling.
+            UserDefaults.standard.set(lastRowid ?? Int64.max, forKey: key)
+            guard !scopes.isEmpty else { return }
+            DispatchQueue.main.async {
+                guard GoldgramArchiveReader.activeAccountId()?.int64Value == accountId else { return }
+                NotificationCenter.default.post(
+                    name: Notification.Name("GoldgramArchiveChanged"),
+                    object: NSNumber(value: accountId),
+                    userInfo: ["inlineScopes": scopes])
+            }
         }
     }
 
@@ -4002,6 +4075,10 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
                     let nextProofs = payload["next_proof_cursor"] as? Int ?? proofs
                     self.defaults.set(nextProofs, forKey: self.key(account, "proofCursor"))
                     self.proofCapable = (payload["proof_protocol"] as? Int == 1)
+                    // #232: repair previously imported, verified history in
+                    // offscreen Postbox messages even when Live has no new rows.
+                    // No Telegram query or modification of saved revisions.
+                    GoldgramHistoryStore.notifyPreviouslyImportedInline(accountId: account)
                     let changes = (result["edits"] ?? 0) + (result["deletions"] ?? 0)
                     let imported = result["imported"] ?? 0
                     let pending = result["pending"] ?? 0
