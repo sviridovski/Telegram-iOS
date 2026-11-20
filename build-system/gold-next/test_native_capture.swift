@@ -517,13 +517,15 @@ struct NativeCaptureFixture {
             "server_edit_at": lateEditAt, "event_observed_at": lateObserved,
             "telegram_sent_at": lateSent
         ]
-        precondition((try bridgeResult([lateEdit]))["chronologyPending"] == 1)
+        let heldFirst = try bridgeResult([lateEdit])
+        precondition(heldFirst["chronologyPending"] == 1)
         precondition(row("SELECT COUNT(*) FROM bridge_chronology_holds_v1 WHERE message_id=3329") == ["1"])
         var secondEdit = lateEdit
         secondEdit["edit_event_id"] = "edit:3330"
         secondEdit["latest_text"] = "Edit two"
         secondEdit["server_edit_at"] = lateSecondAt
-        precondition((try bridgeResult([secondEdit]))["pending"] == 1)
+        let heldSecond = try bridgeResult([secondEdit])
+        precondition(heldSecond["pending"] == 1)
         // Neither metadata alone, nor an arbitrary snapshot, can unlock it.
         lateEdit["original_evidence_source"] = "group_history_snapshot"
         lateEdit["original_evidence_kind"] = "new_unedited"
@@ -543,7 +545,8 @@ struct NativeCaptureFixture {
                      "second edit backfills without resetting existing cursors")
         precondition(row("SELECT group_concat(content,'>') FROM (SELECT content FROM revisions WHERE message_id=3329 ORDER BY version_index)") ==
                      ["Verified original>Edit one>Edit two"], "all edits survive in order")
-        precondition((try bridgeResult([lateEdit]))["duplicates"] == 1)
+        let finalDuplicate = try bridgeResult([lateEdit])
+        precondition(finalDuplicate["duplicates"] == 1)
         precondition(row("SELECT COUNT(*) FROM revisions WHERE message_id=3329") == ["3"])
         print("Goldgram #229: verified late original and idempotent replay OK")
 
