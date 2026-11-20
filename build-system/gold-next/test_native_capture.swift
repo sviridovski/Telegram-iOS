@@ -500,6 +500,53 @@ struct NativeCaptureFixture {
                      "never label an unverified first-seen edit as original")
         precondition(replayResult().isEmpty, "restored receipt is idempotent")
 
+        // #229: an authentic Raw-new original arrives after the first edit,
+        // although Telegram's Message.date correctly predates both edits.
+        let lateSent = formatter.string(from: Date().addingTimeInterval(-120))
+        let lateEditAt = formatter.string(from: Date().addingTimeInterval(-70))
+        let lateFirstSeen = formatter.string(from: Date().addingTimeInterval(-53))
+        let lateSecondAt = formatter.string(from: Date().addingTimeInterval(-25))
+        let lateObserved = formatter.string(from: Date().addingTimeInterval(-10))
+        var lateEdit: [String: Any] = [
+            "record_kind": "edit", "source": "iphone8_telethon",
+            "account_id": String(account), "peer_kind": "PeerChannel",
+            "chat_id": "-10099", "message_id": "3329",
+            "edit_event_id": "edit:3329",
+            "first_seen_at": lateFirstSeen,
+            "original_text": "Verified original", "latest_text": "Edit one",
+            "server_edit_at": lateEditAt, "event_observed_at": lateObserved,
+            "telegram_sent_at": lateSent
+        ]
+        precondition((try bridgeResult([lateEdit]))["chronologyPending"] == 1)
+        precondition(row("SELECT COUNT(*) FROM bridge_chronology_holds_v1 WHERE message_id=3329") == ["1"])
+        var secondEdit = lateEdit
+        secondEdit["edit_event_id"] = "edit:3330"
+        secondEdit["latest_text"] = "Edit two"
+        secondEdit["server_edit_at"] = lateSecondAt
+        precondition((try bridgeResult([secondEdit]))["pending"] == 1)
+        // Neither metadata alone, nor an arbitrary snapshot, can unlock it.
+        lateEdit["original_evidence_source"] = "group_history_snapshot"
+        lateEdit["original_evidence_kind"] = "new_unedited"
+        _ = try bridgeResult([lateEdit])
+        precondition(row("SELECT COUNT(*) FROM bridge_chronology_holds_v1 WHERE message_id=3329") == ["1"])
+        lateEdit["original_evidence_source"] = "raw_update_new_message"
+        lateEdit["telegram_sent_at"] = lateSecondAt
+        _ = try bridgeResult([lateEdit])
+        precondition(row("SELECT COUNT(*) FROM bridge_chronology_holds_v1 WHERE message_id=3329") == ["1"])
+        // V216 proof replay has the same edit ID but authenticated evidence.
+        lateEdit["telegram_sent_at"] = lateSent
+        let restored = try bridgeResult([lateEdit])
+        precondition(restored["imported"] == 1 && restored["edits"] == 1,
+                     "genuine late original unlocks first edit")
+        precondition(row("SELECT COUNT(*) FROM bridge_chronology_holds_v1 WHERE message_id=3329") == ["0"])
+        precondition(replayResult()["edits"] == 1,
+                     "second edit backfills without resetting existing cursors")
+        precondition(row("SELECT group_concat(content,'>') FROM (SELECT content FROM revisions WHERE message_id=3329 ORDER BY version_index)") ==
+                     ["Verified original>Edit one>Edit two"], "all edits survive in order")
+        precondition((try bridgeResult([lateEdit]))["duplicates"] == 1)
+        precondition(row("SELECT COUNT(*) FROM revisions WHERE message_id=3329") == ["3"])
+        print("Goldgram #229: verified late original and idempotent replay OK")
+
         // Simulate the existing account-clear cascade on the same SQLite.
         precondition(sqlite3_exec(db, "PRAGMA foreign_keys=ON; DELETE FROM dialogs;",
                                   nil, nil, nil) == SQLITE_OK)

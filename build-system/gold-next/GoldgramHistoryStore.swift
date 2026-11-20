@@ -1884,17 +1884,6 @@ public final class GoldgramArchiveReader: NSObject {
 @_cdecl("goldgram_bind_active_account_v1")
 public func goldgramBindActiveAccountV1(_ id: Int64) {
     GoldgramArchiveReader.updateSelectedAccount(id)
-    // #228: account binding also happens on ordinary chat startup. Previously
-    // the Live singleton was only started by opening the archive/Live menu,
-    // leaving regular channel chats without the 12-second polling timer after
-    // a cold launch. Start only for an already paired and explicitly enabled
-    // account, never change the pinned identity, route or committed cursors.
-    guard id > 0, UserDefaults.standard.bool(
-        forKey: "GoldgramLiveV1.\(id).enabled") else { return }
-    DispatchQueue.main.async {
-        guard GoldgramArchiveReader.activeAccountId()?.int64Value == id else { return }
-        GoldgramLiveBridge.shared.start(account: id)
-    }
 }
 
 
@@ -2406,6 +2395,21 @@ private enum GoldgramPhone8Bridge {
                 }
             } catch { finish(["error": 1]) }
         }
+    }
+
+    // #229: server-side send time and a real Raw-new provenance together
+    // permit out-of-order receipt. A history snapshot is never enough.
+    private static func verifiedLateRawOriginal(
+        _ row: [String: Any], first: Int64, edited: Int64?,
+        parse: (String) -> Date?
+    ) -> Bool {
+        guard let edited, edited > 0, edited < first,
+              row["original_evidence_source"] as? String == "raw_update_new_message",
+              row["original_evidence_kind"] as? String == "new_unedited",
+              let sentText = row["telegram_sent_at"] as? String,
+              let sentDate = parse(sentText) else { return false }
+        let sent = Int64(sentDate.timeIntervalSince1970 * 1000)
+        return sent > 0 && sent <= edited && sent <= first
     }
 
     // A source edit older than the first local observation cannot certify
@@ -3034,7 +3038,19 @@ private enum GoldgramPhone8Bridge {
                         // without declaring a verified original or adding a revision.
                         // Saving the pending receipt in this transaction allows the
                         // live cursor to advance after COMMIT and unblock safe rows.
-                        let chronologyBroken = edited != nil && edited! < first
+                        let provenLate = verifiedLateRawOriginal(
+                            row, first: first, edited: edited, parse: parse)
+                        if provenLate {
+                            // Replay a previously held real original without
+                            // rewinding committed cursors or trusting snapshots.
+                            let localOriginal = try originalInArchive(db: db, scope: scope)
+                            if localOriginal == nil || localOriginal == original {
+                                try GoldgramHistoryStore.archiveSQL(
+                                    "DELETE FROM bridge_chronology_holds_v1 WHERE peer_kind=? AND peer_id=? AND message_id=?;",
+                                    db: db, ints: scope)
+                            }
+                        }
+                        let chronologyBroken = edited != nil && edited! < first && !provenLate
                         let chronologyHeld = try isChronologyHeld(db: db, scope: scope)
                         if chronologyBroken || chronologyHeld {
                             if chronologyBroken {
@@ -3425,6 +3441,9 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
     private var session: URLSession?
     private var runningAccount: Int64?
     private var inFlight = false
+    // Enabled only after a successful feature advertisement from V216.
+    // This keeps V215 and the same account/pin working unchanged.
+    private var proofCapable = false
     private var runToken: UInt64 = 0
     // Only the Main queue mutates the transport state; URLSession's challenge
     // delegate uses this lock solely for the expected certificate hash.
@@ -3797,6 +3816,7 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
         pinLock.unlock()
         runningAccount = nil
         inFlight = false
+        proofCapable = false
         localRetryAt = 0
         retryNotBefore = 0
         rateLimitedUntil = 0
@@ -3886,10 +3906,12 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
         #endif
         let edits = max(0, defaults.integer(forKey: key(account, "editsCursor")))
         let deletions = max(0, defaults.integer(forKey: key(account, "deletionsCursor")))
+        let proofs = max(0, defaults.integer(forKey: key(account, "proofCursor")))
+        let proofSuffix = proofCapable ? "&proofs_after=\(proofs)" : ""
         let host = selectedHost(account: account)
         if sessionHost != host { renewSession(host: host) }
         guard let session, let url = URL(string:
-            "https://\(host):\(Self.port(for: host))/v1/events?edits_after=\(edits)&deletions_after=\(deletions)") else {
+            "https://\(host):\(Self.port(for: host))/v1/events?edits_after=\(edits)&deletions_after=\(deletions)\(proofSuffix)") else {
             return
         }
         inFlight = true
@@ -3934,6 +3956,7 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
                       rows.count <= 40,
                       let nextEdits = payload["next_edit_cursor"] as? Int,
                       let nextDeletes = payload["next_delete_cursor"] as? Int,
+                      (payload["next_proof_cursor"] as? Int ?? proofs) >= proofs,
                       nextEdits >= edits, nextDeletes >= deletions else {
                     self.failHTTP(422, retryAfter: nil)
                     return
@@ -3958,6 +3981,9 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
                     self.rateLimitedUntil = 0
                     self.defaults.set(nextEdits, forKey: self.key(account, "editsCursor"))
                     self.defaults.set(nextDeletes, forKey: self.key(account, "deletionsCursor"))
+                    let nextProofs = payload["next_proof_cursor"] as? Int ?? proofs
+                    self.defaults.set(nextProofs, forKey: self.key(account, "proofCursor"))
+                    self.proofCapable = (payload["proof_protocol"] as? Int == 1)
                     let changes = (result["edits"] ?? 0) + (result["deletions"] ?? 0)
                     let imported = result["imported"] ?? 0
                     let pending = result["pending"] ?? 0
@@ -3974,7 +4000,7 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
                     // Catch up the old archive quickly without waiting one
                     // 12-second interval per historical batch. Limited by
                     // the importer transaction and its single in-flight gate.
-                    if nextEdits > edits || nextDeletes > deletions {
+                    if nextEdits > edits || nextDeletes > deletions || nextProofs > proofs {
                         DispatchQueue.main.asyncAfter(
                             deadline: .now() + .milliseconds(Self.catchupDelayMs(host: host))) { [weak self] in
                             guard let self, self.runToken == ticket else { return }
