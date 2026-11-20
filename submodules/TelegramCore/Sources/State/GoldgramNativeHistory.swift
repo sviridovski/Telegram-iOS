@@ -964,59 +964,124 @@ private final class GoldgramTrackedInlineMessage {
     }
 }
 
+// #231: weak account binding means Live can reconcile locally cached Postbox
+// messages even before their chat bubbles have been laid out.
+private final class GoldgramBoundInlineAccount {
+    weak var account: Account?
+    init(_ account: Account) { self.account = account }
+}
+
 private enum GoldgramInlineArchiveReconciler {
     private static let queue = DispatchQueue(label: "goldgram.inline.archive.reconcile", qos: .utility)
     private static var tracked: [String: GoldgramTrackedInlineMessage] = [:]
     private static var checked = Set<String>()
+    private static var accounts: [Int64: GoldgramBoundInlineAccount] = [:]
     private static var observer: NSObjectProtocol?
 
-    private static func reconcile(_ account: Account, _ id: MessageId) {
+    // A bounded, message-specific Postbox transaction. It does not fetch
+    // missing messages from Telegram or change Telegram-owned message text.
+    private static func reconcile(_ account: Account, _ ids: Set<MessageId>) {
+        guard !ids.isEmpty else { return }
         let _ = (account.postbox.transaction { transaction -> Void in
             guard goldgramNativeHistoryEnabled() else { return }
-            goldgramApplyVerifiedInlineHistory(
-                accountPeerId: account.peerId, transaction: transaction, id: id)
+            for id in ids {
+                goldgramApplyVerifiedInlineHistory(
+                    accountPeerId: account.peerId, transaction: transaction, id: id)
+            }
         }).start()
+    }
+
+    private static func messageId(_ scope: [String: Int64]) -> MessageId? {
+        guard let kind = scope["peerKind"], let peer = scope["peerId"],
+              let mid = scope["messageId"], peer > 0,
+              let id = Int32(exactly: mid), id > 0 else { return nil }
+        let namespace: PeerId.Namespace
+        switch kind {
+        case 0: namespace = Namespaces.Peer.CloudUser
+        case 1: namespace = Namespaces.Peer.CloudGroup
+        case 2, 3: namespace = Namespaces.Peer.CloudChannel
+        default: return nil
+        }
+        let peerId = PeerId(namespace: namespace,
+                            id: PeerId.Id._internalFromInt64Value(peer))
+        return MessageId(peerId: peerId, namespace: Namespaces.Message.Cloud, id: id)
+    }
+
+    private static func installObserver() {
+        guard observer == nil else { return }
+        observer = NotificationCenter.default.addObserver(
+            forName: Notification.Name("GoldgramArchiveChanged"),
+            object: nil, queue: nil) { note in
+            let changedAccount = (note.object as? NSNumber)?.int64Value
+            let scopes = note.userInfo?["inlineScopes"] as? [[String: Int64]]
+            queue.async {
+                if let scopes, !scopes.isEmpty, let changedAccount {
+                    // #231: update even when no bubble for this ID was watched.
+                    if let account = accounts[changedAccount]?.account {
+                        let ids = Set(scopes.compactMap { messageId($0) })
+                        reconcile(account, ids)
+                    }
+                    for (key, item) in tracked {
+                        if item.account?.peerId.id._internalGetInt64Value() == changedAccount {
+                            checked.remove(key)
+                        }
+                    }
+                    return
+                }
+                // Old/native events without scopes keep the original fallback.
+                var batches: [Int64: (Account, Set<MessageId>)] = [:]
+                for (key, item) in Array(tracked) {
+                    guard let account = item.account else {
+                        tracked.removeValue(forKey: key)
+                        checked.remove(key)
+                        continue
+                    }
+                    let accountId = account.peerId.id._internalGetInt64Value()
+                    if let changedAccount, accountId != changedAccount { continue }
+                    checked.remove(key)
+                    if checked.insert(key).inserted {
+                        var batch = batches[accountId] ?? (account, Set<MessageId>())
+                        batch.1.insert(item.id)
+                        batches[accountId] = batch
+                    }
+                }
+                for (_, batch) in batches {
+                    reconcile(batch.0, batch.1)
+                }
+            }
+        }
+    }
+
+    static func bind(account: Account) {
+        queue.async {
+            accounts[account.peerId.id._internalGetInt64Value()] = GoldgramBoundInlineAccount(account)
+            installObserver()
+        }
     }
 
     static func watch(account: Account, id: MessageId) {
         guard id.namespace == Namespaces.Message.Cloud, id.id > 0,
               goldgramNativeHistoryEnabled() else { return }
         queue.async {
-            if observer == nil {
-                observer = NotificationCenter.default.addObserver(
-                    forName: Notification.Name("GoldgramArchiveChanged"),
-                    object: nil, queue: nil) { note in
-                    let changedAccount = (note.object as? NSNumber)?.int64Value
-                    queue.async {
-                        for (key, trackedMessage) in Array(tracked) {
-                            guard let active = trackedMessage.account else {
-                                tracked.removeValue(forKey: key)
-                                checked.remove(key)
-                                continue
-                            }
-                            if let changedAccount,
-                               active.peerId.id._internalGetInt64Value() != changedAccount { continue }
-                            checked.remove(key)
-                            if checked.insert(key).inserted {
-                                reconcile(active, trackedMessage.id)
-                            }
-                        }
-                    }
-                }
-            }
+            accounts[account.peerId.id._internalGetInt64Value()] = GoldgramBoundInlineAccount(account)
+            installObserver()
             let key = "\(account.peerId.toInt64()):\(id.peerId.toInt64()):\(id.namespace):\(id.id)"
             if tracked[key] == nil && tracked.count >= 512 {
                 tracked.removeAll(keepingCapacity: true)
                 checked.removeAll(keepingCapacity: true)
             }
             tracked[key] = GoldgramTrackedInlineMessage(account: account, id: id)
-            if checked.insert(key).inserted { reconcile(account, id) }
+            if checked.insert(key).inserted { reconcile(account, [id]) }
         }
     }
 }
 
-/// Called by the existing text bubble after its message is available. Actual
-/// archive reads and Postbox writes run asynchronously, never inside layout.
+// Register one main-app account without retaining it or enabling Live.
+public func goldgramBindInlineArchiveAccount(account: Account) {
+    GoldgramInlineArchiveReconciler.bind(account: account)
+}
+
+/// The existing bubble fallback also applies after an uncached message loads.
 public func goldgramWatchInlineArchiveHistory(account: Account, id: MessageId) {
     GoldgramInlineArchiveReconciler.watch(account: account, id: id)
 }

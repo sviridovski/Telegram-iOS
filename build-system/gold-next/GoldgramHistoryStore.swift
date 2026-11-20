@@ -2879,6 +2879,20 @@ private enum GoldgramPhone8Bridge {
             var counts = ["imported": 0, "edits": 0, "deletions": 0,
                           "duplicates": 0, "unknownChannels": 0, "conflicts": 0,
                           "pending": 0, "chronologyPending": 0, "invalid": 0]
+            // #231: exact message scopes for post-COMMIT Postbox reconciliation.
+            // No archive scan or additional Telegram request.
+            var changedScopes: [[String: Int64]] = []
+            var changedKeys = Set<String>()
+            func markChanged(_ scope: [Int64]) {
+                guard scope.count == 3, (0...3).contains(scope[0]),
+                      scope[1] > 0, scope[2] > 0 else { return }
+                let key = "\(scope[0]):\(scope[1]):\(scope[2])"
+                if changedKeys.insert(key).inserted {
+                    changedScopes.append([
+                        "peerKind": scope[0], "peerId": scope[1], "messageId": scope[2]
+                    ])
+                }
+            }
             do {
                 let db = try GoldgramHistoryStore.archiveConnection(for: accountId)
                 try GoldgramHistoryStore.archiveSQL("BEGIN IMMEDIATE;", db: db, ints: [])
@@ -3121,6 +3135,7 @@ private enum GoldgramPhone8Bridge {
                             try mergeTrustedBridgeMetadata(row, db: db, scope: scope,
                                                            now: now, parse: parse)
                             counts[recovered, default: 0] += 1
+                            if recovered == "edits" { markChanged(scope) }
                             continue
                         }
                         let firstOriginal = knownOriginal == nil
@@ -3141,6 +3156,7 @@ private enum GoldgramPhone8Bridge {
                                 attempt: nil, concurrentEdit: false, committedAt: now,
                                 enqueueState: "unknown", commitState: "unknown")
                             counts["imported", default: 0] += 1
+                            markChanged(scope)
                         }
                         // A pre-edit original is independently useful even when
                         // the remote latest edit cannot be safely ordered against
@@ -3191,6 +3207,7 @@ private enum GoldgramPhone8Bridge {
                         }
                         try saveReceipt(db: db, key: key,
                                         status: "applied", payload: nil)
+                        markChanged(scope)
                     }
                     try GoldgramHistoryStore.archiveSQL("COMMIT;", db: db, ints: [])
                 } catch {
@@ -3200,7 +3217,8 @@ private enum GoldgramPhone8Bridge {
                 DispatchQueue.main.async {
                     NotificationCenter.default.post(
                         name: Notification.Name("GoldgramArchiveChanged"),
-                        object: NSNumber(value: accountId))
+                        object: NSNumber(value: accountId),
+                        userInfo: changedScopes.isEmpty ? nil : ["inlineScopes": changedScopes])
                 }
                 finish(counts)
             } catch {

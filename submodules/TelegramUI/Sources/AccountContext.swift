@@ -685,6 +685,11 @@ public final class AccountContextImpl: AccountContext {
                 return try await requestPasscodeAuthentication(context: self, scope: .resource(namespace: request.namespace), lifetime: request.lifetime, biometricReason: self.sharedContext.currentPresentationData.with { $0 }.strings.Wallet_AuthenticationReason, authenticateBiometrics: authenticateBiometrics)
             }
         }
+        // #231: reconcile committed iPhone 8 history for offscreen Postbox
+        // messages, without opening or scrolling their chats.
+        if sharedContext.applicationBindings.isMainApp && !temp {
+            goldgramBindInlineArchiveAccount(account: account)
+        }
     }
 
     deinit {

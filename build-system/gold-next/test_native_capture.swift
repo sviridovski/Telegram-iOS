@@ -500,6 +500,18 @@ struct NativeCaptureFixture {
                      "never label an unverified first-seen edit as original")
         precondition(replayResult().isEmpty, "restored receipt is idempotent")
 
+        // #231: capture the message-scoped notification emitted after COMMIT.
+        var deliveredScopes: [[String: Int64]] = []
+        let scopeObserver = NotificationCenter.default.addObserver(
+            forName: Notification.Name("GoldgramArchiveChanged"),
+            object: nil, queue: nil) { note in
+            guard (note.object as? NSNumber)?.int64Value == account,
+                  let scopes = note.userInfo?["inlineScopes"] as? [[String: Int64]]
+                  else { return }
+            deliveredScopes.append(contentsOf: scopes)
+        }
+        defer { NotificationCenter.default.removeObserver(scopeObserver) }
+
         // #229: an authentic Raw-new original arrives after the first edit,
         // although Telegram's Message.date correctly predates both edits.
         let lateSent = formatter.string(from: Date().addingTimeInterval(-120))
@@ -548,7 +560,13 @@ struct NativeCaptureFixture {
         let finalDuplicate = try bridgeResult([lateEdit])
         precondition(finalDuplicate["duplicates"] == 1)
         precondition(row("SELECT COUNT(*) FROM revisions WHERE message_id=3329") == ["3"])
+        precondition(deliveredScopes.contains(where: {
+            $0["peerKind"] == 2 && $0["peerId"] == 99 && $0["messageId"] == 3329
+        }), "scoped Postbox update must follow the archive COMMIT")
+        precondition(!deliveredScopes.contains(where: { $0["messageId"] == 9999 }),
+                     "only committed message IDs may be notified")
         print("Goldgram #229: verified late original and idempotent replay OK")
+        print("Goldgram #231: post-COMMIT scoped reconciliation signal OK")
 
         // Simulate the existing account-clear cascade on the same SQLite.
         precondition(sqlite3_exec(db, "PRAGMA foreign_keys=ON; DELETE FROM dialogs;",
