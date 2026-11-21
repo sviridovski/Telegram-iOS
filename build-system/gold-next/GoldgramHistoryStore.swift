@@ -179,6 +179,10 @@ enum GoldgramHistoryStore {
         // #133: additive, backward-compatible: old #131 audits retain unknown
         // commit state/time. No user_version bump and no archive rebuild.
         try ensureOriginalEvidenceColumns(on: db)
+        // #235: every projection refresh queries events by the full message
+        // scope. The previous dialog/time index could scan thousands of events
+        // from a busy discussion for EACH edit, including on Live import.
+        try? execute("CREATE INDEX IF NOT EXISTS goldgram_events_scope_kind_v235 ON events(peer_kind,peer_id,message_id,event_kind,observed_at);", on: db)
         // Additive transactional read projection; failure must never block capture.
         GoldgramArchiveReader.ensureFastIndex(on: db)
 
@@ -814,57 +818,102 @@ fileprivate extension GoldgramHistoryStore {
             throw StorageError.sqlite(SQLITE_MISUSE)
         }
         let db = try archiveConnection(for: accountId)
-        var stmt: OpaquePointer?
-        let sql = category == 1 ? """
-        SELECT m.peer_kind,m.peer_id,m.message_id FROM messages m
-        WHERE EXISTS (SELECT 1 FROM events e WHERE e.peer_kind=m.peer_kind
-          AND e.peer_id=m.peer_id AND e.message_id=m.message_id AND e.event_kind=1)
-          OR EXISTS (SELECT 1 FROM revisions r WHERE r.peer_kind=m.peer_kind
-          AND r.peer_id=m.peer_id AND r.message_id=m.message_id AND r.version_index>0);
-        """ : """
-        SELECT m.peer_kind,m.peer_id,m.message_id FROM messages m
-        WHERE m.is_deleted=1 OR EXISTS (SELECT 1 FROM events e
-          WHERE e.peer_kind=m.peer_kind AND e.peer_id=m.peer_id
-          AND e.message_id=m.message_id AND e.event_kind=2);
-        """
-        let prepared = sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
-        guard prepared == SQLITE_OK, let rows = stmt else {
-            if let stmt { sqlite3_finalize(stmt) }
-            throw StorageError.sqlite(prepared)
-        }
-        var scopes: [[String: Any]] = []
-        while true {
-            let step = sqlite3_step(rows)
-            if step == SQLITE_DONE { break }
-            guard step == SQLITE_ROW else {
-                sqlite3_finalize(rows)
-                throw StorageError.sqlite(step)
-            }
-            scopes.append([
-                "peerKind": NSNumber(value: sqlite3_column_int(rows, 0)),
-                "peerId": NSNumber(value: sqlite3_column_int64(rows, 1)),
-                "messageId": NSNumber(value: sqlite3_column_int64(rows, 2))
-            ])
-        }
-        sqlite3_finalize(rows)
+        // #235: choose affected scopes directly from event/revision indexes,
+        // not an EXISTS scan across every original message in the archive.
+        let selection = category == 1 ? """
+            SELECT peer_kind,peer_id,message_id FROM events WHERE event_kind=1
+            UNION SELECT peer_kind,peer_id,message_id FROM revisions WHERE version_index>0
+            """ : """
+            SELECT peer_kind,peer_id,message_id FROM events WHERE event_kind=2
+            UNION SELECT peer_kind,peer_id,message_id FROM messages WHERE is_deleted=1
+            """
         try archiveSQL("BEGIN IMMEDIATE;", db: db, ints: [])
         do {
+            try execute("""
+                CREATE TEMP TABLE IF NOT EXISTS goldgram_purge_scopes_v235(
+                    peer_kind INTEGER NOT NULL,peer_id INTEGER NOT NULL,message_id INTEGER NOT NULL,
+                    PRIMARY KEY(peer_kind,peer_id,message_id)) WITHOUT ROWID;
+                DELETE FROM temp.goldgram_purge_scopes_v235;
+                INSERT OR IGNORE INTO temp.goldgram_purge_scopes_v235(peer_kind,peer_id,message_id)
+                \(selection);
+                """, on: db)
+            var scopes: [[String: Any]] = []
+            do {
+                var ptr: OpaquePointer?
+                let rc = sqlite3_prepare_v2(db, "SELECT peer_kind,peer_id,message_id FROM temp.goldgram_purge_scopes_v235;", -1, &ptr, nil)
+                guard rc == SQLITE_OK, let stmt = ptr else {
+                    if let ptr { sqlite3_finalize(ptr) }
+                    throw StorageError.sqlite(rc)
+                }
+                defer { sqlite3_finalize(stmt) }
+                while true {
+                    let step = sqlite3_step(stmt)
+                    if step == SQLITE_DONE { break }
+                    guard step == SQLITE_ROW else { throw StorageError.sqlite(step) }
+                    scopes.append([
+                        "peerKind": NSNumber(value: sqlite3_column_int(stmt, 0)),
+                        "peerId": NSNumber(value: sqlite3_column_int64(stmt, 1)),
+                        "messageId": NSNumber(value: sqlite3_column_int64(stmt, 2))
+                    ])
+                }
+            }
+
+            // Only suspend the THREE known derived-index triggers that would
+            // execute repeatedly during this bulk operation. Their exact SQL
+            // definitions are restored in this SAME transaction. All other
+            // triggers, foreign keys, receipts and capture rules stay active.
+            let names = category == 1
+                ? ["goldgram_ui_fast_source_event_delete_v1", "goldgram_ui_fast_source_revision_delete_v1"]
+                : ["goldgram_ui_fast_source_event_delete_v1", "goldgram_ui_fast_source_message_update_v1"]
+            var definitions: [(String, String)] = []
+            do {
+                var ptr: OpaquePointer?
+                let rc = sqlite3_prepare_v2(db, "SELECT name,sql FROM sqlite_master WHERE type='trigger' AND name IN ('goldgram_ui_fast_source_event_delete_v1','goldgram_ui_fast_source_revision_delete_v1','goldgram_ui_fast_source_message_update_v1');", -1, &ptr, nil)
+                guard rc == SQLITE_OK, let stmt = ptr else {
+                    if let ptr { sqlite3_finalize(ptr) }
+                    throw StorageError.sqlite(rc)
+                }
+                defer { sqlite3_finalize(stmt) }
+                while true {
+                    let step = sqlite3_step(stmt)
+                    if step == SQLITE_DONE { break }
+                    guard step == SQLITE_ROW else { throw StorageError.sqlite(step) }
+                    if let n = sqlite3_column_text(stmt, 0), let sql = sqlite3_column_text(stmt, 1) {
+                        let name = String(cString: n)
+                        if names.contains(name) { definitions.append((name, String(cString: sql))) }
+                    }
+                }
+            }
+            // Fall back to ordinary trigger execution if the projection is
+            // unavailable or only partially installed. Never drop a subset.
+            let bulk = definitions.count == names.count && GoldgramArchiveReader.fastIndexAvailable(db)
+            if bulk {
+                for (name, _) in definitions {
+                    try execute("DROP TRIGGER \(name);", on: db)
+                }
+            }
             if category == 1 {
-                // For an edited-and-deleted message keep the delete evidence.
                 try execute("DELETE FROM events WHERE event_kind=1;", on: db)
                 try execute("DELETE FROM revisions WHERE version_index>0;", on: db)
             } else {
-                // For an edited-and-deleted message keep the edit evidence.
                 try execute("DELETE FROM events WHERE event_kind=2;", on: db)
                 try execute("UPDATE messages SET is_deleted=0 WHERE is_deleted=1;", on: db)
                 try execute("DELETE FROM unresolved_deletions;", on: db)
             }
+            if bulk {
+                // Refresh each changed message exactly ONCE using the same
+                // visibility predicate as normal capture, not guessed flags.
+                try execute(GoldgramArchiveReader.bulkPurgeProjectionSQL, on: db)
+                for (_, sql) in definitions { try execute(sql, on: db) }
+            }
+            try execute("DELETE FROM temp.goldgram_purge_scopes_v235;", on: db)
             try archiveSQL("COMMIT;", db: db, ints: [])
+            return scopes
         } catch {
+            // SQLite transactional DDL restores all dropped triggers on rollback.
             try? archiveSQL("ROLLBACK;", db: db, ints: [])
             throw error
         }
-        return scopes
     }
 
     // OFF by default. A timer is a retention interval (clear this category
@@ -1019,6 +1068,7 @@ typealias GoldgramNativeNavigate = @convention(c) (
 @objc(GoldgramArchiveReader)
 public final class GoldgramArchiveReader: NSObject {
     private static let accountLock = NSLock()
+    private static let archiveReadQueue = DispatchQueue(label: "goldgram.history.read.v235", qos: .userInitiated)
     private static var selectedAccount: Int64 = 0
     private static var nativeNavigate: GoldgramNativeNavigate?
     private static var journalTimer: DispatchSourceTimer?
@@ -1133,6 +1183,7 @@ public final class GoldgramArchiveReader: NSObject {
         guard isSelected(id), category == 1 || category == 3 else {
             completion(["status": "account_changed"]); return
         }
+        let started = ProcessInfo.processInfo.systemUptime
         GoldgramHistoryStore.enqueueArchiveWork {
             guard self.isSelected(id) else {
                 DispatchQueue.main.async { completion(["status": "account_changed"]) }
@@ -1140,11 +1191,12 @@ public final class GoldgramArchiveReader: NSObject {
             }
             do {
                 let scopes = try GoldgramHistoryStore.purgeJournal(accountId: id, category: category)
+                let milliseconds = Int((ProcessInfo.processInfo.systemUptime - started) * 1000)
                 UserDefaults.standard.set(Date().timeIntervalSince1970,
                     forKey: GoldgramHistoryStore.retentionLastKey(id, category))
                 DispatchQueue.main.async {
                     self.postJournalPurge(account: id, category: category, scopes: scopes)
-                    completion(["status": "ok"])
+                    completion(["status": "ok", "elapsedMs": milliseconds, "affected": scopes.count])
                 }
             } catch {
                 DispatchQueue.main.async { completion(["status": "unavailable"]) }
@@ -1160,7 +1212,7 @@ public final class GoldgramArchiveReader: NSObject {
             object: NSNumber(value: account),
             userInfo: ["category": category, "scopes": scopes])
         NotificationCenter.default.post(name: Notification.Name("GoldgramArchiveChanged"),
-            object: NSNumber(value: account))
+            object: NSNumber(value: account), userInfo: ["journalPurge": true])
     }
 
     @objc(setJournalRetentionForAccount:category:hours:)
@@ -1511,7 +1563,22 @@ public final class GoldgramArchiveReader: NSObject {
         completed = true
     }
 
-    private static func fastIndexAvailable(_ db: OpaquePointer) -> Bool {
+    // #235: drive by the temporary affected-scope table; totals triggers
+    // remain live so the counter delta is committed with the source rows.
+    fileprivate static var bulkPurgeProjectionSQL: String {
+        """
+        INSERT INTO goldgram_ui_fast_rows_v1
+          (peer_kind,peer_id,message_id,visible,edited,deleted,newest_at,deleted_at,sort_at)
+        SELECT \(fastSelectColumns)
+        FROM temp.goldgram_purge_scopes_v235 p CROSS JOIN messages m
+        WHERE m.peer_kind=p.peer_kind AND m.peer_id=p.peer_id AND m.message_id=p.message_id
+        ON CONFLICT(peer_kind,peer_id,message_id) DO UPDATE SET
+          visible=excluded.visible,edited=excluded.edited,deleted=excluded.deleted,
+          newest_at=excluded.newest_at,deleted_at=excluded.deleted_at,sort_at=excluded.sort_at;
+        """
+    }
+
+    fileprivate static func fastIndexAvailable(_ db: OpaquePointer) -> Bool {
         var ptr: OpaquePointer?
         guard sqlite3_prepare_v2(db,
             "SELECT id FROM goldgram_ui_fast_totals_v1 WHERE id=1 LIMIT 1;",
@@ -1620,7 +1687,11 @@ public final class GoldgramArchiveReader: NSObject {
         // Only accept bounded UUIDs from this same selected account/test.
         let attemptTokens = Array(Set((request["attemptTokens"] as? [String] ?? [])
             .filter { UUID(uuidString: $0) != nil })).prefix(24)
-        GoldgramHistoryStore.enqueueArchiveWork {
+        let readWork = {
+            guard self.isSelected(accountId) else {
+                DispatchQueue.main.async { completion(["status": "account_changed", "items": []]) }
+                return
+            }
             let response = self.read(
                 accountId: accountId, mode: mode,
                 kinds: kinds, peerId: peerId, peerKind: scopedPeerKind, sources: sources, deletedOnly: category == 3,
@@ -1631,6 +1702,17 @@ public final class GoldgramArchiveReader: NSObject {
             DispatchQueue.main.async {
                 completion(self.isSelected(accountId) ? response as NSDictionary : ["status": "account_changed", "items": []])
             }
+        }
+        // UI reads use a separate read-only WAL connection; diagnostics keep
+        // their previous FIFO/admission behavior. A committed write notifies
+        // the screen to refresh; an in-progress write is never exposed.
+        if ["dialogs", "messages", "combined", "totals"].contains(mode) {
+            archiveReadQueue.async {
+                if GoldgramHistoryStore.archiveIsOpen { readWork() }
+                else { GoldgramHistoryStore.enqueueArchiveWork(readWork) }
+            }
+        } else {
+            GoldgramHistoryStore.enqueueArchiveWork(readWork)
         }
     }
 
@@ -1679,6 +1761,12 @@ public final class GoldgramArchiveReader: NSObject {
               sqlite3_exec(db, "PRAGMA query_only = ON;", nil, nil, nil) == SQLITE_OK else {
             return ["status": "unavailable", "items": []]
         }
+
+        // A single WAL snapshot for all the SELECTs in this UI response.
+        guard sqlite3_exec(db, "BEGIN;", nil, nil, nil) == SQLITE_OK else {
+            return ["status": "unavailable", "items": []]
+        }
+        defer { _ = sqlite3_exec(db, "ROLLBACK;", nil, nil, nil) }
 
         var versionStatement: OpaquePointer?
         guard sqlite3_prepare_v2(db, "PRAGMA user_version;", -1, &versionStatement, nil) == SQLITE_OK,
@@ -3637,7 +3725,7 @@ extension GoldgramHistoryStore {
                 NotificationCenter.default.post(
                     name: Notification.Name("GoldgramArchiveChanged"),
                     object: NSNumber(value: accountId),
-                    userInfo: ["inlineScopes": scopes])
+                    userInfo: ["inlineScopes": scopes, "inlineOnly": true])
             }
         }
     }
@@ -3736,6 +3824,7 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
     // Enabled only after a successful feature advertisement from V216.
     // This keeps V215 and the same account/pin working unchanged.
     private var proofCapable = false
+    private var lastInlineSweep: TimeInterval = 0
     private var runToken: UInt64 = 0
     // Only the Main queue mutates the transport state; URLSession's challenge
     // delegate uses this lock solely for the expected certificate hash.
@@ -3996,7 +4085,9 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
     // #224: fast LAN catch-up only. Keep the gentler backoff for the VPS.
     // Both paths retain the single in-flight gate and cursor-after-COMMIT.
     static func catchupDelayMs(host: String) -> Int {
-        privateIPv4(host) ? 100 : 600
+        // #235: same single in-flight gate and HTTP Retry-After policy.
+        // Reserve RUVDS remains conservative; F3 and LAN catch up faster.
+        privateIPv4(host) ? 40 : (host == GoldgramLiveRoutePolicy.f3Host ? 150 : 600)
     }
 
     static func supportedHost(_ value: String) -> Bool {
@@ -4109,6 +4200,7 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
         runningAccount = nil
         inFlight = false
         proofCapable = false
+        lastInlineSweep = 0
         localRetryAt = 0
         retryNotBefore = 0
         rateLimitedUntil = 0
@@ -4278,10 +4370,16 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
                     self.proofCapable = (payload["proof_protocol"] as? Int == 1)
                     GoldgramArchiveReader.runJournalAutoclearIfDue(
                         forAccount: NSNumber(value: account))
-                    // #232: repair previously imported, verified history in
-                    // offscreen Postbox messages even when Live has no new rows.
-                    // No Telegram query or modification of saved revisions.
-                    GoldgramHistoryStore.notifyPreviouslyImportedInline(accountId: account)
+                    // #235: new data still reconciles from its own COMMIT.
+                    // The optional historical sweep must not compete with
+                    // every 40-row catch-up packet. Keep it alive on idle
+                    // polls and at most once per 30s during sustained backlog.
+                    let advanced = nextEdits > edits || nextDeletes > deletions || nextProofs > proofs
+                    let sweepNow = ProcessInfo.processInfo.systemUptime
+                    if (!advanced && rows.isEmpty) || sweepNow - self.lastInlineSweep >= 30 {
+                        self.lastInlineSweep = sweepNow
+                        GoldgramHistoryStore.notifyPreviouslyImportedInline(accountId: account)
+                    }
                     let changes = (result["edits"] ?? 0) + (result["deletions"] ?? 0)
                     let imported = result["imported"] ?? 0
                     let pending = result["pending"] ?? 0
@@ -4298,7 +4396,7 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
                     // Catch up the old archive quickly without waiting one
                     // 12-second interval per historical batch. Limited by
                     // the importer transaction and its single in-flight gate.
-                    if nextEdits > edits || nextDeletes > deletions || nextProofs > proofs {
+                    if advanced {
                         DispatchQueue.main.asyncAfter(
                             deadline: .now() + .milliseconds(Self.catchupDelayMs(host: host))) { [weak self] in
                             guard let self, self.runToken == ticket else { return }

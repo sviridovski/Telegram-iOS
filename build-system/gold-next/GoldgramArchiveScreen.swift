@@ -1191,16 +1191,32 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
     // succeeded. Rapid catch-up batches are debounced so the list isn't
     // repeatedly redrawn while the backlog is still being imported.
     @objc private func didCommitLiveArchiveChange(_ note: Notification) {
+        // Historical Postbox-only sweeps do not change archive rows.
+        if note.userInfo?["inlineOnly"] as? Bool == true { return }
+        if note.userInfo?["journalPurge"] as? Bool == true {
+            Self.fastFolderCache.removeAllObjects()
+        }
         guard let account = (note.object as? NSNumber)?.int64Value,
               account == boundAccount,
               GoldgramArchiveReader.activeAccountId()?.int64Value == account,
               isViewLoaded, view.window != nil else { return }
-        liveRefreshWork?.cancel()
+        // #235: throttle, not a trailing debounce. Continuous packets must
+        // not postpone the FIRST visible update until the backlog is empty.
+        if liveRefreshWork != nil { return }
+        scheduleLiveRefresh(account: account)
+    }
+
+    private func scheduleLiveRefresh(account: Int64) {
         let work = DispatchWorkItem { [weak self] in
-            guard let self, self.isViewLoaded, self.view.window != nil,
+            guard let self else { return }
+            self.liveRefreshWork = nil
+            guard self.isViewLoaded, self.view.window != nil,
                   self.boundAccount == account,
                   GoldgramArchiveReader.activeAccountId()?.int64Value == account else { return }
-            self.liveRefreshWork = nil
+            if self.inFlight {
+                self.scheduleLiveRefresh(account: account)
+                return
+            }
             self.load(reset: true)
         }
         liveRefreshWork = work
@@ -1632,7 +1648,7 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
                 let result = UIAlertController(
                     title: ok ? "Журнал очищен" : "Ошибка очистки",
                     message: ok
-                        ? "SQLite очищена. Соответствующие локальные снимки и атрибуты Postbox очищаются отдельными пакетами."
+                        ? "SQLite очищена за \(String(format: "%.2f", Double(response["elapsedMs"] as? Int ?? 0) / 1000)) с. Соответствующие локальные снимки и атрибуты Postbox очищаются отдельными пакетами."
                         : "Журнал не изменён или Telegram-аккаунт переключился.",
                     preferredStyle: .alert)
                 result.addAction(UIAlertAction(title: "OK", style: .default))

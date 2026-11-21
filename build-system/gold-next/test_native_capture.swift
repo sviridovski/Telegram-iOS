@@ -33,7 +33,7 @@ struct NativeCaptureFixture {
         precondition(GoldgramLiveBridge.port(for: "192.168.1.102") == 8873)
         precondition(GoldgramLiveBridge.port(for: "194.87.235.144") == 443)
         precondition(GoldgramLiveBridge.port(for: "179.253.88.30") == 443)
-        precondition(GoldgramLiveBridge.catchupDelayMs(host: "179.253.88.30") == 600)
+        precondition(GoldgramLiveBridge.catchupDelayMs(host: "179.253.88.30") == 150)
         // #225: HTTP limits must be respected across route/TLS retries.
         precondition(GoldgramLiveRetryPolicy.httpDelay(
             429, retryAfter: "120", failures: 1) == 120)
@@ -53,8 +53,8 @@ struct NativeCaptureFixture {
         precondition(GoldgramLiveRetryPolicy.isConnectionError(-1005))
         precondition(!GoldgramLiveRetryPolicy.isConnectionError(-1202))
         // #224: LAN catch-up is fast; the public relay retains backoff.
-        precondition(GoldgramLiveBridge.catchupDelayMs(host: "192.168.1.102") == 100)
-        precondition(GoldgramLiveBridge.catchupDelayMs(host: "10.8.0.1") == 100)
+        precondition(GoldgramLiveBridge.catchupDelayMs(host: "192.168.1.102") == 40)
+        precondition(GoldgramLiveBridge.catchupDelayMs(host: "10.8.0.1") == 40)
         precondition(GoldgramLiveBridge.catchupDelayMs(host: "194.87.235.144") == 600)
         let account = Int64.random(in: 7_000_000_000_000 ... 8_000_000_000_000)
         let url = try GoldgramHistoryStore.createOrOpen(accountId: account)
@@ -592,6 +592,33 @@ struct NativeCaptureFixture {
 
         // #233: category-specific journal clearing preserves the other
         // category and the baseline, even for an edited+deleted message.
+        // #235: production schema and triggers, 2700 messages, each with an
+        // edit, and every other message also deleted. Compare exact projected
+        // counts after each bulk operation and verify normal triggers survive.
+        GoldgramHistoryStore.storageQueue.sync {}
+        let massSQL = """
+        BEGIN IMMEDIATE;
+        INSERT OR IGNORE INTO dialogs(peer_kind,peer_id) VALUES(2,235);
+        WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<2700)
+        INSERT INTO messages(peer_kind,peer_id,message_id,original_text,original_observed,first_seen_at,last_seen_at,is_deleted)
+        SELECT 2,235,n,'base',1,1000,2000,n%2 FROM seq;
+        INSERT INTO revisions(peer_kind,peer_id,message_id,version_index,content,observed_at)
+        SELECT 2,235,message_id,0,'base',1000 FROM messages WHERE peer_kind=2 AND peer_id=235;
+        INSERT INTO revisions(peer_kind,peer_id,message_id,version_index,content,observed_at)
+        SELECT 2,235,message_id,1,'edited',2000 FROM messages WHERE peer_kind=2 AND peer_id=235;
+        INSERT INTO events(peer_kind,peer_id,message_id,event_kind,source,event_key,observed_at)
+        SELECT 2,235,message_id,1,'goldgram_iphone8_bridge_v1','mass-edit-'||message_id,2000
+        FROM messages WHERE peer_kind=2 AND peer_id=235;
+        INSERT INTO events(peer_kind,peer_id,message_id,event_kind,source,event_key,observed_at)
+        SELECT 2,235,message_id,2,'goldgram_iphone8_bridge_v1','mass-delete-'||message_id,3000
+        FROM messages WHERE peer_kind=2 AND peer_id=235 AND is_deleted=1;
+        COMMIT;
+        """
+        precondition(sqlite3_exec(db, massSQL, nil, nil, nil) == SQLITE_OK,
+                     "mass journal fixture must seed production tables")
+        precondition(row("SELECT COUNT(*) FROM goldgram_ui_fast_rows_v1 WHERE peer_id=235 AND edited=1") == ["2700"])
+        precondition(row("SELECT COUNT(*) FROM goldgram_ui_fast_rows_v1 WHERE peer_id=235 AND deleted=1") == ["1350"])
+        let triggerCountBefore = row("SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'goldgram_ui_fast_source_%'")
         let deleteCountBefore = row("SELECT COUNT(*) FROM events WHERE event_kind=2")
         precondition(Int(deleteCountBefore[0]) ?? 0 > 0)
         precondition(Int(row("SELECT COUNT(*) FROM events WHERE event_kind=1")[0]) ?? 0 > 0)
@@ -609,7 +636,11 @@ struct NativeCaptureFixture {
             precondition(answer != nil, "journal clear completion timed out")
             return answer as? [String: Any] ?? [:]
         }
+        let editClearStarted = ProcessInfo.processInfo.systemUptime
         precondition(clearCategory(1)["status"] as? String == "ok")
+        print("Goldgram #235: mass edit clear seconds", ProcessInfo.processInfo.systemUptime - editClearStarted)
+        precondition(row("SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'goldgram_ui_fast_source_%'") == triggerCountBefore)
+        precondition(row("SELECT COUNT(*) FROM goldgram_ui_fast_rows_v1 WHERE peer_id=235 AND deleted=1") == ["1350"])
         precondition(row("SELECT COUNT(*) FROM events WHERE event_kind=1") == ["0"])
         precondition(row("SELECT COUNT(*) FROM revisions WHERE version_index>0") == ["0"])
         precondition(row("SELECT COUNT(*) FROM events WHERE event_kind=2") == deleteCountBefore,
@@ -626,7 +657,16 @@ struct NativeCaptureFixture {
             forAccount: NSNumber(value: account), category: 1) == 12)
         precondition(GoldgramArchiveReader.journalRetention(
             forAccount: NSNumber(value: account), category: 3) == 168)
+        let deleteClearStarted = ProcessInfo.processInfo.systemUptime
         precondition(clearCategory(3)["status"] as? String == "ok")
+        print("Goldgram #235: mass deletion clear seconds", ProcessInfo.processInfo.systemUptime - deleteClearStarted)
+        precondition(row("SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'goldgram_ui_fast_source_%'") == triggerCountBefore)
+        // New writes after the purge must still update the restored projection.
+        let afterClearSQL = "INSERT INTO events(peer_kind,peer_id,message_id,event_kind,source,event_key,observed_at) VALUES(2,235,1,1,'goldgram_iphone8_bridge_v1','after-purge',4000);"
+        precondition(sqlite3_exec(db, afterClearSQL, nil, nil, nil) == SQLITE_OK)
+        precondition(row("SELECT edited FROM goldgram_ui_fast_rows_v1 WHERE peer_id=235 AND message_id=1") == ["1"])
+        precondition(sqlite3_exec(db, "DELETE FROM events WHERE event_key='after-purge';", nil, nil, nil) == SQLITE_OK)
+        precondition(row("SELECT edited FROM goldgram_ui_fast_rows_v1 WHERE peer_id=235 AND message_id=1") == ["0"])
         precondition(row("SELECT COUNT(*) FROM events WHERE event_kind=2") == ["0"])
         precondition(row("SELECT COUNT(*) FROM messages WHERE is_deleted=1") == ["0"])
         precondition(row("SELECT original_text FROM messages WHERE message_id=1") == originalBefore)

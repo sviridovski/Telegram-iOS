@@ -1074,7 +1074,19 @@ private enum GoldgramInlineArchiveReconciler {
             object: nil, queue: nil) { note in
             let changedAccount = (note.object as? NSNumber)?.int64Value
             let scopes = note.userInfo?["inlineScopes"] as? [[String: Int64]]
+            let journalPurge = note.userInfo?["journalPurge"] as? Bool == true
             queue.async {
+                // Purge has its own category-specific Postbox worker.
+                // Do not re-read hundreds of previously watched histories
+                // from SQLite just after deleting them.
+                if journalPurge {
+                    for (key, item) in tracked {
+                        if item.account?.peerId.id._internalGetInt64Value() == changedAccount {
+                            checked.remove(key)
+                        }
+                    }
+                    return
+                }
                 if let scopes, !scopes.isEmpty, let changedAccount {
                     // #231: update even when no bubble for this ID was watched.
                     if let account = accounts[changedAccount]?.account {
