@@ -161,6 +161,40 @@ func goldgramSaveSnapshot(transaction: Transaction, message: StoreMessage) -> Bo
     transaction.putItemCacheEntry(id: key, entry: entry)
     return true
 }
+// #233: category-specific physical snapshot cleanup. An edit clear must
+// preserve deleted-message snapshots; a deletion clear must preserve edits.
+// The old full-clear action still removes both collections wholesale.
+public func goldgramPurgeSnapshotForJournal(
+    transaction: Transaction, id: MessageId, category: Int
+) {
+    guard category == 1 || category == 3 else { return }
+    let key = goldgramSnapshotKey(id, archived: true)
+    guard let entry = transaction.retrieveItemCacheEntry(id: key),
+          let saved = entry.get(GoldgramSnapshot.self)?.message else { return }
+    let deleted = saved.localTags.contains(goldgramDeletedMessageTag)
+    let hasHistory = saved.attributes.contains { $0 is GoldgramMessageHistoryAttribute }
+    if category == 1 {
+        if deleted {
+            // Keep deletion evidence, but strip any saved edit chain.
+            let cleaned = saved.withUpdatedAttributes(saved.attributes.filter {
+                !($0 is GoldgramMessageHistoryAttribute)
+            })
+            _ = goldgramSaveSnapshot(transaction: transaction, message: cleaned)
+        } else {
+            transaction.removeItemCacheEntry(id: key)
+        }
+    } else if deleted {
+        if hasHistory {
+            var tags = saved.localTags
+            tags.remove(goldgramDeletedMessageTag)
+            _ = goldgramSaveSnapshot(transaction: transaction,
+                                    message: saved.withUpdatedLocalTags(tags))
+        } else {
+            transaction.removeItemCacheEntry(id: key)
+        }
+    }
+}
+
 public func goldgramClearSnapshots(transaction: Transaction, accountPeerId: PeerId) {
     transaction.clearItemCacheCollection(collectionId: goldgramSnapshotCollection)
     transaction.clearItemCacheCollection(collectionId: goldgramArchivedSnapshotCollection)

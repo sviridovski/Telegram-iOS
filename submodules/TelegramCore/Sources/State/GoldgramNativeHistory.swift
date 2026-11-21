@@ -977,6 +977,47 @@ private enum GoldgramInlineArchiveReconciler {
     private static var checked = Set<String>()
     private static var accounts: [Int64: GoldgramBoundInlineAccount] = [:]
     private static var observer: NSObjectProtocol?
+    private static var purgeObserver: NSObjectProtocol?
+
+    // #233: clear category-specific cached history in bounded Postbox batches.
+    // Never delete real Telegram messages: only locally retained tombstones.
+    private static func purgePage(_ account: Account, _ ids: [MessageId],
+                                  category: Int, offset: Int = 0) {
+        guard offset < ids.count else { return }
+        let end = min(ids.count, offset + 200)
+        let page = Array(ids[offset..<end])
+        let _ = (account.postbox.transaction { transaction -> Void in
+            var retained: [MessageId] = []
+            for id in page {
+                goldgramPurgeSnapshotForJournal(
+                    transaction: transaction, id: id, category: category)
+                guard let message = transaction.getMessage(id) else { continue }
+                if category == 3 {
+                    if message.localTags.contains(goldgramDeletedMessageTag) {
+                        retained.append(id)
+                    }
+                } else if message.attributes.contains(where: {
+                    $0 is GoldgramMessageHistoryAttribute
+                }) {
+                    transaction.updateMessage(id, preprocess: false, update: { current in
+                        let attrs = current.attributes.filter {
+                            !($0 is GoldgramMessageHistoryAttribute)
+                        }
+                        return .update(goldgramStoredMessage(
+                            current, localTags: current.localTags)
+                            .withUpdatedAttributes(attrs))
+                    })
+                }
+            }
+            if !retained.isEmpty {
+                transaction.deleteMessages(retained, forEachMedia: nil)
+            }
+        }).start(completed: {
+            queue.async {
+                purgePage(account, ids, category: category, offset: end)
+            }
+        })
+    }
 
     // A bounded, message-specific Postbox transaction. It does not fetch
     // missing messages from Telegram or change Telegram-owned message text.
@@ -1009,6 +1050,25 @@ private enum GoldgramInlineArchiveReconciler {
 
     private static func installObserver() {
         guard observer == nil else { return }
+        purgeObserver = NotificationCenter.default.addObserver(
+            forName: Notification.Name("GoldgramArchivePurged"),
+            object: nil, queue: nil) { note in
+            guard let accountId = (note.object as? NSNumber)?.int64Value,
+                  let category = note.userInfo?["category"] as? Int,
+                  category == 1 || category == 3,
+                  let scopes = note.userInfo?["scopes"] as? [[String: Any]] else { return }
+            queue.async {
+                guard let account = accounts[accountId]?.account,
+                      account.peerId.id._internalGetInt64Value() == accountId else { return }
+                let ids = Set(scopes.compactMap { scope -> MessageId? in
+                    guard let kind = (scope["peerKind"] as? NSNumber)?.int64Value,
+                          let peer = (scope["peerId"] as? NSNumber)?.int64Value,
+                          let mid = (scope["messageId"] as? NSNumber)?.int64Value else { return nil }
+                    return messageId(["peerKind": kind, "peerId": peer, "messageId": mid])
+                })
+                purgePage(account, Array(ids), category: category)
+            }
+        }
         observer = NotificationCenter.default.addObserver(
             forName: Notification.Name("GoldgramArchiveChanged"),
             object: nil, queue: nil) { note in

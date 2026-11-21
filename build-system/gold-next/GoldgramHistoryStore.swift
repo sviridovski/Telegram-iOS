@@ -806,6 +806,79 @@ fileprivate extension GoldgramHistoryStore {
     DELETE FROM unresolved_deletions;
     """
 
+    // #233: independent, account-local journal clearing, one SQLite
+    // transaction. Do not touch iPhone 8, Live cursors, import receipts or
+    // verified originals needed by the *other* journal category.
+    static func purgeJournal(accountId: Int64, category: Int) throws -> [[String: Any]] {
+        guard accountId > 0, category == 1 || category == 3 else {
+            throw StorageError.sqlite(SQLITE_MISUSE)
+        }
+        let db = try archiveConnection(for: accountId)
+        var stmt: OpaquePointer?
+        let sql = category == 1 ? """
+        SELECT m.peer_kind,m.peer_id,m.message_id FROM messages m
+        WHERE EXISTS (SELECT 1 FROM events e WHERE e.peer_kind=m.peer_kind
+          AND e.peer_id=m.peer_id AND e.message_id=m.message_id AND e.event_kind=1)
+          OR EXISTS (SELECT 1 FROM revisions r WHERE r.peer_kind=m.peer_kind
+          AND r.peer_id=m.peer_id AND r.message_id=m.message_id AND r.version_index>0);
+        """ : """
+        SELECT m.peer_kind,m.peer_id,m.message_id FROM messages m
+        WHERE m.is_deleted=1 OR EXISTS (SELECT 1 FROM events e
+          WHERE e.peer_kind=m.peer_kind AND e.peer_id=m.peer_id
+          AND e.message_id=m.message_id AND e.event_kind=2);
+        """
+        let prepared = sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
+        guard prepared == SQLITE_OK, let rows = stmt else {
+            if let stmt { sqlite3_finalize(stmt) }
+            throw StorageError.sqlite(prepared)
+        }
+        var scopes: [[String: Any]] = []
+        while true {
+            let step = sqlite3_step(rows)
+            if step == SQLITE_DONE { break }
+            guard step == SQLITE_ROW else {
+                sqlite3_finalize(rows)
+                throw StorageError.sqlite(step)
+            }
+            scopes.append([
+                "peerKind": NSNumber(value: sqlite3_column_int(rows, 0)),
+                "peerId": NSNumber(value: sqlite3_column_int64(rows, 1)),
+                "messageId": NSNumber(value: sqlite3_column_int64(rows, 2))
+            ])
+        }
+        sqlite3_finalize(rows)
+        try archiveSQL("BEGIN IMMEDIATE;", db: db, ints: [])
+        do {
+            if category == 1 {
+                // For an edited-and-deleted message keep the delete evidence.
+                try execute("DELETE FROM events WHERE event_kind=1;", on: db)
+                try execute("DELETE FROM revisions WHERE version_index>0;", on: db)
+            } else {
+                // For an edited-and-deleted message keep the edit evidence.
+                try execute("DELETE FROM events WHERE event_kind=2;", on: db)
+                try execute("UPDATE messages SET is_deleted=0 WHERE is_deleted=1;", on: db)
+                try execute("DELETE FROM unresolved_deletions;", on: db)
+            }
+            try archiveSQL("COMMIT;", db: db, ints: [])
+        } catch {
+            try? archiveSQL("ROLLBACK;", db: db, ints: [])
+            throw error
+        }
+        return scopes
+    }
+
+    // OFF by default. A timer is a retention interval (clear this category
+    // every N hours when the foreground app is next able to run).
+    static func retentionKey(_ account: Int64, _ category: Int) -> String {
+        "GoldgramJournalAutoclearHoursV1.\(account).\(category)"
+    }
+    static func retentionLastKey(_ account: Int64, _ category: Int) -> String {
+        "GoldgramJournalLastClearV1.\(account).\(category)"
+    }
+    static func validRetentionHours(_ hours: Int) -> Bool {
+        [0, 12, 24, 48, 72, 168].contains(hours)
+    }
+
     static func archiveIncoming(
         accountId: Int64, peerId: Int64, messageId: Int32,
         text: String, live: Bool,
@@ -1016,6 +1089,100 @@ public final class GoldgramArchiveReader: NSObject {
             }
             let retainedItems = retained
             DispatchQueue.main.async { completion(["status": status, "retainedItems": retainedItems]) }
+        }
+    }
+
+    // #233: manually clear only one journal without resetting another.
+    @objc(clearJournalForAccount:category:completion:)
+    public static func clearJournal(forAccount account: NSNumber, category: Int,
+                                    completion: @escaping (NSDictionary) -> Void) {
+        let id = account.int64Value
+        guard isSelected(id), category == 1 || category == 3 else {
+            completion(["status": "account_changed"]); return
+        }
+        GoldgramHistoryStore.enqueueArchiveWork {
+            guard self.isSelected(id) else {
+                DispatchQueue.main.async { completion(["status": "account_changed"]) }
+                return
+            }
+            do {
+                let scopes = try GoldgramHistoryStore.purgeJournal(accountId: id, category: category)
+                UserDefaults.standard.set(Date().timeIntervalSince1970,
+                    forKey: GoldgramHistoryStore.retentionLastKey(id, category))
+                DispatchQueue.main.async {
+                    self.postJournalPurge(account: id, category: category, scopes: scopes)
+                    completion(["status": "ok"])
+                }
+            } catch {
+                DispatchQueue.main.async { completion(["status": "unavailable"]) }
+            }
+        }
+    }
+
+    // Notification is emitted only AFTER SQLite COMMIT. The bound TelegramCore
+    // account uses its existing Postbox to remove stale inline history/snapshots.
+    private static func postJournalPurge(account: Int64, category: Int,
+                                         scopes: [[String: Any]]) {
+        NotificationCenter.default.post(name: Notification.Name("GoldgramArchivePurged"),
+            object: NSNumber(value: account),
+            userInfo: ["category": category, "scopes": scopes])
+        NotificationCenter.default.post(name: Notification.Name("GoldgramArchiveChanged"),
+            object: NSNumber(value: account))
+    }
+
+    @objc(setJournalRetentionForAccount:category:hours:)
+    public static func setJournalRetention(forAccount account: NSNumber,
+                                           category: Int, hours: Int) {
+        let id = account.int64Value
+        guard isSelected(id), category == 1 || category == 3,
+              GoldgramHistoryStore.validRetentionHours(hours) else { return }
+        UserDefaults.standard.set(hours,
+            forKey: GoldgramHistoryStore.retentionKey(id, category))
+        UserDefaults.standard.set(Date().timeIntervalSince1970,
+            forKey: GoldgramHistoryStore.retentionLastKey(id, category))
+    }
+
+    @objc(journalRetentionForAccount:category:)
+    public static func journalRetention(forAccount account: NSNumber, category: Int) -> Int {
+        let id = account.int64Value
+        guard isSelected(id), category == 1 || category == 3 else { return 0 }
+        return UserDefaults.standard.integer(
+            forKey: GoldgramHistoryStore.retentionKey(id, category))
+    }
+
+    @objc(runJournalAutoclearIfDueForAccount:)
+    public static func runJournalAutoclearIfDue(forAccount account: NSNumber) {
+        let id = account.int64Value
+        guard isSelected(id) else { return }
+        let now = Date().timeIntervalSince1970
+        let defaults = UserDefaults.standard
+        let due = [1,3].filter { category in
+            let hours = defaults.integer(
+                forKey: GoldgramHistoryStore.retentionKey(id, category))
+            guard hours > 0, GoldgramHistoryStore.validRetentionHours(hours) else { return false }
+            let last = defaults.double(
+                forKey: GoldgramHistoryStore.retentionLastKey(id, category))
+            return last > 0 && now - last >= Double(hours) * 3600
+        }
+        guard !due.isEmpty else { return }
+        GoldgramHistoryStore.enqueueArchiveWork {
+            guard self.isSelected(id) else { return }
+            let settings = UserDefaults.standard
+            for category in due {
+                let hours = settings.integer(forKey: GoldgramHistoryStore.retentionKey(id, category))
+                let last = settings.double(forKey: GoldgramHistoryStore.retentionLastKey(id, category))
+                let now = Date().timeIntervalSince1970
+                guard hours > 0, GoldgramHistoryStore.validRetentionHours(hours),
+                      last > 0, now - last >= Double(hours) * 3600 else { continue }
+                do {
+                    let scopes = try GoldgramHistoryStore.purgeJournal(accountId: id, category: category)
+                    settings.set(now, forKey: GoldgramHistoryStore.retentionLastKey(id, category))
+                    DispatchQueue.main.async {
+                        guard self.isSelected(id) else { return }
+                        self.postJournalPurge(account: id, category: category, scopes: scopes)
+                    }
+                } catch { /* Retry at next foreground Live poll. */ }
+            }
         }
     }
 
@@ -4075,6 +4242,8 @@ final class GoldgramLiveBridge: NSObject, URLSessionDelegate {
                     let nextProofs = payload["next_proof_cursor"] as? Int ?? proofs
                     self.defaults.set(nextProofs, forKey: self.key(account, "proofCursor"))
                     self.proofCapable = (payload["proof_protocol"] as? Int == 1)
+                    GoldgramArchiveReader.runJournalAutoclearIfDue(
+                        forAccount: NSNumber(value: account))
                     // #232: repair previously imported, verified history in
                     // offscreen Postbox messages even when Live has no new rows.
                     // No Telegram query or modification of saved revisions.

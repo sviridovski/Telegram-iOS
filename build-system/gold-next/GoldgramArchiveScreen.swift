@@ -1174,6 +1174,8 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
         // leave us waiting for its next 12-second tick. Poll immediately.
         GoldgramLiveBridge.shared.pollNow()
         if let account = GoldgramArchiveReader.activeAccountId()?.int64Value {
+            GoldgramArchiveReader.runJournalAutoclearIfDue(
+                forAccount: NSNumber(value: account))
             restoreFolderSnapshot(account: account)
         }
         if self.preserveListOnNextAppearance,
@@ -1530,7 +1532,9 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
     }
 
     private static func purgeRetained(_ items: [[String: Any]], account: NSNumber, offset: Int = 0, completion: @escaping (Bool) -> Void) {
-        let end = min(offset + 50, items.count)
+        // #233: 200 IDs per Postbox transaction vs 50 (5000 -> 25
+        // requests instead of 100), still bounded below the 5s watchdog.
+        let end = min(offset + 200, items.count)
         let page = Array(items[offset..<end])
         let request: [AnyHashable: Any] = ["action": "purge_retained", "accountId": account,
             "items": page, "clearMedia": end == items.count]
@@ -1542,8 +1546,103 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
         }
     }
 
+    // #233: the existing settings button opens a safe, per-category menu.
+    // Never is the independent archive on iPhone 8 cleaned from this screen.
     @objc(presentClearHistoryFromController:)
     public static func presentClearHistory(from controller: UIViewController) {
+        guard let account = GoldgramArchiveReader.activeAccountId() else { return }
+        let sheet = UIAlertController(
+            title: "Очистка Goldgram",
+            message: "Только локальный журнал Swiftgram. Коллектор iPhone 8 и сообщения Telegram не затрагиваются.",
+            preferredStyle: .actionSheet)
+        for category in [1, 3] {
+            let name = category == 1 ? "Изменённые" : "Удалённые"
+            sheet.addAction(UIAlertAction(
+                title: "Очистить «\(name)» полностью",
+                style: .destructive) { [weak controller] _ in
+                guard let controller else { return }
+                confirmClearJournal(from: controller, account: account, category: category)
+            })
+            let hours = GoldgramArchiveReader.journalRetention(
+                forAccount: account, category: category)
+            let current = retentionLabel(hours)
+            sheet.addAction(UIAlertAction(
+                title: "Автоочистка «\(name)»: \(current)", style: .default) { [weak controller] _ in
+                guard let controller else { return }
+                presentRetentionPicker(from: controller, account: account, category: category)
+            })
+        }
+        sheet.addAction(UIAlertAction(title: "Очистить всё (старый режим)",
+                                       style: .destructive) { [weak controller] _ in
+            guard let controller else { return }
+            presentClearAllHistory(from: controller)
+        })
+        sheet.addAction(UIAlertAction(title: "Отмена", style: .cancel))
+        sheet.popoverPresentationController?.sourceView = controller.view
+        sheet.popoverPresentationController?.sourceRect = CGRect(
+            x: controller.view.bounds.midX, y: controller.view.bounds.midY, width: 1, height: 1)
+        controller.present(sheet, animated: true)
+    }
+
+    private static func retentionLabel(_ hours: Int) -> String {
+        switch hours {
+        case 12: return "12 часов"
+        case 24: return "1 день"
+        case 48: return "2 дня"
+        case 72: return "3 дня"
+        case 168: return "1 неделя"
+        default: return "Никогда"
+        }
+    }
+
+    private static func presentRetentionPicker(from controller: UIViewController,
+                                               account: NSNumber, category: Int) {
+        let name = category == 1 ? "Изменённые" : "Удалённые"
+        let picker = UIAlertController(
+            title: "Автоочистка: \(name)",
+            message: "По истечении выбранного срока журнал очищается полностью, когда Swiftgram открыт и может работать. По умолчанию — никогда.",
+            preferredStyle: .actionSheet)
+        for hours in [12, 24, 48, 72, 168, 0] {
+            picker.addAction(UIAlertAction(
+                title: retentionLabel(hours), style: .default) { _ in
+                GoldgramArchiveReader.setJournalRetention(
+                    forAccount: account, category: category, hours: hours)
+            })
+        }
+        picker.addAction(UIAlertAction(title: "Отмена", style: .cancel))
+        picker.popoverPresentationController?.sourceView = controller.view
+        picker.popoverPresentationController?.sourceRect = CGRect(
+            x: controller.view.bounds.midX, y: controller.view.bounds.midY, width: 1, height: 1)
+        controller.present(picker, animated: true)
+    }
+
+    private static func confirmClearJournal(from controller: UIViewController,
+                                            account: NSNumber, category: Int) {
+        let name = category == 1 ? "изменённых" : "удалённых"
+        let alert = UIAlertController(
+            title: "Очистить журнал \(name)?",
+            message: "Удалятся все локальные записи этой категории текущего аккаунта. Данные другой категории, Collector iPhone 8 и Telegram останутся.",
+            preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Отмена", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Удалить", style: .destructive) { [weak controller] _ in
+            GoldgramArchiveReader.clearJournal(forAccount: account, category: category) { response in
+                guard let controller else { return }
+                let ok = response["status"] as? String == "ok"
+                if ok { fastFolderCache.removeAllObjects() }
+                let result = UIAlertController(
+                    title: ok ? "Журнал очищен" : "Ошибка очистки",
+                    message: ok
+                        ? "SQLite очищена. Соответствующие локальные снимки и атрибуты Postbox очищаются отдельными пакетами."
+                        : "Журнал не изменён или Telegram-аккаунт переключился.",
+                    preferredStyle: .alert)
+                result.addAction(UIAlertAction(title: "OK", style: .default))
+                controller.present(result, animated: true)
+            }
+        })
+        controller.present(alert, animated: true)
+    }
+
+    private static func presentClearAllHistory(from controller: UIViewController) {
         guard let account = GoldgramArchiveReader.activeAccountId() else { return }
         let alert = UIAlertController(
             title: "Очистить логи?",

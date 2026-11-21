@@ -143,9 +143,13 @@ public final class GoldgramNativeArchiveMetadata: NSObject {
 
     @objc(resolve:completion:)
     public static func resolve(_ request: NSDictionary, completion: @escaping (NSDictionary) -> Void) {
+        // #233: a full local purge can process 200 IDs per single Postbox
+        // transaction instead of 50; all other requests stay at 50.
+        let maxEntries = request["action"] as? String == "purge_retained" ? 200 : 50
         guard Thread.isMainThread,
               let accountId = (request["accountId"] as? NSNumber)?.int64Value,
-              let entries = request["items"] as? [[String: Any]], entries.count <= 50,
+              let entries = request["items"] as? [[String: Any]],
+              entries.count <= maxEntries,
               let shared = goldgramNativeNavigationContext,
               let primary = shared.sgPrimaryAccountContextForMigration(),
               primary.account.peerId.id._internalGetInt64Value() == accountId

@@ -590,6 +590,54 @@ struct NativeCaptureFixture {
         print("Goldgram #229: verified late original and idempotent replay OK")
         print("Goldgram #231: post-COMMIT scoped reconciliation signal OK")
 
+        // #233: category-specific journal clearing preserves the other
+        // category and the baseline, even for an edited+deleted message.
+        let deleteCountBefore = row("SELECT COUNT(*) FROM events WHERE event_kind=2")
+        precondition(Int(deleteCountBefore[0]) ?? 0 > 0)
+        precondition(Int(row("SELECT COUNT(*) FROM events WHERE event_kind=1")[0]) ?? 0 > 0)
+        let originalBefore = row("SELECT original_text FROM messages WHERE message_id=1")
+        func clearCategory(_ kind: Int) -> [String: Any] {
+            var answer: NSDictionary?
+            GoldgramArchiveReader.clearJournal(
+                forAccount: NSNumber(value: account), category: kind) { result in
+                    answer = result
+            }
+            let deadline = Date().addingTimeInterval(10)
+            while answer == nil && Date() < deadline {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+            }
+            precondition(answer != nil, "journal clear completion timed out")
+            return answer as? [String: Any] ?? [:]
+        }
+        precondition(clearCategory(1)["status"] as? String == "ok")
+        precondition(row("SELECT COUNT(*) FROM events WHERE event_kind=1") == ["0"])
+        precondition(row("SELECT COUNT(*) FROM revisions WHERE version_index>0") == ["0"])
+        precondition(row("SELECT COUNT(*) FROM events WHERE event_kind=2") == deleteCountBefore,
+                     "clearing edits must retain deleted-message evidence")
+        precondition(row("SELECT original_text FROM messages WHERE message_id=1") == originalBefore,
+                     "clearing edits must retain original baseline")
+        // Configure independent retention periods. The default is disabled;
+        // setting one never silently changes the other.
+        GoldgramArchiveReader.setJournalRetention(
+            forAccount: NSNumber(value: account), category: 1, hours: 12)
+        GoldgramArchiveReader.setJournalRetention(
+            forAccount: NSNumber(value: account), category: 3, hours: 168)
+        precondition(GoldgramArchiveReader.journalRetention(
+            forAccount: NSNumber(value: account), category: 1) == 12)
+        precondition(GoldgramArchiveReader.journalRetention(
+            forAccount: NSNumber(value: account), category: 3) == 168)
+        precondition(clearCategory(3)["status"] as? String == "ok")
+        precondition(row("SELECT COUNT(*) FROM events WHERE event_kind=2") == ["0"])
+        precondition(row("SELECT COUNT(*) FROM messages WHERE is_deleted=1") == ["0"])
+        precondition(row("SELECT original_text FROM messages WHERE message_id=1") == originalBefore)
+        precondition(row("SELECT edited,deleted FROM goldgram_ui_fast_totals_v1 WHERE id=1") == ["0","0"],
+                     "fast archive counters must reflect both category clears")
+        GoldgramArchiveReader.setJournalRetention(
+            forAccount: NSNumber(value: account), category: 1, hours: 0)
+        GoldgramArchiveReader.setJournalRetention(
+            forAccount: NSNumber(value: account), category: 3, hours: 0)
+        print("Goldgram #233: separate journal clear/retention and preserved baseline OK")
+
         // Simulate the existing account-clear cascade on the same SQLite.
         precondition(sqlite3_exec(db, "PRAGMA foreign_keys=ON; DELETE FROM dialogs;",
                                   nil, nil, nil) == SQLITE_OK)
