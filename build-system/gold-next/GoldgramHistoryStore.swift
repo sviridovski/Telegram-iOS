@@ -1021,6 +1021,28 @@ public final class GoldgramArchiveReader: NSObject {
     private static let accountLock = NSLock()
     private static var selectedAccount: Int64 = 0
     private static var nativeNavigate: GoldgramNativeNavigate?
+    private static var journalTimer: DispatchSourceTimer?
+
+    // #234: a cheap foreground-only clock for the independent journal timers.
+    // Checking two UserDefaults keys every five minutes does not query Telegram
+    // or open SQLite until a configured deadline is actually due.
+    private static func ensureJournalTimer() {
+        DispatchQueue.main.async {
+            guard journalTimer == nil else { return }
+            let timer = DispatchSource.makeTimerSource(queue: .main)
+            timer.schedule(deadline: .now() + .seconds(60),
+                           repeating: .seconds(300), leeway: .seconds(20))
+            timer.setEventHandler {
+                #if canImport(UIKit)
+                guard UIApplication.shared.applicationState == .active else { return }
+                #endif
+                guard let account = activeAccountId() else { return }
+                runJournalAutoclearIfDue(forAccount: account)
+            }
+            journalTimer = timer
+            timer.resume()
+        }
+    }
 
     static func registerNativeNavigation(_ callback: GoldgramNativeNavigate?) {
         accountLock.lock()
@@ -1053,6 +1075,17 @@ public final class GoldgramArchiveReader: NSObject {
         accountLock.lock()
         selectedAccount = max(0, id)
         accountLock.unlock()
+        if id > 0 {
+            let settings = UserDefaults.standard
+            if [1,3].contains(where: {
+                settings.integer(forKey: GoldgramHistoryStore.retentionKey(id, $0)) > 0
+            }) {
+                ensureJournalTimer()
+                DispatchQueue.main.async {
+                    runJournalAutoclearIfDue(forAccount: NSNumber(value: id))
+                }
+            }
+        }
     }
 
     private static func isSelected(_ id: Int64) -> Bool {
@@ -1140,6 +1173,7 @@ public final class GoldgramArchiveReader: NSObject {
             forKey: GoldgramHistoryStore.retentionKey(id, category))
         UserDefaults.standard.set(Date().timeIntervalSince1970,
             forKey: GoldgramHistoryStore.retentionLastKey(id, category))
+        if hours > 0 { ensureJournalTimer() }
     }
 
     @objc(journalRetentionForAccount:category:)
