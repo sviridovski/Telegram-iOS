@@ -9,14 +9,16 @@ permissions:
   contents: read
 
 jobs:
-  build:
+  mx:
     runs-on: xcode-27
-
+    outputs:
+      cache-hit: ${{ steps.mx_cache.outputs.cache-hit }}
+      cache-key: ${{ steps.mx_cache.outputs.cache-primary-key }}
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: recursive
-          fetch-depth: 0
+          fetch-depth: 1
+          submodules: false
 
       - name: Select project Xcode
         shell: bash
@@ -32,28 +34,6 @@ jobs:
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
 
-      - name: Test refresh task lifecycle
-        shell: bash
-        run: python3 build-system/gold-next/test_refresh_task_lifecycle.py --require-swift
-
-      - name: Create canonical source directory
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo mkdir -p /Users/Shared
-          sudo rm -rf /Users/Shared/telegram-ios
-          cp -R "$GITHUB_WORKSPACE" /Users/Shared/telegram-ios
-
-      # #107: reuse immutable compiler actions across ephemeral macOS runners.
-      # Do not archive the full output_user_root, app IPA, or signing data.
-      - name: Restore bounded Bazel disk cache
-        id: bazel_restore
-        uses: actions/cache/restore@v4
-        with:
-          path: /private/var/tmp/goldgram-bazel-action-cache
-          key: gold-next-bazel-xcode27-${{ hashFiles('versions.json', '.bazelrc', 'MODULE.bazel.lock') }}-${{ github.sha }}
-          restore-keys: |
-            gold-next-bazel-xcode27-${{ hashFiles('versions.json', '.bazelrc', 'MODULE.bazel.lock') }}-
       - name: Identify Mx toolchain
         id: mx_toolchain
         shell: bash
@@ -63,12 +43,15 @@ jobs:
           echo "Runner: $(sysctl -n hw.logicalcpu) logical CPUs, $(sysctl -n hw.memsize) bytes RAM"
           df -h "$RUNNER_TEMP"
 
+      # v2 key covers the five files copied by prepare_mx.py, the patch script,
+      # schema, Xcode/SDK fingerprint and versions. Bump v2 on a pinned tool
+      # or Mx recipe change. Unrelated tests/native code no longer invalidate Mx.
       - name: Restore compiled Mx
         id: mx_cache
         uses: actions/cache/restore@v4
         with:
           path: mx-output
-          key: mx-arm64-v1-${{ steps.mx_toolchain.outputs.fingerprint }}-${{ hashFiles('.github/workflows/build.yml', 'versions.json', 'build-system/gold-next/prepare_mx.py', 'build-system/gold-next/*.swift', 'build-system/gold-next/*.m', 'submodules/TelegramApi/swift_scheme.tl') }}
+          key: mx-arm64-v2-${{ steps.mx_toolchain.outputs.fingerprint }}-${{ hashFiles('versions.json', 'build-system/gold-next/prepare_mx.py', 'build-system/gold-next/GoldgramHistoryStore.swift', 'build-system/gold-next/GoldgramLegacyImporter.swift', 'build-system/gold-next/GoldgramArchiveScreen.swift', 'build-system/gold-next/GoldgramMetadataBridge.m', 'build-system/gold-next/GoldgramArchiveGrouping.swift', 'submodules/TelegramApi/swift_scheme.tl') }}
 
       - name: Validate cached Mx
         id: mx
@@ -91,6 +74,7 @@ jobs:
 
       # Pin the exact Theos/SDK revisions previously used by the action.
       # Its cached update-theos path resets origin/master, but this fork uses main.
+
       - name: Install Theos dependencies for Mx
         if: steps.mx.outputs.ready != 'true'
         shell: bash
@@ -116,6 +100,103 @@ jobs:
           repository: waruhachi/sdks
           ref: a7b81140aa8ce18b6e6a48846d4e63476b1e5709
           path: theos/sdks
+
+      - name: Build Mx 1.0.0 for Swiftgram 13.2
+        if: steps.mx.outputs.ready != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          SECONDS=0
+          python3 build-system/gold-next/prepare_mx.py mxgram
+          cd mxgram
+          make clean
+          make -j"$(sysctl -n hw.logicalcpu)" package FINALPACKAGE=1 STRIP=0 ARCHS=arm64 \
+            'Sources/tgapi/VideoToVoice.xm_CFLAGS=-std=c++17'
+          test -f packages/Mx.dylib
+          test -f Mx.bundle/langs.json
+          rm -rf ../mx-output
+          mkdir ../mx-output
+          cp packages/Mx.dylib ../mx-output/
+          cp -R Mx.bundle ../mx-output/
+          cd ../mx-output
+          find Mx.dylib Mx.bundle -type f -exec shasum -a 256 {} + > SHA256SUMS
+          echo "Mx build (s): $SECONDS" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Stage and upload Mx for packaging
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd mx-output && shasum -a 256 -c SHA256SUMS && lipo -verify_arch arm64 Mx.dylib)
+          tar -cf "$RUNNER_TEMP/goldgram-mx.tar" mx-output
+      - name: Upload staged Mx
+        uses: actions/upload-artifact@v4
+        with:
+          name: goldgram-ci-mx-${{ github.run_id }}
+          path: ${{ runner.temp }}/goldgram-mx.tar
+          compression-level: 0
+          retention-days: 7
+          overwrite: true
+          if-no-files-found: error
+
+  native:
+    runs-on: xcode-27
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+          fetch-depth: 0
+      - name: Checkout pinned submodules efficiently
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Preserve full ROOT history for the existing build number.
+          # Dependencies need their exact pinned revisions, not their histories.
+          if ! git submodule update --init --recursive --depth 1 --jobs 4; then
+            git submodule update --init --recursive --jobs 4
+          fi
+
+      - name: Select project Xcode
+        shell: bash
+        run: |
+          set -euo pipefail
+          XCODE_VERSION="$(python3 - <<'PY'
+          import json
+          with open("versions.json", "r", encoding="utf-8") as f:
+              print(json.load(f)["xcode"])
+          PY
+          )"
+          sudo xcode-select -s "/Applications/Xcode_${XCODE_VERSION}.app/Contents/Developer"
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Report native runner capacity
+        shell: bash
+        run: |
+          echo "Runner: $(sysctl -n hw.logicalcpu) logical CPUs, $(sysctl -n hw.memsize) bytes RAM"
+          df -h "$RUNNER_TEMP"
+      - name: Test refresh task lifecycle
+        shell: bash
+        run: python3 build-system/gold-next/test_refresh_task_lifecycle.py --require-swift
+
+      - name: Create canonical source directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo mkdir -p /Users/Shared
+          sudo rm -rf /Users/Shared/telegram-ios
+          cp -R "$GITHUB_WORKSPACE" /Users/Shared/telegram-ios
+
+      # #107: reuse immutable compiler actions across ephemeral macOS runners.
+      # Do not archive the full output_user_root, app IPA, or signing data.
+
+      - name: Restore bounded Bazel disk cache
+        id: bazel_restore
+        uses: actions/cache/restore@v4
+        with:
+          path: /private/var/tmp/goldgram-bazel-action-cache
+          key: gold-next-bazel-xcode27-${{ hashFiles('versions.json', '.bazelrc', 'MODULE.bazel.lock') }}-${{ github.sha }}
+          restore-keys: |
+            gold-next-bazel-xcode27-${{ hashFiles('versions.json', '.bazelrc', 'MODULE.bazel.lock') }}-
 
       - name: Validate Goldgram SQLite v1 to v2 migration
         shell: bash
@@ -157,38 +238,6 @@ jobs:
           swiftc submodules/TelegramCore/Sources/State/GoldgramEventPolicy.swift build-system/gold-next/test_native_event_policy.swift -o "$RUNNER_TEMP/goldgram-event-policy-test"
           "$RUNNER_TEMP/goldgram-event-policy-test"
           xcrun swiftc -typecheck -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -target arm64-apple-ios15.0 build-system/gold-next/GoldgramHistoryStore.swift
-
-      - name: Build Mx 1.0.0 for Swiftgram 13.2
-        if: steps.mx.outputs.ready != 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          SECONDS=0
-          python3 build-system/gold-next/prepare_mx.py mxgram
-          cd mxgram
-          make clean
-          make -j"$(sysctl -n hw.logicalcpu)" package FINALPACKAGE=1 STRIP=0 ARCHS=arm64 \
-            'Sources/tgapi/VideoToVoice.xm_CFLAGS=-std=c++17'
-          test -f packages/Mx.dylib
-          test -f Mx.bundle/langs.json
-          rm -rf ../mx-output
-          mkdir ../mx-output
-          cp packages/Mx.dylib ../mx-output/
-          cp -R Mx.bundle ../mx-output/
-          cd ../mx-output
-          find Mx.dylib Mx.bundle -type f -exec shasum -a 256 {} + > SHA256SUMS
-          echo "Mx build (s): $SECONDS" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Install pinned Cyan injector
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 -m venv .mx-venv
-          .mx-venv/bin/python -m pip install --upgrade pip
-          .mx-venv/bin/python -m pip install \
-            https://github.com/asdfzxcvbn/pyzule-rw/archive/740d3716dcd98c20c000f12cdb88f1f0b2a533a4.zip
-          echo "$GITHUB_WORKSPACE/.mx-venv/bin" >> "$GITHUB_PATH"
-          .mx-venv/bin/cyan --help >/dev/null
 
       - name: Build clean Swiftgram
         shell: bash
@@ -273,39 +322,52 @@ jobs:
           cp "$IPA" "$OUTPUT_PATH/Swiftgram.ipa"
           ls -lh "$OUTPUT_PATH/Swiftgram.ipa"
 
-      - name: Measure Bazel cache after native GC
+      - name: Measure and freeze Bazel cache after native GC
         id: bazel_size
         shell: bash
         run: |
+          set -euo pipefail
           cache=/private/var/tmp/goldgram-bazel-action-cache
-          cap_kib=$((10 * 1024 * 1024))
-          initial=unavailable
+          cap_kib=$((12 * 1024 * 1024))
           size=unavailable
-          echo "save=false" >> "$GITHUB_OUTPUT"
-          for attempt in 1 2 3 4 5; do
-            # Native idle GC can unlink an entry while du walks the cache.
-            # A failed walk is incomplete and must never authorize a cache save.
+          initial=unavailable
+          save=false
+          # Keep the existing 10G native GC target. Allow up to 12 GiB of
+          # allocated filesystem blocks in the archive to account for overhead.
+          for attempt in 1 2 3 4 5 6 7 8; do
             if measurement=$(du -sk "$cache" 2>"$RUNNER_TEMP/goldgram-cache-size.err"); then
               size=${measurement%%[[:space:]]*}
               if [[ "$size" =~ ^[0-9]+$ ]]; then
                 [[ "$initial" != unavailable ]] || initial=$size
-                if (( size <= cap_kib )); then
-                  echo "save=true" >> "$GITHUB_OUTPUT"
-                  break
-                fi
+                if (( size <= cap_kib )); then break; fi
               fi
             fi
-            if (( attempt < 5 )); then sleep 2; fi
+            if (( attempt < 8 )); then sleep 2; fi
           done
-          if ! grep -q '^save=true$' "$GITHUB_OUTPUT"; then
-            echo "::warning::Bazel cache could not be measured within 10 GiB; skipping cache save."
-            cat "$RUNNER_TEMP/goldgram-cache-size.err" >&2
+          version="$(python3 -c 'import json; print(json.load(open("versions.json"))["bazel"].split(":")[0])')"
+          bazel="/Users/Shared/telegram-ios/build-input/bazel-${version}-darwin-$(uname -m)"
+          # No racing native GC during cache upload; on failure skip only cache.
+          if [[ -x "$bazel" ]] && (cd /Users/Shared/telegram-ios && "$bazel" --output_user_root=/private/var/tmp/_bazel_containerhost shutdown); then
+            if measurement=$(du -sk "$cache" 2>"$RUNNER_TEMP/goldgram-cache-size.err"); then
+              size=${measurement%%[[:space:]]*}
+              if [[ "$size" =~ ^[0-9]+$ ]] && (( size <= cap_kib )); then
+                save=true
+              fi
+            fi
+          else
+            echo "::warning::Could not freeze Bazel cache for a safe save."
+          fi
+          echo "save=$save" >> "$GITHUB_OUTPUT"
+          if [[ "$save" != true ]]; then
+            echo "::warning::Bazel cache could not be frozen/measured within 12 GiB; skipping cache save."
+            cat "$RUNNER_TEMP/goldgram-cache-size.err" >&2 || true
           fi
           {
-            echo "Mx cache validated: ${{ steps.mx.outputs.ready }}"
+            echo "Bazel cache restored: ${{ steps.bazel_restore.outputs.cache-matched-key }}"
             echo "Bazel cache before/after idle GC (KiB): $initial / $size"
+            echo "Bazel cache save eligible: $save"
             grep -E 'INFO: (Elapsed time:|[0-9]+ processes:)' "$RUNNER_TEMP/goldgram-bazel.log" || true
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Save bounded Bazel disk cache
         continue-on-error: true
@@ -314,11 +376,86 @@ jobs:
         with:
           path: /private/var/tmp/goldgram-bazel-action-cache
           key: gold-next-bazel-xcode27-${{ hashFiles('versions.json', '.bazelrc', 'MODULE.bazel.lock') }}-${{ github.sha }}
+
+      - name: Stage pristine native IPA and UUID-verified symbols
+        shell: bash
+        run: |
+          set -euo pipefail
+          staged="$RUNNER_TEMP/goldgram-native"
+          mkdir -p "$staged" "$RUNNER_TEMP/goldgram-native-unpacked"
+          cp /Users/Shared/telegram-ios/build/artifacts/Swiftgram.ipa "$staged/Swiftgram.ipa"
+          unzip -q "$staged/Swiftgram.ipa" -d "$RUNNER_TEMP/goldgram-native-unpacked"
+          apps=("$RUNNER_TEMP"/goldgram-native-unpacked/Payload/*.app)
+          python3 build-system/gold-next/collect_dsyms.py "${apps[0]}" \
+            /Users/Shared/telegram-ios/bazel-out "$staged/Swiftgram-dSYMs.zip"
+          (cd "$staged" && shasum -a 256 Swiftgram.ipa Swiftgram-dSYMs.zip > SHA256SUMS)
+      - name: Upload staged native build
+        uses: actions/upload-artifact@v4
+        with:
+          name: goldgram-ci-native-${{ github.run_id }}
+          path: ${{ runner.temp }}/goldgram-native/
+          compression-level: 0
+          retention-days: 7
+          overwrite: true
+          if-no-files-found: error
+
+  build:
+    needs: [mx, native]
+    runs-on: xcode-27
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: false
+
+      - name: Select project Xcode
+        shell: bash
+        run: |
+          set -euo pipefail
+          XCODE_VERSION="$(python3 - <<'PY'
+          import json
+          with open("versions.json", "r", encoding="utf-8") as f:
+              print(json.load(f)["xcode"])
+          PY
+          )"
+          sudo xcode-select -s "/Applications/Xcode_${XCODE_VERSION}.app/Contents/Developer"
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Download pristine native build
+        uses: actions/download-artifact@v4
+        with:
+          name: goldgram-ci-native-${{ github.run_id }}
+          path: ${{ runner.temp }}/goldgram-native
+      - name: Download Mx
+        uses: actions/download-artifact@v4
+        with:
+          name: goldgram-ci-mx-${{ github.run_id }}
+          path: ${{ runner.temp }}/goldgram-ci-mx
+      - name: Verify and unpack staging artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd "$RUNNER_TEMP/goldgram-native" && shasum -a 256 -c SHA256SUMS)
+          tar -xf "$RUNNER_TEMP/goldgram-ci-mx/goldgram-mx.tar"
+          (cd mx-output && shasum -a 256 -c SHA256SUMS && lipo -verify_arch arm64 Mx.dylib)
+
+      - name: Install pinned Cyan injector
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv .mx-venv
+          .mx-venv/bin/python -m pip install --upgrade pip
+          .mx-venv/bin/python -m pip install \
+            https://github.com/asdfzxcvbn/pyzule-rw/archive/740d3716dcd98c20c000f12cdb88f1f0b2a533a4.zip
+          echo "$GITHUB_WORKSPACE/.mx-venv/bin" >> "$GITHUB_PATH"
+          .mx-venv/bin/cyan --help >/dev/null
+
       - name: Inject Mx into the host only
         shell: bash
         run: |
           set -euo pipefail
-          IPA=/Users/Shared/telegram-ios/build/artifacts/Swiftgram.ipa
+          IPA="$RUNNER_TEMP/goldgram-native/Swiftgram.ipa"
           cyan -i "$IPA" -o "$RUNNER_TEMP/Swiftgram-mx.ipa" \
             -s -f mx-output/Mx.dylib mx-output/Mx.bundle
           test -s "$RUNNER_TEMP/Swiftgram-mx.ipa"
@@ -349,7 +486,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          IPA=/Users/Shared/telegram-ios/build/artifacts/Swiftgram.ipa
+          IPA="$RUNNER_TEMP/goldgram-native/Swiftgram.ipa"
           PATCH_INPUT="$RUNNER_TEMP/Swiftgram-unpatched.ipa"
           PATCHED_IPA="$RUNNER_TEMP/Swiftgram-sideload.ipa"
 
@@ -436,29 +573,55 @@ jobs:
           APP="$(find verify-sideload/Payload -maxdepth 1 -type d -name '*.app' | head -n 1)"
           test -n "$APP"
           python3 build-system/gold-next/verify_mx.py "$APP"
-          cd /Users/Shared/telegram-ios/build/artifacts
+          cd "$RUNNER_TEMP/goldgram-native"
           shasum -a 256 Swiftgram.ipa > SHA256.txt
-
-      - name: Save verified Mx
-        if: steps.mx_cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: mx-output
-          key: ${{ steps.mx_cache.outputs.cache-primary-key }}
 
       - name: Validate symbols against the patched IPA
         shell: bash
         run: |
           set -euo pipefail
           apps=(verify-sideload/Payload/*.app)
-          python3 build-system/gold-next/collect_dsyms.py "${apps[0]}" \
-            /Users/Shared/telegram-ios/bazel-out "$RUNNER_TEMP/Swiftgram-dSYMs.zip"
+          mkdir -p "$RUNNER_TEMP/goldgram-dsym-check"
+          ditto -x -k "$RUNNER_TEMP/goldgram-native/Swiftgram-dSYMs.zip" "$RUNNER_TEMP/goldgram-dsym-check"
+          python3 - "${apps[0]}" "$RUNNER_TEMP/goldgram-dsym-check/dSYMs" <<'PY'
+          import pathlib
+          import plistlib
+          import sys
+          sys.path.insert(0, "build-system/gold-next")
+          from collect_dsyms import uuids
+
+          app, symbols = map(pathlib.Path, sys.argv[1:])
+          bundles = [app] + [app / "Frameworks" / (name + ".framework")
+                             for name in ("PostboxFramework", "TelegramCoreFramework")]
+          manifest = set()
+          for bundle in bundles:
+              with (bundle / "Info.plist").open("rb") as f:
+                  executable = bundle / plistlib.load(f)["CFBundleExecutable"]
+              expected = uuids(executable)
+              matches = [p for p in symbols.glob("*.dSYM/Contents/Resources/DWARF/*")
+                         if p.name == executable.name and uuids(p) == expected]
+              if len(matches) != 1:
+                  raise SystemExit(f"Missing or ambiguous patched IPA symbols: {executable.name}")
+              manifest.update(f"{executable.name} {arch} {uuid}" for uuid, arch in expected)
+          if manifest != set((symbols / "UUIDs.txt").read_text().splitlines()):
+              raise SystemExit("Patched IPA UUID manifest differs")
+          print("All staged dSYMs match the FINAL patched IPA")
+          PY
+          cp "$RUNNER_TEMP/goldgram-native/Swiftgram-dSYMs.zip" "$RUNNER_TEMP/Swiftgram-dSYMs.zip"
+
+      - name: Save verified Mx
+        if: needs.mx.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: mx-output
+          key: ${{ needs.mx.outputs.cache-key }}
 
       - name: Upload UUID-verified debugging symbols
         uses: actions/upload-artifact@v4
         with:
           name: Swiftgram-dSYMs-${{ github.sha }}
           path: ${{ runner.temp }}/Swiftgram-dSYMs.zip
+          overwrite: true
           if-no-files-found: error
           compression-level: 0
 
@@ -467,6 +630,7 @@ jobs:
         with:
           name: Swiftgram-13.2-gold-next-Mx-1.0.0
           path: |
-            /Users/Shared/telegram-ios/build/artifacts/Swiftgram.ipa
-            /Users/Shared/telegram-ios/build/artifacts/SHA256.txt
+            ${{ runner.temp }}/goldgram-native/Swiftgram.ipa
+            ${{ runner.temp }}/goldgram-native/SHA256.txt
+          overwrite: true
           if-no-files-found: error
