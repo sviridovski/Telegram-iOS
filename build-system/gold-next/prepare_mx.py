@@ -620,3 +620,260 @@ _mx_constants = _mx_constants.replace(
 )
 _mx_constants_path.write_text(_mx_constants)
 print("Mx 13.2: updated 3 verified request IDs; synthetic response TL constructors verified")
+
+
+# Goldgram #237: native hybrid Mx dashboard, presentation-only.
+# Only the root index changes. The original Mx sections and every original
+# feature row, persisted key, switch tag and action remain reachable.
+# The destructive clear-history action stays a native UITableView row.
+dashboard_methods = r'''
+// Dashboard is intentionally UIKit-only; no new database, controller hook,
+// network call or Mx setting key is introduced.
+- (UIButton *)goldgramDashboardTile:(NSString *)title
+                           subtitle:(NSString *)subtitle
+                             symbol:(NSString *)symbol
+                               tint:(UIColor *)tint
+                         identifier:(NSInteger)identifier
+                            compact:(BOOL)compact {
+  UIButton *button = [UIButton buttonWithType:UIButtonTypeCustom];
+  button.translatesAutoresizingMaskIntoConstraints = NO;
+  button.tag = identifier;
+  button.backgroundColor = UIColor.secondarySystemGroupedBackgroundColor;
+  button.layer.cornerRadius = 18.0;
+  button.layer.masksToBounds = YES;
+  button.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeft;
+  button.isAccessibilityElement = YES;
+  button.accessibilityTraits = UIAccessibilityTraitButton;
+  button.accessibilityLabel = [NSString stringWithFormat:@"%@. %@", title, subtitle];
+  [button addTarget:self action:@selector(goldgramDashboardTap:)
+    forControlEvents:UIControlEventTouchUpInside];
+
+  UIImageView *icon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:symbol]];
+  icon.translatesAutoresizingMaskIntoConstraints = NO;
+  icon.contentMode = UIViewContentModeScaleAspectFit;
+  icon.tintColor = tint;
+  [NSLayoutConstraint activateConstraints:@[
+    [icon.widthAnchor constraintEqualToConstant:26],
+    [icon.heightAnchor constraintEqualToConstant:26]
+  ]];
+
+  UILabel *name = [UILabel new];
+  name.font = [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
+  name.adjustsFontForContentSizeCategory = YES;
+  name.textColor = UIColor.labelColor;
+  name.numberOfLines = 0;
+  name.text = title;
+
+  UILabel *detail = [UILabel new];
+  detail.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
+  detail.adjustsFontForContentSizeCategory = YES;
+  detail.textColor = UIColor.secondaryLabelColor;
+  detail.numberOfLines = 0;
+  detail.text = subtitle;
+
+  UIStackView *content = [[UIStackView alloc] initWithArrangedSubviews:@[icon, name, detail]];
+  content.translatesAutoresizingMaskIntoConstraints = NO;
+  content.axis = UILayoutConstraintAxisVertical;
+  content.alignment = UIStackViewAlignmentLeading;
+  content.spacing = compact ? 5 : 8;
+  content.userInteractionEnabled = NO;
+  [button addSubview:content];
+  [NSLayoutConstraint activateConstraints:@[
+    [content.leadingAnchor constraintEqualToAnchor:button.leadingAnchor constant:15],
+    [content.trailingAnchor constraintEqualToAnchor:button.trailingAnchor constant:-12],
+    [content.topAnchor constraintEqualToAnchor:button.topAnchor constant:14],
+    [content.bottomAnchor constraintEqualToAnchor:button.bottomAnchor constant:-14],
+    [button.heightAnchor constraintGreaterThanOrEqualToConstant:(compact ? 106 : 118)]
+  ]];
+  return button;
+}
+
+- (UILabel *)goldgramDashboardHeading:(NSString *)title {
+  UILabel *label = [UILabel new];
+  label.text = title;
+  label.textColor = UIColor.secondaryLabelColor;
+  label.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+  label.adjustsFontForContentSizeCategory = YES;
+  return label;
+}
+
+- (UIStackView *)goldgramDashboardPair:(UIView *)first second:(UIView *)second {
+  UIStackView *pair = [[UIStackView alloc] initWithArrangedSubviews:@[first, second]];
+  pair.axis = UILayoutConstraintAxisHorizontal;
+  pair.distribution = UIStackViewDistributionFillEqually;
+  pair.alignment = UIStackViewAlignmentFill;
+  pair.spacing = 12;
+  return pair;
+}
+
+- (void)goldgramBuildDashboard {
+  BOOL russian = [[[NSLocale preferredLanguages firstObject] ?: @"" lowercaseString] hasPrefix:@"ru"];
+  UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 320, 1)];
+  UIStackView *stack = [UIStackView new];
+  stack.translatesAutoresizingMaskIntoConstraints = NO;
+  stack.axis = UILayoutConstraintAxisVertical;
+  stack.alignment = UIStackViewAlignmentFill;
+  stack.spacing = 12;
+  [header addSubview:stack];
+  [NSLayoutConstraint activateConstraints:@[
+    [stack.leadingAnchor constraintEqualToAnchor:header.leadingAnchor constant:16],
+    [stack.trailingAnchor constraintEqualToAnchor:header.trailingAnchor constant:-16],
+    [stack.topAnchor constraintEqualToAnchor:header.topAnchor constant:16],
+    [stack.bottomAnchor constraintEqualToAnchor:header.bottomAnchor constant:-18]
+  ]];
+
+  [stack addArrangedSubview:[self goldgramDashboardHeading:
+    russian ? @"GOLDGRAM · MX" : @"GOLDGRAM · MX"]];
+  [stack addArrangedSubview:[self goldgramDashboardTile:
+    russian ? @"Режим невидимки" : @"Ghost mode"
+    subtitle:russian ? @"Приватность и управление статусом" : @"Privacy and presence controls"
+    symbol:@"eye.slash.fill" tint:UIColor.systemIndigoColor identifier:0 compact:NO]];
+
+  [stack addArrangedSubview:[self goldgramDashboardHeading:
+    russian ? @"АРХИВ СООБЩЕНИЙ" : @"MESSAGE ARCHIVE"]];
+  [stack addArrangedSubview:[self goldgramDashboardPair:
+    [self goldgramDashboardTile:russian ? @"Изменённые" : @"Edited"
+      subtitle:russian ? @"История и разделы" : @"History and categories"
+      symbol:@"pencil.line" tint:UIColor.systemBlueColor identifier:20 compact:YES]
+    second:[self goldgramDashboardTile:russian ? @"Удалённые" : @"Deleted"
+      subtitle:russian ? @"Архив удалений" : @"Deletion archive"
+      symbol:@"trash" tint:UIColor.systemRedColor identifier:24 compact:YES]]];
+  [stack addArrangedSubview:[self goldgramDashboardTile:
+    russian ? @"Каналы и комментарии" : @"Channels and comments"
+    subtitle:russian ? @"Открыть существующую историю каналов" : @"Open the existing channel archive"
+    symbol:@"text.bubble" tint:UIColor.systemTealColor identifier:25 compact:YES]];
+
+  [stack addArrangedSubview:[self goldgramDashboardHeading:
+    russian ? @"ИНСТРУМЕНТЫ" : @"TOOLS"]];
+  [stack addArrangedSubview:[self goldgramDashboardPair:
+    [self goldgramDashboardTile:russian ? @"Приватность" : @"Privacy"
+      subtitle:russian ? @"Доступ и функции" : @"Access and features"
+      symbol:@"lock.shield" tint:UIColor.systemIndigoColor identifier:21 compact:YES]
+    second:[self goldgramDashboardTile:russian ? @"Медиа" : @"Media"
+      subtitle:russian ? @"Файлы и загрузки" : @"Files and downloads"
+      symbol:@"square.and.arrow.down" tint:UIColor.systemOrangeColor identifier:22 compact:YES]]];
+  [stack addArrangedSubview:[self goldgramDashboardPair:
+    [self goldgramDashboardTile:russian ? @"Геопозиция" : @"Location"
+      subtitle:russian ? @"Подмена позиции" : @"Location override"
+      symbol:@"location" tint:UIColor.systemBlueColor identifier:4 compact:YES]
+    second:[self goldgramDashboardTile:russian ? @"Другие функции" : @"Other features"
+      subtitle:russian ? @"Дополнительные инструменты" : @"Additional tools"
+      symbol:@"wand.and.stars" tint:UIColor.systemPurpleColor identifier:23 compact:YES]]];
+
+  [stack addArrangedSubview:[self goldgramDashboardHeading:
+    russian ? @"НАСТРОЙКИ" : @"SETTINGS"]];
+  [stack addArrangedSubview:[self goldgramDashboardPair:
+    [self goldgramDashboardTile:russian ? @"Исключения" : @"Exceptions"
+      subtitle:russian ? @"Для невидимки" : @"Ghost-mode exceptions"
+      symbol:@"person.crop.circle.badge.checkmark" tint:UIColor.systemTealColor identifier:1 compact:YES]
+    second:[self goldgramDashboardTile:russian ? @"Файлы" : @"File fixer"
+      subtitle:russian ? @"Исправление" : @"Repair tools"
+      symbol:@"folder" tint:UIColor.systemOrangeColor identifier:3 compact:YES]]];
+  [stack addArrangedSubview:[self goldgramDashboardPair:
+    [self goldgramDashboardTile:russian ? @"Язык" : @"Language"
+      subtitle:russian ? @"Локализация" : @"Localization"
+      symbol:@"globe" tint:UIColor.systemBlueColor identifier:5 compact:YES]
+    second:[self goldgramDashboardTile:russian ? @"О Mx" : @"About Mx"
+      subtitle:russian ? @"Информация" : @"Information"
+      symbol:@"info.circle" tint:UIColor.systemGrayColor identifier:6 compact:YES]]];
+  [stack addArrangedSubview:[self goldgramDashboardTile:
+    russian ? @"Все функции Mx" : @"All Mx features"
+    subtitle:russian ? @"Исходные разделы и переключатели" : @"Original sections and switches"
+    symbol:@"slider.horizontal.3" tint:UIColor.systemGrayColor identifier:2 compact:YES]];
+
+  self.goldgramDashboardHeader = header;
+  self.tableView.tableHeaderView = header;
+}
+
+- (void)goldgramFitDashboard {
+  if (self.goldgramSection || !self.goldgramDashboardHeader) return;
+  CGFloat width = CGRectGetWidth(self.tableView.bounds);
+  if (width < 100) return;
+  UIView *header = self.goldgramDashboardHeader;
+  CGRect frame = header.frame;
+  BOOL widthChanged = fabs(frame.size.width - width) > 0.5;
+  frame.size.width = width;
+  header.frame = frame;
+  CGSize target = CGSizeMake(width, UILayoutFittingCompressedSize.height);
+  CGFloat height = ceil([header systemLayoutSizeFittingSize:target
+    withHorizontalFittingPriority:UILayoutPriorityRequired
+          verticalFittingPriority:UILayoutPriorityFittingSizeLevel].height);
+  if (height <= 0) return;
+  if (widthChanged || fabs(frame.size.height - height) > 0.5) {
+    frame.size.height = height;
+    header.frame = frame;
+    self.tableView.tableHeaderView = header;
+  }
+}
+
+- (void)goldgramDashboardTap:(UIButton *)button {
+  NSInteger identifier = button.tag;
+  if (identifier == 24 || identifier == 25) {
+    // Existing native archive controller: 3 = deleted, 2 = channels/comments.
+    Class browser = NSClassFromString(@"GoldgramArchiveScreen");
+    if ([browser instancesRespondToSelector:@selector(initWithCategory:)]) {
+      id controller = [[browser alloc] initWithCategory:identifier == 24 ? 3 : 2];
+      if ([controller isKindOfClass:UIViewController.class]) {
+        [self.navigationController pushViewController:controller animated:YES];
+      }
+    }
+    return;
+  }
+  Mx *folder = [Mx new];
+  if (identifier >= 20 && identifier <= 23) {
+    folder.goldgramSection = @(MISC);
+    folder.goldgramMiscCategory = @(identifier - 20);
+  } else if (identifier >= 0 && identifier <= CREDITS) {
+    folder.goldgramSection = @(identifier);
+  } else {
+    return;
+  }
+  [self.navigationController pushViewController:folder animated:YES];
+}
+
+'''
+if mx_ui_source.count('- (void)viewDidLoad {') != 1:
+    raise SystemExit('Goldgram #237: Mx dashboard lifecycle anchor mismatch')
+mx_ui_source = mx_ui_source.replace('- (void)viewDidLoad {',
+                                    dashboard_methods + '- (void)viewDidLoad {')
+
+dashboard_property_anchor = '@property(nonatomic, strong) NSNumber *goldgramHistoryCategory;'
+if mx_ui_source.count(dashboard_property_anchor) != 1:
+    raise SystemExit('Goldgram #237: dashboard property anchor mismatch')
+mx_ui_source = mx_ui_source.replace(dashboard_property_anchor,
+    dashboard_property_anchor + '\n@property(nonatomic, strong) UIView *goldgramDashboardHeader;')
+
+dashboard_patches = [
+    ('  [self setupIconAsHeader];',
+     '  if (self.goldgramSection) [self setupIconAsHeader];\n  else [self goldgramBuildDashboard];'),
+    ('  [self fetchAnnouncement];',
+     '  if (self.goldgramSection) [self fetchAnnouncement];'),
+    ('- (void)viewDidLayoutSubviews {\n  [super viewDidLayoutSubviews];',
+     '- (void)viewDidLayoutSubviews {\n  [super viewDidLayoutSubviews];\n  [self goldgramFitDashboard];'),
+    ('  if (!self.goldgramSection) return 8;',
+     '  if (!self.goldgramSection) return 1;'),
+]
+for before, after in dashboard_patches:
+    if mx_ui_source.count(before) != 1:
+        raise SystemExit('Goldgram #237: dashboard patch anchor mismatch: ' + before)
+    mx_ui_source = mx_ui_source.replace(before, after)
+
+# One native destructive row survives below the dashboard. Map only its visible
+# index (0) to the original source index (7); preserve the original confirmation.
+clear_row_anchor = '  if (!self.goldgramSection && indexPath.row == 7) {'
+if mx_ui_source.count(clear_row_anchor) != 2:
+    raise SystemExit('Goldgram #237: expected one clear-history cell and one action')
+mx_ui_source = mx_ui_source.replace(clear_row_anchor,
+    '  if (!self.goldgramSection && indexPath.row == 0) {\n'
+    '    indexPath = [NSIndexPath indexPathForRow:7 inSection:0];\n'
+    '  }\n' + clear_row_anchor)
+
+# The implementation must still expose all seven original section IDs and the
+# existing, account-scoped destructive confirmation.
+for essential in ('goldgramMiscCategory', 'presentClearHistoryFromController:',
+                  'goldgramDashboardTap:', 'GHOST_MODE', 'GHOST_EXCEPTIONS',
+                  'FILE_FIXER', 'FAKE_LOCATION', 'LANGUAGE', 'CREDITS'):
+    if essential not in mx_ui_source:
+        raise SystemExit('Goldgram #237: missing preserved capability ' + essential)
+mx_ui_path.write_text(mx_ui_source)
+print('Goldgram #237: hybrid native dashboard, original switches and clear confirmation preserved')
