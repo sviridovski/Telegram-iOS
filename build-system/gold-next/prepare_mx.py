@@ -1910,7 +1910,7 @@ mx_ui_source = mx_ui_source.replace(author_anchor_245, '''  [stack addArrangedSu
     tint:UIColor.systemBlueColor identifier:29 compact:NO]];
 ''' + author_anchor_245)
 author_route_245 = '''  Mx *folder = [Mx new];
-  if (identifier >= 20 && identifier <= 23) {'''
+  if (identifier == 26) {'''
 if mx_ui_source.count(author_route_245) != 1:
     raise SystemExit('Goldgram #245: dashboard route anchor mismatch')
 mx_ui_source = mx_ui_source.replace(author_route_245, '''  if (identifier == 29) {
