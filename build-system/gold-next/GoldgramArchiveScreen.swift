@@ -1154,16 +1154,17 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
         NotificationCenter.default.addObserver(
             self, selector: #selector(didCommitLiveArchiveChange(_:)),
             name: Notification.Name("GoldgramArchiveChanged"), object: nil)
-        let testButton = UIBarButtonItem(
-            title: "Тест", style: .plain, target: self, action: #selector(captureDiagnosticMenu))
-        let bridgeButton = UIBarButtonItem(image: UIImage(systemName: "square.and.arrow.down"),
-                                           style: .plain, target: self, action: #selector(importPhone8File))
-        bridgeButton.accessibilityLabel = "Импорт iPhone 8"
-        let liveButton = UIBarButtonItem(image: UIImage(systemName: "arrow.triangle.2.circlepath"),
-                                         style: .plain, target: self, action: #selector(showLiveMenu))
-        liveButton.accessibilityLabel = "Goldgram Live"
-        navigationItem.rightBarButtonItems = [liveButton, bridgeButton, testButton,
-            UIBarButtonItem(title: "Выгрузки", style: .plain, target: self, action: #selector(showProcessDiagnostics))]
+        // #244: keep immediate refresh visible; move ALL former top-bar tools
+        // into a single menu without changing their existing handlers.
+        let refreshButton = UIBarButtonItem(image: UIImage(systemName: "arrow.clockwise"),
+                                            style: .plain, target: self,
+                                            action: #selector(refreshArchiveManually))
+        refreshButton.accessibilityLabel = "Обновить архив"
+        let toolsButton = UIBarButtonItem(image: UIImage(systemName: "ellipsis.circle"),
+                                          style: .plain, target: self,
+                                          action: #selector(showArchiveTools))
+        toolsButton.accessibilityLabel = "Инструменты Goldgram"
+        navigationItem.rightBarButtonItems = [toolsButton, refreshButton]
         title = displayName ?? (category == 4 ? "Изменённые сообщения" :
              category == 0 ? "Личные сообщения" :
              category == 1 ? "Группы и чаты" : category == 3 ? "Удалённые сообщения" : "Каналы")
@@ -1185,6 +1186,37 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
         }
         tableView.rowHeight = UITableView.automaticDimension
         tableView.estimatedRowHeight = 110
+    }
+
+    @objc private func refreshArchiveManually() {
+        // Reuse the existing read-only, selected-account and paging guards.
+        load(reset: true)
+    }
+
+    @objc private func showArchiveTools() {
+        let sheet = UIAlertController(title: "Инструменты Goldgram",
+                                      message: nil, preferredStyle: .actionSheet)
+        sheet.addAction(UIAlertAction(title: "Goldgram Live",
+                                      style: .default) { [weak self] _ in
+            self?.showLiveMenu()
+        })
+        sheet.addAction(UIAlertAction(title: "Импорт с iPhone 8",
+                                      style: .default) { [weak self] _ in
+            self?.importPhone8File()
+        })
+        sheet.addAction(UIAlertAction(title: "Тест и диагностика",
+                                      style: .default) { [weak self] _ in
+            self?.captureDiagnosticMenu()
+        })
+        sheet.addAction(UIAlertAction(title: "Выгрузки",
+                                      style: .default) { [weak self] _ in
+            self?.showProcessDiagnostics()
+        })
+        sheet.addAction(UIAlertAction(title: "Отмена", style: .cancel))
+        if let popover = sheet.popoverPresentationController {
+            popover.barButtonItem = navigationItem.rightBarButtonItems?.first
+        }
+        present(sheet, animated: true)
     }
 
     public override func viewWillAppear(_ animated: Bool) {
