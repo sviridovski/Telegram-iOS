@@ -95,3 +95,9 @@ The public [macOS runner availability issue #15291](https://github.com/actions/r
 **Copy-paste handoff prompt:**
 
 > Бро, продолжаем Swiftgram Gold / Goldgram в обычном Chat внутри Goldgram project. Прочитай docs/goldgram/PROJECT_CONTEXT.md, CURRENT_STATUS.md и DECISIONS_LOG.md из ветки goldgram-project-docs репозитория sviridovski/Telegram-iOS. Затем проверь фактический HEAD и GitHub Actions и продолжи последнюю незавершённую задачу. Не ломай SQLite, Ghost и Collector. Не считай код проверенным без зелёной CI и iPhone-теста. После результата обнови эти три документа (только изменённые части) и сообщи точные SHA и ссылки.
+
+## 2026-11-24 local — #251 device regression, #252 candidate
+
+- [#251](https://github.com/sviridovski/Telegram-iOS/actions/runs/45264803031) all jobs green, installed; user video shows tap leads to malformed/empty native chat in Mx. UIKit embedding was wrong for Display layout. Ghost exception screenshot shows overlapping text and inactive decorative add icon (no selection handler in pinned Mx source).
+- Confirmed #251 hot cache: 8279 disk hits of 10103, Bazel 562.346s vs 6054.604s on #250; 9,040,776 KiB cache saved and Mx exact hit. Queue ~7 minutes. Reuse same branch; do not alter cache keys. Mx must rebuild when its recipe changes.
+- [#252](https://github.com/sviridovski/Telegram-iOS/actions/runs/45287862914) commit 5fd55a7acad0bdc380e0b4e824deab14adeb6aec: native handoff via existing GoldgramArchiveReturnController + account validation + retained modal; contact picker with user confirmation through existing MxGhostExceptions storage; restore multiline footer sizing and add row. Three source files changed, no DB/collector/bridge/filter changes. CI in progress at snapshot; actual device results not yet verified.

@@ -120,3 +120,8 @@ Explicit upper bounds in current code: **up to 1000 dialogs in root + 1000 in ar
 7. User works in **ordinary Chat inside ChatGPT project "Goldgram project"**, not Work. New chat reads these three docs and checks GitHub live first; don't force user to repeat project setup.
 
 **Maintenance:** architecture changes update THIS file only after verified code changes; current build snapshot goes into [CURRENT_STATUS](./CURRENT_STATUS.md); dated tests and decisions are appended to [DECISIONS_LOG](./DECISIONS_LOG.md). In a public repository all content must remain sanitized.
+
+## Navigation and Ghost exceptions update (#252, candidate; not yet device-tested)
+
+- **Do not embed native ChatController in the UIKit Mx stack.** #251 rendered an empty/misaligned chat screen. #252 hands exact message ID to TelegramUI after dismissing the existing UIKit modal, pushes chat through Display.NavigationController with the existing GoldgramArchiveReturnController, and restores the same search modal on back/swipe. The return list retains its selected author and scroll offset; account checks are mandatory. See GoldgramAuthorSearch.swift and SharedAccountContext.swift at commit 5fd55a7acad0bdc380e0b4e824deab14adeb6aec.
+- **Ghost exceptions:** the original empty-state plus icon was decorative; #252 candidate adds a selectable add-person row (also when list is nonempty), native contact/username selection and explicit confirmation. Only actual user peers can be added. Existing MxGhostExceptions store, keys, profile rename/removal and privacy semantics are preserved; online status remains outside per-peer exceptions. Restore automatic multiline footer/row height to avoid overlapping text. No new database. Verify on device before calling these changes successful.
