@@ -877,3 +877,226 @@ for essential in ('goldgramMiscCategory', 'presentClearHistoryFromController:',
         raise SystemExit('Goldgram #237: missing preserved capability ' + essential)
 mx_ui_path.write_text(mx_ui_source)
 print('Goldgram #237: hybrid native dashboard, original switches and clear confirmation preserved')
+
+
+# Goldgram #240: compact native settings screens, with true grouped Ghost rows.
+# This runs AFTER #239's dashboard. Only UIKit layout and visible row grouping
+# change. Original Mx switch tags/keys, actions, and profile exception IDs do not.
+ghost_groups_240 = [[0,1],[2,3,19,20],[4,5,6,7,8,9,13,14],[10,11,12,15,16,17,18]]
+assert sorted(v for group in ghost_groups_240 for v in group) == list(range(21))
+
+inner_methods_240 = r'''
+// A display-to-source row map: never change an original Mx switch tag/key.
++ (NSArray<NSArray<NSNumber *> *> *)goldgramGhostRows {
+  static NSArray<NSArray<NSNumber *> *> *groups;
+  static dispatch_once_t onceToken;
+  dispatch_once(&onceToken, ^{
+    groups = @[
+      @[@0, @1],
+      @[@2, @3, @19, @20],        // online, typing, read, stories
+      @[@4, @5, @6, @7, @8, @9, @13, @14],  // media activity
+      @[@10, @11, @12, @15, @16, @17, @18] // other activity
+    ];
+  });
+  return groups;
+}
+
+- (NSIndexPath *)goldgramGhostSourceIndexPath:(NSIndexPath *)visible {
+  NSArray<NSArray<NSNumber *> *> *groups = [Mx goldgramGhostRows];
+  if (visible.section >= (NSInteger)groups.count ||
+      visible.row >= (NSInteger)groups[visible.section].count) return nil;
+  NSInteger original = groups[visible.section][visible.row].integerValue;
+  return [NSIndexPath indexPathForRow:original inSection:GHOST_MODE];
+}
+
+- (UIColor *)goldgramInnerTint {
+  if (!self.goldgramSection) return UIColor.systemGrayColor;
+  switch (self.goldgramSection.integerValue) {
+    case GHOST_MODE: return UIColor.systemIndigoColor;
+    case GHOST_EXCEPTIONS: return UIColor.systemTealColor;
+    case MISC: {
+      NSInteger category = self.goldgramMiscCategory ?
+          self.goldgramMiscCategory.integerValue : -1;
+      if (category == 0) return UIColor.systemBlueColor;
+      if (category == 1) return UIColor.systemIndigoColor;
+      if (category == 2) return UIColor.systemOrangeColor;
+      return UIColor.systemPurpleColor;
+    }
+    case FILE_FIXER: return UIColor.systemOrangeColor;
+    case FAKE_LOCATION: return UIColor.systemBlueColor;
+    case LANGUAGE: return UIColor.systemBlueColor;
+    default: return UIColor.systemGrayColor;
+  }
+}
+
+- (NSString *)goldgramInnerSymbol {
+  switch (self.goldgramSection.integerValue) {
+    case GHOST_MODE: return @"eye.slash.fill";
+    case GHOST_EXCEPTIONS: return @"person.crop.circle.badge.checkmark";
+    case MISC: {
+      if (!self.goldgramMiscCategory) return @"slider.horizontal.3";
+      NSArray *symbols = @[@"pencil.line", @"lock.shield", @"square.and.arrow.down", @"wand.and.stars"];
+      NSInteger i = self.goldgramMiscCategory.integerValue;
+      return (i >= 0 && i < (NSInteger)symbols.count) ? symbols[i] : @"slider.horizontal.3";
+    }
+    case FILE_FIXER: return @"folder";
+    case FAKE_LOCATION: return @"location";
+    case LANGUAGE: return @"globe";
+    default: return @"info.circle";
+  }
+}
+
+- (NSString *)goldgramInnerSummary {
+  BOOL ru = [[NSLocale preferredLanguages].firstObject hasPrefix:@"ru"];
+  switch (self.goldgramSection.integerValue) {
+    case GHOST_MODE: return ru ? @"Управление видимостью и действиями" : @"Presence and activity controls";
+    case GHOST_EXCEPTIONS: return ru ? @"Люди, для которых действуют исключения" : @"People with individual exceptions";
+    case MISC:
+      if (!self.goldgramMiscCategory) return ru ? @"Все доступные настройки Mx" : @"All available Mx settings";
+      switch (self.goldgramMiscCategory.integerValue) {
+        case 0: return ru ? @"Редакции, удаления и сохранение истории" : @"Edits, deletion and history";
+        case 1: return ru ? @"Защита контента и конфиденциальность" : @"Content protection and privacy";
+        case 2: return ru ? @"Настройки загрузки и медиа" : @"Download and media controls";
+        default: return ru ? @"Дополнительные возможности" : @"Additional tools";
+      }
+    case FILE_FIXER: return ru ? @"Исправление работы файлов и кэша" : @"File handling and cache tools";
+    case FAKE_LOCATION: return ru ? @"Подмена местоположения" : @"Location override";
+    case LANGUAGE: return ru ? @"Выбор языка интерфейса" : @"Choose interface language";
+    default: return ru ? @"Информация и сведения о Mx" : @"About Mx";
+  }
+}
+
+// Compact context header, replacing the old large Mx logo inside folders.
+// Layout follows system Dynamic Type and dark/light mode.
+- (void)goldgramBuildInnerHeader {
+  if (!self.goldgramSection) return;
+  UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 320, 1)];
+
+  UIImageView *symbol = [[UIImageView alloc] initWithImage:
+      [UIImage systemImageNamed:[self goldgramInnerSymbol]]];
+  symbol.translatesAutoresizingMaskIntoConstraints = NO;
+  symbol.tintColor = [self goldgramInnerTint];
+  symbol.contentMode = UIViewContentModeScaleAspectFit;
+
+  UILabel *name = [UILabel new];
+  name.text = [self tableView:self.tableView titleForHeaderInSection:0] ?: @"Mx";
+  name.font = [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
+  name.adjustsFontForContentSizeCategory = YES;
+  name.textColor = UIColor.labelColor;
+  name.numberOfLines = 0;
+
+  UILabel *subtitle = [UILabel new];
+  subtitle.text = [self goldgramInnerSummary];
+  subtitle.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+  subtitle.adjustsFontForContentSizeCategory = YES;
+  subtitle.textColor = UIColor.secondaryLabelColor;
+  subtitle.numberOfLines = 0;
+
+  UIStackView *labels = [[UIStackView alloc]
+      initWithArrangedSubviews:@[name, subtitle]];
+  labels.translatesAutoresizingMaskIntoConstraints = NO;
+  labels.axis = UILayoutConstraintAxisVertical;
+  labels.alignment = UIStackViewAlignmentFill;
+  labels.spacing = 4;
+
+  [header addSubview:symbol];
+  [header addSubview:labels];
+  [NSLayoutConstraint activateConstraints:@[
+    [symbol.leadingAnchor constraintEqualToAnchor:header.leadingAnchor constant:28],
+    [symbol.topAnchor constraintGreaterThanOrEqualToAnchor:header.topAnchor constant:14],
+    [symbol.centerYAnchor constraintEqualToAnchor:labels.centerYAnchor],
+    [symbol.widthAnchor constraintEqualToConstant:26],
+    [symbol.heightAnchor constraintEqualToConstant:26],
+    [labels.leadingAnchor constraintEqualToAnchor:symbol.trailingAnchor constant:14],
+    [labels.trailingAnchor constraintEqualToAnchor:header.trailingAnchor constant:-28],
+    [labels.topAnchor constraintEqualToAnchor:header.topAnchor constant:14],
+    [labels.bottomAnchor constraintEqualToAnchor:header.bottomAnchor constant:-14]
+  ]];
+
+  self.goldgramInnerHeader = header;
+  self.tableView.tableHeaderView = header;
+}
+
+- (void)goldgramFitInnerHeader {
+  if (!self.goldgramSection || !self.goldgramInnerHeader) return;
+  CGFloat width = CGRectGetWidth(self.tableView.bounds);
+  if (width < 100) return;
+  UIView *header = self.goldgramInnerHeader;
+  CGRect f = header.frame;
+  BOOL changedWidth = fabs(f.size.width - width) > 0.5;
+  f.size.width = width;
+  header.frame = f;
+  CGFloat height = ceil([header systemLayoutSizeFittingSize:
+      CGSizeMake(width, UILayoutFittingCompressedSize.height)
+      withHorizontalFittingPriority:UILayoutPriorityRequired
+      verticalFittingPriority:UILayoutPriorityFittingSizeLevel].height);
+  if (height > 0 && (changedWidth || fabs(f.size.height - height) > 0.5)) {
+    f.size.height = height;
+    header.frame = f;
+    self.tableView.tableHeaderView = header;
+  }
+}
+
+// Appearance only. UISwitch targets, gestures, source index paths and storage
+// remain the original Mx implementations.
+- (void)tableView:(UITableView *)tableView
+    willDisplayCell:(UITableViewCell *)cell
+    forRowAtIndexPath:(NSIndexPath *)indexPath {
+  if (!self.goldgramSection) return;
+  cell.backgroundColor = UIColor.secondarySystemGroupedBackgroundColor;
+  cell.textLabel.textColor = UIColor.labelColor;
+  cell.detailTextLabel.textColor = UIColor.secondaryLabelColor;
+  cell.textLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+  cell.detailTextLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+  cell.textLabel.adjustsFontForContentSizeCategory = YES;
+  cell.detailTextLabel.adjustsFontForContentSizeCategory = YES;
+  if (cell.imageView.image) cell.imageView.tintColor = [self goldgramInnerTint];
+}
+'''
+if mx_ui_source.count('- (void)viewDidLoad {') != 1:
+    raise SystemExit('Goldgram #240: Mx lifecycle anchor changed')
+mx_ui_source = mx_ui_source.replace('- (void)viewDidLoad {',
+                                    inner_methods_240 + '- (void)viewDidLoad {')
+
+inner_prop_240 = '@property(nonatomic, strong) UIView *goldgramDashboardHeader;'
+if mx_ui_source.count(inner_prop_240) != 1:
+    raise SystemExit('Goldgram #240: dashboard property anchor changed')
+mx_ui_source = mx_ui_source.replace(inner_prop_240,
+    inner_prop_240 + '\n@property(nonatomic, strong) UIView *goldgramInnerHeader;')
+
+# Group the existing Ghost rows without changing source row IDs or switch tags.
+inner_patches_240 = [
+    ('  // The root lists the seven folders; an opened folder shows one section.\n  return 1;',
+     '  if (self.goldgramSection && self.goldgramSection.integerValue == GHOST_MODE)\n    return self.isGhostModeExpanded ? 4 : 1;\n  return 1;'),
+    ('  if (self.goldgramHistoryCategory) return 1;\n  if (!self.goldgramSection) return 1;',
+     '  if (self.goldgramSection && self.goldgramSection.integerValue == GHOST_MODE) {\n    if (!self.isGhostModeExpanded) return section == 0 ? 2 : 0;\n    NSArray *groups = [Mx goldgramGhostRows];\n    return section >= 0 && section < (NSInteger)groups.count ? [groups[section] count] : 0;\n  }\n  if (self.goldgramHistoryCategory) return 1;\n  if (!self.goldgramSection) return 1;'),
+    ('    titleForHeaderInSection:(NSInteger)section {\n  if (self.goldgramHistoryCategory)',
+     '    titleForHeaderInSection:(NSInteger)section {\n  if (self.goldgramSection && self.goldgramSection.integerValue == GHOST_MODE && section > 0) {\n    BOOL ru = [[NSLocale preferredLanguages].firstObject hasPrefix:@"ru"];\n    NSArray *names = ru ? @[@"", @"ПРИСУТСТВИЕ", @"МЕДИА И ЗАПИСЬ", @"ДРУГИЕ ДЕЙСТВИЯ"] : @[@"", @"PRESENCE", @"MEDIA AND RECORDING", @"OTHER ACTIVITY"];\n    return section < (NSInteger)names.count ? names[section] : nil;\n  }\n  if (self.goldgramHistoryCategory)'),
+    ('  // Reuse original MX row mapping; UISwitch tags still encode source row IDs.\n  indexPath = [NSIndexPath indexPathForRow:indexPath.row\n                                inSection:self.goldgramSection.integerValue];',
+     '  // Match the visible grouped Ghost row to the original switch-key row.\n  if (self.goldgramSection.integerValue == GHOST_MODE) {\n    indexPath = [self goldgramGhostSourceIndexPath:indexPath];\n    if (!indexPath) return [self normalCellFromTableView:tableView];\n  }\n  // Reuse original MX row mapping; UISwitch tags still encode source row IDs.\n  indexPath = [NSIndexPath indexPathForRow:indexPath.row\n                                inSection:self.goldgramSection.integerValue];'),
+    ('  indexPath = [NSIndexPath indexPathForRow:indexPath.row\n                                inSection:self.goldgramSection.integerValue];\n\n  if (indexPath.section == GHOST_MODE && indexPath.row == 1)',
+     '  if (self.goldgramSection.integerValue == GHOST_MODE) {\n    indexPath = [self goldgramGhostSourceIndexPath:indexPath];\n    if (!indexPath) return;\n  }\n  indexPath = [NSIndexPath indexPathForRow:indexPath.row\n                                inSection:self.goldgramSection.integerValue];\n\n  if (indexPath.section == GHOST_MODE && indexPath.row == 1)'),
+    ('  [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:0]\n                  withRowAnimation:UITableViewRowAnimationAutomatic];',
+     '  [self.tableView reloadData];'),
+    ('  if (self.goldgramSection) [self setupIconAsHeader];\n  else [self goldgramBuildDashboard];',
+     '  if (self.goldgramSection) [self goldgramBuildInnerHeader];\n  else [self goldgramBuildDashboard];'),
+    ('  [self setupFooterView];',
+     '  if (!self.goldgramSection || self.goldgramSection.integerValue == CREDITS)\n    [self setupFooterView];\n  else\n    self.tableView.tableFooterView = [UIView new];'),
+    ('- (void)viewDidLayoutSubviews {\n  [super viewDidLayoutSubviews];\n  [self goldgramFitDashboard];',
+     '- (void)viewDidLayoutSubviews {\n  [super viewDidLayoutSubviews];\n  [self goldgramFitDashboard];\n  [self goldgramFitInnerHeader];'),
+]
+for before, after in inner_patches_240:
+    if mx_ui_source.count(before) != 1:
+        raise SystemExit('Goldgram #240: patch anchor mismatch: ' + before[:80])
+    mx_ui_source = mx_ui_source.replace(before, after)
+
+# The scoped @selector(switchChanged:) still uses original 0..20 Ghost row IDs.
+for needed in ('goldgramGhostSourceIndexPath:', 'goldgramBuildInnerHeader',
+               'goldgramFitInnerHeader', 'willDisplayCell:',
+               'goldgramDashboardTap:', 'goldgramMiscRows',
+               'presentClearHistoryFromController:',
+               "indexPath = [self goldgramGhostSourceIndexPath:indexPath];"):
+    if needed not in mx_ui_source:
+        raise SystemExit('Goldgram #240: expected feature disappeared: ' + needed)
+mx_ui_path.write_text(mx_ui_source)
+print('Goldgram #240: native compact inner menus and 4 safe Ghost groups, original switch keys preserved')
