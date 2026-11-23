@@ -1895,3 +1895,33 @@ for preserved in ('goldgramMiscRows', 'goldgramDashboardLoadCounts',
         raise SystemExit('Goldgram #244: preserved capability missing: ' + preserved)
 mx_ui_path.write_text(mx_ui_source)
 print('Goldgram #244: direct personal/group archives; deduplicated history; compact Ghost; safe-area inner menus')
+
+
+# Goldgram #245: one new dashboard tile without reusing old Mx IDs.
+# Preserve #244 archives, all ghost toggles, and the existing SQLite reader.
+author_anchor_245 = '''  [stack addArrangedSubview:[self goldgramDashboardTile:
+    russian ? @"Режим невидимки" : @"Ghost mode"'''
+if mx_ui_source.count(author_anchor_245) != 1:
+    raise SystemExit('Goldgram #245: dashboard author entry anchor mismatch')
+mx_ui_source = mx_ui_source.replace(author_anchor_245, '''  [stack addArrangedSubview:[self goldgramDashboardTile:
+    russian ? @"Поиск по автору" : @"Search by author"
+    subtitle:russian ? @"Сообщения человека в разных чатах" : @"Messages by sender across chats"
+    symbol:@"person.crop.circle.badge.magnifyingglass"
+    tint:UIColor.systemBlueColor identifier:29 compact:NO]];
+''' + author_anchor_245)
+author_route_245 = '''  Mx *folder = [Mx new];
+  if (identifier >= 20 && identifier <= 23) {'''
+if mx_ui_source.count(author_route_245) != 1:
+    raise SystemExit('Goldgram #245: dashboard route anchor mismatch')
+mx_ui_source = mx_ui_source.replace(author_route_245, '''  if (identifier == 29) {
+    Class search = NSClassFromString(@"GoldgramAuthorSearchBridge");
+    SEL action = @selector(presentFromController:);
+    if ([search respondsToSelector:action]) {
+      typedef void (*OpenSearch)(id, SEL, UIViewController *);
+      ((OpenSearch)[search methodForSelector:action])(search, action, self);
+    }
+    return;
+  }
+''' + author_route_245)
+mx_ui_path.write_text(mx_ui_source)
+print('Goldgram #245: author search on Mx dashboard')
