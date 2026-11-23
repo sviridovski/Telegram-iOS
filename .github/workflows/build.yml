@@ -2,7 +2,7 @@ name: Gold Next CI
 
 on:
   push:
-    branches: [ gold-next, port/telegram-13.2 ]
+    branches: [ gold-next, port/telegram-13.2, gold-next-243-author-search ]
   workflow_dispatch:
 
 permissions:

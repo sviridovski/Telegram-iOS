@@ -1726,3 +1726,204 @@ if 'Все функции Mx' in mx_ui_source or 'All Mx features' in mx_ui_sour
     raise SystemExit('Goldgram #242: duplicate root tile was not removed')
 mx_ui_path.write_text(mx_ui_source)
 print('Goldgram #242: scoped totals, direct edit/deletion archives, one home for each Mx setting')
+
+
+# Goldgram #244: UI-only folder de-duplication, root archive shortcuts, safe areas.
+# Keep legacy Mx switch keys, SQLite counters, navigation and archival actions.
+def patch_244(a, b, label):
+    global mx_ui_source
+    if mx_ui_source.count(a) != 1:
+        raise SystemExit('Goldgram #244: anchor ' + label + ' missing/ambiguous')
+    mx_ui_source = mx_ui_source.replace(a, b, 1)
+
+patch_244('''  [stack addArrangedSubview:[self goldgramDashboardTile:
+    russian ? @"Каналы и комментарии" : @"Channels and comments"''',
+'''  [stack addArrangedSubview:[self goldgramDashboardPair:
+    [self goldgramDashboardTile:russian ? @"Личные сообщения" : @"Personal messages"
+      subtitle:russian ? @"История личных чатов" : @"Private chat history"
+      symbol:@"person.crop.circle" tint:UIColor.systemTealColor identifier:27 compact:YES]
+    second:[self goldgramDashboardTile:russian ? @"Группы и чаты" : @"Groups and chats"
+      subtitle:russian ? @"История групп" : @"Group history"
+      symbol:@"person.3" tint:UIColor.systemPurpleColor identifier:28 compact:YES]]];
+  [stack addArrangedSubview:[self goldgramDashboardTile:
+    russian ? @"Каналы и комментарии" : @"Channels and comments"''',
+    'home personal/group tiles')
+patch_244(
+    'if (identifier == 20 || identifier == 24 || identifier == 25) {',
+    'if (identifier == 20 || identifier == 24 || identifier == 25 || identifier == 27 || identifier == 28) {',
+    'archive IDs')
+patch_244(
+    'id controller = [[browser alloc] initWithCategory:identifier == 20 ? 4 : (identifier == 24 ? 3 : 2)];',
+    '''NSInteger category = identifier == 20 ? 4 : identifier == 24 ? 3 :
+                        identifier == 27 ? 0 : identifier == 28 ? 1 : 2;
+      id controller = [[browser alloc] initWithCategory:category];''',
+    'existing archive categories')
+# Hide only redundant archive links in the five-row history settings view;
+# preserve the handlers and all five original Mx toggles.
+patch_244(
+    'return [groups[category] count] + (category == 0 ? 4 : 0);',
+    'return [groups[category] count];',
+    'duplicated history rows')
+
+# Internal table must not begin underneath the translucent custom navbar.
+# Root dashboard remains unchanged, while nested menus use safe-area layout.
+patch_244(
+    '[self.tableView.topAnchor constraintEqualToAnchor:self.view.topAnchor]',
+    '[self.tableView.topAnchor constraintEqualToAnchor:(self.goldgramSection ? self.view.safeAreaLayoutGuide.topAnchor : self.view.topAnchor)]',
+    'inner safe-area anchor')
+patch_244(
+    '  self.tableView.translatesAutoresizingMaskIntoConstraints = NO;',
+    '''  self.tableView.translatesAutoresizingMaskIntoConstraints = NO;
+  if (self.goldgramSection) {
+    self.tableView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
+    if (@available(iOS 15.0, *)) {
+      self.tableView.sectionHeaderTopPadding = 0;
+    }
+    self.tableView.estimatedSectionFooterHeight = 0;
+  }''',
+    'disable double top inset')
+
+# Reuse all original Ghost group keys/counters, but separate count from title
+# and move the navigation chevron to the right.
+start_name = '- (void)goldgramSetGhostGroupButton:(UIButton *)button section:(NSInteger)section {'
+end_name = '- (void)goldgramGhostGroupTapped:(UIButton *)button {'
+if mx_ui_source.count(start_name) != 1 or mx_ui_source.count(end_name) != 1:
+    raise SystemExit('Goldgram #244: Ghost setter source moved')
+start, end = mx_ui_source.index(start_name), mx_ui_source.index(end_name)
+mx_ui_source = mx_ui_source[:start] + r'''- (void)goldgramSetGhostGroupButton:(UIButton *)button section:(NSInteger)section {
+  NSString *title = [self goldgramGhostGroupTitle:section];
+  NSArray<NSString *> *parts = [title componentsSeparatedByString:@"  ·  "];
+  UILabel *name = (UILabel *)[button viewWithTag:4441];
+  UILabel *count = (UILabel *)[button viewWithTag:4442];
+  UIImageView *arrow = (UIImageView *)[button viewWithTag:4443];
+  name.text = parts.firstObject;
+  count.text = parts.count > 1 ? parts.lastObject : @"";
+  arrow.image = [UIImage systemImageNamed:
+                [self goldgramGhostGroupExpanded:section] ? @"chevron.down" : @"chevron.right"];
+  button.accessibilityLabel = title;
+  BOOL ru = [[NSLocale preferredLanguages].firstObject hasPrefix:@"ru"];
+  button.accessibilityHint = [self goldgramGhostGroupExpanded:section]
+      ? (ru ? @"Свернуть группу" : @"Collapse group")
+      : (ru ? @"Раскрыть группу" : @"Expand group");
+}
+
+''' + mx_ui_source[end:]
+
+start_head = '- (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {'
+end_head = '- (CGFloat)tableView:(UITableView *)tableView\n    heightForHeaderInSection:(NSInteger)section {'
+if mx_ui_source.count(start_head) != 1 or mx_ui_source.count(end_head) != 1:
+    raise SystemExit('Goldgram #244: Ghost header source moved')
+start, end = mx_ui_source.index(start_head), mx_ui_source.index(end_head)
+mx_ui_source = mx_ui_source[:start] + r'''- (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
+  if (!self.goldgramSection || self.goldgramSection.integerValue != GHOST_MODE ||
+      !self.isGhostModeExpanded || section < 1 || section > 3) return nil;
+  NSString *reuse = @"GoldgramGhostGroupHeader";
+  UITableViewHeaderFooterView *header =
+      [tableView dequeueReusableHeaderFooterViewWithIdentifier:reuse];
+  if (!header) {
+    header = [[UITableViewHeaderFooterView alloc] initWithReuseIdentifier:reuse];
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeCustom];
+    button.translatesAutoresizingMaskIntoConstraints = NO;
+    button.backgroundColor = UIColor.secondarySystemGroupedBackgroundColor;
+    button.layer.cornerRadius = 15;
+    button.layer.masksToBounds = YES;
+    button.accessibilityTraits = UIAccessibilityTraitButton;
+    UILabel *name = [UILabel new];
+    name.tag = 4441;
+    name.textColor = UIColor.labelColor;
+    name.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+    name.adjustsFontForContentSizeCategory = YES;
+    name.numberOfLines = 1;
+    [name setContentCompressionResistancePriority:UILayoutPriorityDefaultLow
+                                          forAxis:UILayoutConstraintAxisHorizontal];
+    UILabel *count = [UILabel new];
+    count.tag = 4442;
+    count.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+    count.adjustsFontForContentSizeCategory = YES;
+    count.textColor = UIColor.secondaryLabelColor;
+    [count setContentCompressionResistancePriority:UILayoutPriorityRequired
+                                           forAxis:UILayoutConstraintAxisHorizontal];
+    UIImageView *arrow = [UIImageView new];
+    arrow.tag = 4443;
+    arrow.tintColor = UIColor.tertiaryLabelColor;
+    arrow.contentMode = UIViewContentModeScaleAspectFit;
+    [arrow.widthAnchor constraintEqualToConstant:14].active = YES;
+    [arrow.heightAnchor constraintEqualToConstant:14].active = YES;
+    UIStackView *items = [[UIStackView alloc] initWithArrangedSubviews:@[name, count, arrow]];
+    items.axis = UILayoutConstraintAxisHorizontal;
+    items.alignment = UIStackViewAlignmentCenter;
+    items.spacing = 10;
+    items.translatesAutoresizingMaskIntoConstraints = NO;
+    items.userInteractionEnabled = NO;
+    [button addSubview:items];
+    [NSLayoutConstraint activateConstraints:@[
+      [items.leadingAnchor constraintEqualToAnchor:button.leadingAnchor constant:16],
+      [items.trailingAnchor constraintEqualToAnchor:button.trailingAnchor constant:-16],
+      [items.topAnchor constraintEqualToAnchor:button.topAnchor constant:8],
+      [items.bottomAnchor constraintEqualToAnchor:button.bottomAnchor constant:-8]
+    ]];
+    [button addTarget:self action:@selector(goldgramGhostGroupTapped:)
+       forControlEvents:UIControlEventTouchUpInside];
+    [header.contentView addSubview:button];
+    [NSLayoutConstraint activateConstraints:@[
+      [button.leadingAnchor constraintEqualToAnchor:header.contentView.leadingAnchor constant:16],
+      [button.trailingAnchor constraintEqualToAnchor:header.contentView.trailingAnchor constant:-16],
+      [button.topAnchor constraintEqualToAnchor:header.contentView.topAnchor constant:2],
+      [button.bottomAnchor constraintEqualToAnchor:header.contentView.bottomAnchor constant:-2]
+    ]];
+  }
+  UIButton *button = (UIButton *)header.contentView.subviews.firstObject;
+  button.tag = section;
+  [self goldgramSetGhostGroupButton:button section:section];
+  return header;
+}
+
+''' + mx_ui_source[end:]
+patch_244('self.isGhostModeExpanded && section > 0 && section < 4) return 56.0;',
+          'self.isGhostModeExpanded && section > 0 && section < 4) return 48.0;',
+          'compact Ghost headers')
+patch_244(end_head, r'''- (CGFloat)tableView:(UITableView *)tableView heightForFooterInSection:(NSInteger)section {
+  if (!self.goldgramSection) return UITableViewAutomaticDimension;
+  return self.goldgramSection.integerValue == GHOST_MODE ? 8.0 : CGFLOAT_MIN;
+}
+
+''' + end_head, 'compact section footers')
+
+for preserved in ('goldgramMiscRows', 'goldgramDashboardLoadCounts',
+                  'goldgramGhostGroupTapped:', 'presentClearHistoryFromController:',
+                  'goldgramOpenGhostExceptions', 'goldgramDashboardArchiveChanged',
+                  'identifier == 27 ? 0', 'identifier == 28 ? 1'):
+    if preserved not in mx_ui_source:
+        raise SystemExit('Goldgram #244: preserved capability missing: ' + preserved)
+mx_ui_path.write_text(mx_ui_source)
+print('Goldgram #244: direct personal/group archives; deduplicated history; compact Ghost; safe-area inner menus')
+
+
+# Goldgram #245: one new dashboard tile without reusing old Mx IDs.
+# Preserve #244 archives, all ghost toggles, and the existing SQLite reader.
+author_anchor_245 = '''  [stack addArrangedSubview:[self goldgramDashboardTile:
+    russian ? @"Режим невидимки" : @"Ghost mode"'''
+if mx_ui_source.count(author_anchor_245) != 1:
+    raise SystemExit('Goldgram #245: dashboard author entry anchor mismatch')
+mx_ui_source = mx_ui_source.replace(author_anchor_245, '''  [stack addArrangedSubview:[self goldgramDashboardTile:
+    russian ? @"Поиск по автору" : @"Search by author"
+    subtitle:russian ? @"Сообщения человека в разных чатах" : @"Messages by sender across chats"
+    symbol:@"person.crop.circle.badge.magnifyingglass"
+    tint:UIColor.systemBlueColor identifier:29 compact:NO]];
+''' + author_anchor_245)
+author_route_245 = '''  Mx *folder = [Mx new];
+  if (identifier == 26) {'''
+if mx_ui_source.count(author_route_245) != 1:
+    raise SystemExit('Goldgram #245: dashboard route anchor mismatch')
+mx_ui_source = mx_ui_source.replace(author_route_245, '''  if (identifier == 29) {
+    Class search = NSClassFromString(@"GoldgramAuthorSearchBridge");
+    SEL action = @selector(presentFromController:);
+    if ([search respondsToSelector:action]) {
+      typedef void (*OpenSearch)(id, SEL, UIViewController *);
+      ((OpenSearch)[search methodForSelector:action])(search, action, self);
+    }
+    return;
+  }
+''' + author_route_245)
+mx_ui_path.write_text(mx_ui_source)
+print('Goldgram #245: author search on Mx dashboard')

@@ -711,6 +711,7 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
         }
         
         self.context = context
+        GoldgramAuthorSearchBridge.bind(context: context)
         self.chatLocation = chatLocation
         self.chatLocationContextHolder = chatLocationContextHolder
         self.subject = subject
@@ -8053,8 +8054,20 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
         }
     }
 
+    @objc private func goldgramOpenAuthorSearch() {
+        GoldgramAuthorSearchBridge.open(from: self, context: self.context, chatId: self.chatLocation.peerId)
+    }
+
     override public func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        if let peerId = self.chatLocation.peerId, peerId.namespace != Namespaces.Peer.SecretChat,
+           !(self.navigationItem.rightBarButtonItems ?? []).contains(where: { $0.accessibilityIdentifier == "GoldgramAuthorSearch" }) {
+            let searchButton = UIBarButtonItem(image: UIImage(systemName: "person.crop.circle.badge.magnifyingglass"),
+                style: .plain, target: self, action: #selector(goldgramOpenAuthorSearch))
+            searchButton.accessibilityIdentifier = "GoldgramAuthorSearch"
+            searchButton.accessibilityLabel = "Поиск по автору в этом чате"
+            self.navigationItem.rightBarButtonItems = (self.navigationItem.rightBarButtonItems ?? []) + [searchButton]
+        }
         self.forwardSideListAppearance(.didAppear, animated: animated)
         
         self.didAppear = true

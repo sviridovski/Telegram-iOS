@@ -309,6 +309,7 @@ public class ChatListControllerImpl: TelegramBaseController, ChatListController 
     
     public init(context: AccountContext, location: ChatListControllerLocation, controlsHistoryPreload: Bool, hideNetworkActivityStatus: Bool = false, previewing: Bool = false, enableDebugActions: Bool, isSideList: Bool = false) {
         self.context = context
+        GoldgramAuthorSearchBridge.bind(context: context)
         self.isSideList = isSideList
         self.controlsHistoryPreload = controlsHistoryPreload
         self.hideNetworkActivityStatus = hideNetworkActivityStatus
