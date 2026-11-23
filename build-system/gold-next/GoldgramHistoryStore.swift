@@ -1651,12 +1651,13 @@ public final class GoldgramArchiveReader: NSObject {
         case 1: kinds = [1, 2]       // Basic groups + supergroups
         case 2: kinds = [2, 3]       // Channels + natively verified discussions in UI
         case 3: kinds = [0, 1, 2, 3] // Deleted-only folder, all cloud peer kinds
+        case 4: kinds = [0, 1, 2, 3] // #242 all edited, including deleted later
         default: kinds = []
         }
         let requestedSources = request["sources"] as? [[String: Any]] ?? []
         var sources: [(kind: Int32, id: Int64)] = []
         if mode == "combined" {
-            guard (category == 2 || category == 3), !requestedSources.isEmpty, requestedSources.count <= 2 else {
+            guard (category == 2 || category == 3 || category == 4), !requestedSources.isEmpty, requestedSources.count <= 2 else {
                 completion(["status": "invalid_request", "items": []]); return
             }
             for source in requestedSources {
@@ -1695,7 +1696,7 @@ public final class GoldgramArchiveReader: NSObject {
             let response = self.read(
                 accountId: accountId, mode: mode,
                 kinds: kinds, peerId: peerId, peerKind: scopedPeerKind, sources: sources, deletedOnly: category == 3,
-                offset: Int32(offset), limit: Int32(limit), diagnosticSince: diagnosticSince,
+                offset: Int32(offset), limit: Int32(limit), editedOnly: category == 4, diagnosticSince: diagnosticSince,
                 geoSince: geoSince, geoUntil: geoUntil,
                 attemptTokens: Array(attemptTokens)
             )
@@ -1735,7 +1736,7 @@ public final class GoldgramArchiveReader: NSObject {
     private static func read(
         accountId: Int64, mode: String, kinds: [Int32],
         peerId: Int64, peerKind: Int32, sources: [(kind: Int32, id: Int64)], deletedOnly: Bool,
-        offset: Int32, limit: Int32, diagnosticSince: Int64,
+        offset: Int32, limit: Int32, editedOnly: Bool, diagnosticSince: Int64,
         geoSince: Int64, geoUntil: Int64, attemptTokens: [String]
     ) -> [String: Any] {
         // Opening a missing DB in READONLY mode must never create one.
@@ -2077,6 +2078,10 @@ public final class GoldgramArchiveReader: NSObject {
                     ? (deletedOnly ? fastDeletedDialogsSQL : fastDialogsSQL)
                     : fastMessagesSQL(deletedOnly: deletedOnly))
             : (mode == "totals" ? countsSQL : mode == "dialogs" ? dialogsSQL : messagesSQL)
+        // #242 only alters the view filter; it never changes captured data.
+        if editedOnly && useFastIndex && mode != "totals" {
+            sql = sql.replacingOccurrences(of: "f.deleted=0", with: "f.edited=1")
+        }
         if mode == "dialogs" {
             let placeholders = kinds.map { _ in "?" }.joined(separator: ", ")
             let target = useFastIndex ? "f" : "d"
@@ -2096,7 +2101,8 @@ public final class GoldgramArchiveReader: NSObject {
         }
         if !useFastIndex && !deletedOnly && mode != "totals" {
             let anchor = mode == "dialogs" ? "GROUP BY d.peer_kind" : "ORDER BY COALESCE(m.sent_at, m.last_seen_at) DESC"
-            sql = sql.replacingOccurrences(of: anchor, with: editedOnlyPredicate + anchor)
+            let predicate = editedOnly ? "AND (\(fastEditPredicate)) " : editedOnlyPredicate
+            sql = sql.replacingOccurrences(of: anchor, with: predicate + anchor)
         }
         if mode == "combined" {
             let predicate = sources.map { _ in "(m.peer_kind = ? AND m.peer_id = ?)" }.joined(separator: " OR ")

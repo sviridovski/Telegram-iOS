@@ -1352,3 +1352,377 @@ for needed in ('goldgramGhostGroupExpanded:', 'goldgramGhostGroupTapped:',
         raise SystemExit('Goldgram #241: required preserved capability absent: ' + needed)
 mx_ui_path.write_text(mx_ui_source)
 print('Goldgram #241: compact inner Mx UI, collapsible Ghost groups with real switch counts; original archive & keys intact')
+
+
+# Goldgram #242: a single, scoped dashboard; reused SQLite totals; no
+# changes to any persisted Mx setting, archive table, collector, or bridge.
+dashboard_cleanup_242 = r'''
+// UI-only links; every original Mx action remains in its previous section.
+- (UIButton *)goldgramDashboardLink:(NSString *)name
+                             symbol:(NSString *)symbol
+                         identifier:(NSInteger)identifier {
+  UIButton *button = [UIButton buttonWithType:UIButtonTypeCustom];
+  button.translatesAutoresizingMaskIntoConstraints = NO;
+  button.tag = identifier;
+  button.backgroundColor = UIColor.clearColor;
+  button.accessibilityLabel = name;
+  button.accessibilityTraits = UIAccessibilityTraitButton;
+  [button addTarget:self action:@selector(goldgramDashboardTap:)
+     forControlEvents:UIControlEventTouchUpInside];
+
+  UIImageView *icon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:symbol]];
+  icon.translatesAutoresizingMaskIntoConstraints = NO;
+  icon.tintColor = UIColor.secondaryLabelColor;
+  UILabel *label = [UILabel new];
+  label.text = name;
+  label.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+  label.adjustsFontForContentSizeCategory = YES;
+  label.textColor = UIColor.labelColor;
+  UIImageView *chevron = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"chevron.right"]];
+  chevron.translatesAutoresizingMaskIntoConstraints = NO;
+  chevron.tintColor = UIColor.tertiaryLabelColor;
+  UIStackView *row = [[UIStackView alloc] initWithArrangedSubviews:@[icon, label, chevron]];
+  row.translatesAutoresizingMaskIntoConstraints = NO;
+  row.axis = UILayoutConstraintAxisHorizontal;
+  row.alignment = UIStackViewAlignmentCenter;
+  row.spacing = 14;
+  row.userInteractionEnabled = NO;
+  [button addSubview:row];
+  [NSLayoutConstraint activateConstraints:@[
+    [icon.widthAnchor constraintEqualToConstant:22],
+    [icon.heightAnchor constraintEqualToConstant:22],
+    [chevron.widthAnchor constraintEqualToConstant:12],
+    [chevron.heightAnchor constraintEqualToConstant:14],
+    [row.leadingAnchor constraintEqualToAnchor:button.leadingAnchor constant:16],
+    [row.trailingAnchor constraintEqualToAnchor:button.trailingAnchor constant:-16],
+    [row.topAnchor constraintEqualToAnchor:button.topAnchor constant:12],
+    [row.bottomAnchor constraintEqualToAnchor:button.bottomAnchor constant:-12],
+    [button.heightAnchor constraintGreaterThanOrEqualToConstant:50]
+  ]];
+  return button;
+}
+
+- (UIStackView *)goldgramDashboardSettingsList:(BOOL)russian {
+  UIStackView *list = [UIStackView new];
+  list.axis = UILayoutConstraintAxisVertical;
+  list.alignment = UIStackViewAlignmentFill;
+  list.spacing = 0;
+  list.backgroundColor = UIColor.secondarySystemGroupedBackgroundColor;
+  list.layer.cornerRadius = 18;
+  list.clipsToBounds = YES;
+  NSArray<NSString *> *titles = russian
+      ? @[@"Сохранение истории", @"Исправление файлов", @"Язык", @"О Mx"]
+      : @[@"History settings", @"File repair", @"Language", @"About Mx"];
+  NSArray<NSString *> *symbols = @[@"archivebox", @"folder", @"globe", @"info.circle"];
+  NSArray<NSNumber *> *ids = @[@26, @3, @5, @6];
+  for (NSInteger i = 0; i < (NSInteger)titles.count; ++i) {
+    [list addArrangedSubview:[self goldgramDashboardLink:titles[i]
+                                                  symbol:symbols[i]
+                                              identifier:ids[i].integerValue]];
+    if (i + 1 < (NSInteger)titles.count) {
+      UIView *line = [UIView new];
+      line.backgroundColor = UIColor.separatorColor;
+      [line.heightAnchor constraintEqualToConstant:0.5].active = YES;
+      [list addArrangedSubview:line];
+    }
+  }
+  return list;
+}
+
+- (UIView *)goldgramDashboardTotalsCard:(BOOL)russian {
+  UIView *card = [UIView new];
+  card.backgroundColor = UIColor.secondarySystemGroupedBackgroundColor;
+  card.layer.cornerRadius = 18.0;
+  card.clipsToBounds = YES;
+  UILabel *heading = [UILabel new];
+  heading.text = russian ? @"Сумма по категориям" : @"Category totals";
+  heading.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+  heading.textColor = UIColor.secondaryLabelColor;
+  UILabel *count = [UILabel new];
+  count.text = @"—";
+  count.tag = 3099;
+  count.font = [UIFont preferredFontForTextStyle:UIFontTextStyleLargeTitle];
+  count.adjustsFontForContentSizeCategory = YES;
+  count.textColor = UIColor.labelColor;
+  UILabel *caption = [UILabel new];
+  caption.text = russian ? @"Изменённые + удалённые · возможны пересечения"
+                         : @"Edited + deleted · may overlap";
+  caption.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
+  caption.adjustsFontForContentSizeCategory = YES;
+  caption.textColor = UIColor.secondaryLabelColor;
+  caption.numberOfLines = 0;
+  UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[heading, count, caption]];
+  stack.translatesAutoresizingMaskIntoConstraints = NO;
+  stack.axis = UILayoutConstraintAxisVertical;
+  stack.alignment = UIStackViewAlignmentLeading;
+  stack.spacing = 4;
+  [card addSubview:stack];
+  [NSLayoutConstraint activateConstraints:@[
+    [stack.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:16],
+    [stack.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-16],
+    [stack.topAnchor constraintEqualToAnchor:card.topAnchor constant:12],
+    [stack.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-12]
+  ]];
+  return card;
+}
+
+// Uses GoldgramArchiveReader.query(mode:totals) on its existing read-only WAL
+// path. Never creates a database and never caches a previous account's counts.
+- (void)goldgramDashboardLoadCounts {
+  if (self.goldgramSection || !self.goldgramDashboardHeader) return;
+  Class reader = NSClassFromString(@"GoldgramArchiveReader");
+  if (![reader respondsToSelector:@selector(activeAccountId)] ||
+      ![reader respondsToSelector:@selector(query:completion:)]) return;
+  NSNumber *account = [reader activeAccountId];
+  if (!account || account.longLongValue <= 0) {
+    [self goldgramDashboardSetTotal:@"—" edited:@"—" deleted:@"—"];
+    return;
+  }
+  __weak typeof(self) weakSelf = self;
+  NSDictionary *request = @{@"accountId":account, @"category":@3,
+                            @"mode":@"totals", @"offset":@0, @"limit":@1};
+  [reader query:request completion:^(NSDictionary *answer) {
+    __strong typeof(weakSelf) owner = weakSelf;
+    if (!owner || owner.goldgramSection) return;
+    Class currentReader = NSClassFromString(@"GoldgramArchiveReader");
+    NSNumber *current = [currentReader activeAccountId];
+    if (!current || current.longLongValue != account.longLongValue) {
+      [owner goldgramDashboardSetTotal:@"—" edited:@"—" deleted:@"—"];
+      return;
+    }
+    if (![answer[@"status"] isEqual:@"ok"]) {
+      [owner goldgramDashboardSetTotal:@"—" edited:@"—" deleted:@"—"];
+      return;
+    }
+    NSNumber *edited = answer[@"edited"];
+    NSNumber *deleted = answer[@"deleted"];
+    if (![edited isKindOfClass:NSNumber.class] || ![deleted isKindOfClass:NSNumber.class]) return;
+    long long e = MAX(0LL, edited.longLongValue);
+    long long d = MAX(0LL, deleted.longLongValue);
+    NSNumberFormatter *formatter = [NSNumberFormatter new];
+    formatter.numberStyle = NSNumberFormatterDecimalStyle;
+    [owner goldgramDashboardSetTotal:[formatter stringFromNumber:@(e + d)]
+                            edited:[formatter stringFromNumber:@(e)]
+                           deleted:[formatter stringFromNumber:@(d)]];
+  }];
+}
+
+- (void)goldgramDashboardSetTotal:(NSString *)total
+                           edited:(NSString *)edited
+                          deleted:(NSString *)deleted {
+  UIView *root = self.goldgramDashboardHeader;
+  UILabel *combined = (UILabel *)[root viewWithTag:3099];
+  UILabel *editedLabel = (UILabel *)[root viewWithTag:3020];
+  UILabel *deletedLabel = (UILabel *)[root viewWithTag:3024];
+  if ([combined isKindOfClass:UILabel.class]) combined.text = total;
+  if ([editedLabel isKindOfClass:UILabel.class]) editedLabel.text = edited;
+  if ([deletedLabel isKindOfClass:UILabel.class]) deletedLabel.text = deleted;
+}
+
+- (void)goldgramDashboardArchiveChanged:(NSNotification *)notification {
+  if (self.goldgramSection || !self.isViewLoaded || !self.view.window) return;
+  Class reader = NSClassFromString(@"GoldgramArchiveReader");
+  NSNumber *account = [reader respondsToSelector:@selector(activeAccountId)]
+      ? [reader activeAccountId] : nil;
+  if ([notification.object isKindOfClass:NSNumber.class] && account &&
+      [notification.object longLongValue] != account.longLongValue) return;
+  [NSObject cancelPreviousPerformRequestsWithTarget:self
+                                           selector:@selector(goldgramDashboardLoadCounts)
+                                             object:nil];
+  [self performSelector:@selector(goldgramDashboardLoadCounts)
+             withObject:nil afterDelay:0.35];
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+  [super viewWillAppear:animated];
+  if (!self.goldgramSection) [self goldgramDashboardLoadCounts];
+}
+
+// Exception controls keep their existing section and all original handlers.
+- (void)goldgramOpenGhostExceptions {
+  Mx *controller = [Mx new];
+  controller.goldgramSection = @(GHOST_EXCEPTIONS);
+  [self.navigationController pushViewController:controller animated:YES];
+}
+'''
+if mx_ui_source.count('- (void)goldgramBuildDashboard {') != 1:
+    raise SystemExit('Goldgram #242: dashboard anchor changed')
+mx_ui_source = mx_ui_source.replace('- (void)goldgramBuildDashboard {',
+    dashboard_cleanup_242 + '- (void)goldgramBuildDashboard {')
+
+api_anchor_242 = '@interface NSObject (GoldgramBrowserFactory)'
+if mx_ui_source.count(api_anchor_242) != 1:
+    raise SystemExit('Goldgram #242: runtime browser API anchor changed')
+mx_ui_source = mx_ui_source.replace(api_anchor_242,
+    '''@interface NSObject (GoldgramArchiveTotalsAPI)
++ (NSNumber *)activeAccountId;
++ (void)query:(NSDictionary *)request completion:(void (^)(NSDictionary *))completion;
+@end
+''' + api_anchor_242)
+
+# The root has only one remaining table row (the existing confirmed clear).
+# Every other destination is a visible tile or compact navigation row.
+tile_counts_anchor = '  content.userInteractionEnabled = NO;'
+if mx_ui_source.count(tile_counts_anchor) != 1:
+    raise SystemExit('Goldgram #242: tile content anchor changed')
+mx_ui_source = mx_ui_source.replace(tile_counts_anchor, tile_counts_anchor + '''
+  if (identifier == 20 || identifier == 24) {
+    UILabel *count = [UILabel new];
+    count.tag = 3000 + identifier;
+    count.text = @"—";
+    count.font = [UIFont preferredFontForTextStyle:UIFontTextStyleTitle2];
+    count.adjustsFontForContentSizeCategory = YES;
+    count.textColor = UIColor.labelColor;
+    [content insertArrangedSubview:count atIndex:1];
+  }''')
+
+old_heading_242 = '''  [stack addArrangedSubview:[self goldgramDashboardHeading:
+    russian ? @"АРХИВ СООБЩЕНИЙ" : @"MESSAGE ARCHIVE"]];'''
+if mx_ui_source.count(old_heading_242) != 1:
+    raise SystemExit('Goldgram #242: archive heading changed')
+mx_ui_source = mx_ui_source.replace(old_heading_242, '''
+  [stack addArrangedSubview:[self goldgramDashboardHeading:
+    russian ? @"АРХИВ GOLDGRAM" : @"GOLDGRAM ARCHIVE"]];
+  [stack addArrangedSubview:[self goldgramDashboardTotalsCard:russian]];''')
+
+dashboard_rewords_242 = [
+  ('subtitle:russian ? @"Приватность и управление статусом" : @"Privacy and presence controls"',
+   'subtitle:russian ? @"Статус, активность и исключения" : @"Presence, activity and exceptions"'),
+  ('subtitle:russian ? @"История и разделы" : @"History and categories"',
+   'subtitle:russian ? @"История редакций" : @"Edit history"'),
+  ('subtitle:russian ? @"Открыть существующую историю каналов" : @"Open the existing channel archive"',
+   'subtitle:russian ? @"Публикации и обсуждения" : @"Posts and discussions"'),
+]
+for before, after in dashboard_rewords_242:
+    if mx_ui_source.count(before) != 1:
+        raise SystemExit('Goldgram #242: dashboard label anchor changed')
+    mx_ui_source = mx_ui_source.replace(before, after)
+settings_start_242 = '''  [stack addArrangedSubview:[self goldgramDashboardHeading:
+    russian ? @"НАСТРОЙКИ" : @"SETTINGS"]];'''
+settings_end_242 = '  self.goldgramDashboardHeader = header;'
+if mx_ui_source.count(settings_start_242) != 1 or mx_ui_source.count(settings_end_242) != 1:
+    raise SystemExit('Goldgram #242: settings boundaries changed')
+ix = mx_ui_source.index(settings_start_242)
+jx = mx_ui_source.index(settings_end_242, ix)
+mx_ui_source = mx_ui_source[:ix] + '''
+  [stack addArrangedSubview:[self goldgramDashboardHeading:
+    russian ? @"НАСТРОЙКИ" : @"SETTINGS"]];
+  [stack addArrangedSubview:[self goldgramDashboardSettingsList:russian]];
+
+''' + mx_ui_source[jx:]
+
+old_route_242 = '''  if (identifier == 24 || identifier == 25) {
+    // Existing native archive controller: 3 = deleted, 2 = channels/comments.'''
+new_route_242 = '''  if (identifier == 20 || identifier == 24 || identifier == 25) {
+    // Existing Swift archive: 4 = all edits, 3 = all deletions, 2 = channels.
+    // This view never alters the underlying archive or its capture path.'''
+if mx_ui_source.count(old_route_242) != 1:
+    raise SystemExit('Goldgram #242: archive route anchor changed')
+mx_ui_source = mx_ui_source.replace(old_route_242, new_route_242)
+old_dest_242 = 'id controller = [[browser alloc] initWithCategory:identifier == 24 ? 3 : 2];'
+if mx_ui_source.count(old_dest_242) != 1:
+    raise SystemExit('Goldgram #242: archive route category changed')
+mx_ui_source = mx_ui_source.replace(old_dest_242,
+    'id controller = [[browser alloc] initWithCategory:identifier == 20 ? 4 : (identifier == 24 ? 3 : 2)];')
+old_folder_242 = '''  Mx *folder = [Mx new];
+  if (identifier >= 20 && identifier <= 23) {'''
+new_folder_242 = '''  Mx *folder = [Mx new];
+  if (identifier == 26) {
+    // Former "Edited" settings remain accessible as "History settings".
+    folder.goldgramSection = @(MISC);
+    folder.goldgramMiscCategory = @0;
+  } else if (identifier >= 21 && identifier <= 23) {'''
+if mx_ui_source.count(old_folder_242) != 1:
+    raise SystemExit('Goldgram #242: settings route anchor changed')
+mx_ui_source = mx_ui_source.replace(old_folder_242, new_folder_242)
+
+# Group names change only in the UI; the original source row groups remain.
+old_group_title_242 = '@[@"Удалённые и изменённые", @"Приватность и доступ",'
+if mx_ui_source.count(old_group_title_242) != 1:
+    raise SystemExit('Goldgram #242: history section title changed')
+mx_ui_source = mx_ui_source.replace(old_group_title_242,
+    '@[@"Сохранение истории", @"Приватность и доступ",')
+
+# Add a compact link *inside* Ghost instead of a duplicate root tile.
+# This replaces only the #241 compact header, not its setting table.
+ghost_header_start = '- (void)goldgramBuildInnerHeader {'
+ghost_header_end = '- (void)goldgramFitInnerHeader {'
+if mx_ui_source.count(ghost_header_start) != 1 or mx_ui_source.count(ghost_header_end) != 1:
+    raise SystemExit('Goldgram #242: inner header boundaries changed')
+start = mx_ui_source.index(ghost_header_start)
+end = mx_ui_source.index(ghost_header_end, start)
+inner_header_242 = r'''- (void)goldgramBuildInnerHeader {
+  if (!self.goldgramSection) return;
+  UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 320, 1)];
+  UIStackView *column = [UIStackView new];
+  column.translatesAutoresizingMaskIntoConstraints = NO;
+  column.axis = UILayoutConstraintAxisVertical;
+  column.alignment = UIStackViewAlignmentFill;
+  column.spacing = 8;
+  UIImageView *symbol = [[UIImageView alloc] initWithImage:
+      [UIImage systemImageNamed:[self goldgramInnerSymbol]]];
+  symbol.tintColor = [self goldgramInnerTint];
+  [symbol.widthAnchor constraintEqualToConstant:20].active = YES;
+  [symbol.heightAnchor constraintEqualToConstant:20].active = YES;
+  UILabel *summary = [UILabel new];
+  summary.text = [self goldgramInnerSummary];
+  summary.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+  summary.adjustsFontForContentSizeCategory = YES;
+  summary.textColor = UIColor.secondaryLabelColor;
+  summary.numberOfLines = 0;
+  UIStackView *line = [[UIStackView alloc] initWithArrangedSubviews:@[symbol, summary]];
+  line.axis = UILayoutConstraintAxisHorizontal;
+  line.alignment = UIStackViewAlignmentCenter;
+  line.spacing = 11;
+  [column addArrangedSubview:line];
+  if (self.goldgramSection.integerValue == GHOST_MODE) {
+    BOOL ru = [[NSLocale preferredLanguages].firstObject hasPrefix:@"ru"];
+    UIButton *exceptions = [UIButton buttonWithType:UIButtonTypeSystem];
+    [exceptions setTitle:ru ? @"Исключения для невидимки  ›" : @"Ghost exceptions  ›"
+                forState:UIControlStateNormal];
+    exceptions.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeft;
+    exceptions.titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+    [exceptions setTitleColor:UIColor.systemTealColor forState:UIControlStateNormal];
+    [exceptions addTarget:self action:@selector(goldgramOpenGhostExceptions)
+         forControlEvents:UIControlEventTouchUpInside];
+    [exceptions.heightAnchor constraintGreaterThanOrEqualToConstant:44].active = YES;
+    [column addArrangedSubview:exceptions];
+  }
+  [header addSubview:column];
+  [NSLayoutConstraint activateConstraints:@[
+    [column.leadingAnchor constraintEqualToAnchor:header.leadingAnchor constant:30],
+    [column.trailingAnchor constraintEqualToAnchor:header.trailingAnchor constant:-30],
+    [column.topAnchor constraintEqualToAnchor:header.topAnchor constant:11],
+    [column.bottomAnchor constraintEqualToAnchor:header.bottomAnchor constant:-11]
+  ]];
+  self.goldgramInnerHeader = header;
+  self.tableView.tableHeaderView = header;
+}
+
+'''
+mx_ui_source = mx_ui_source[:start] + inner_header_242 + mx_ui_source[end:]
+
+observer_anchor_242 = '  else [self goldgramBuildDashboard];'
+if mx_ui_source.count(observer_anchor_242) != 1:
+    raise SystemExit('Goldgram #242: root lifecycle changed')
+mx_ui_source = mx_ui_source.replace(observer_anchor_242, '''  else {
+    [self goldgramBuildDashboard];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+       selector:@selector(goldgramDashboardArchiveChanged:)
+           name:@"GoldgramArchiveChanged" object:nil];
+  }''')
+
+# Counts are per archived message in two categories, not numbers of edit events.
+# Do not relabel them as "unique messages". User-facing sum can double-count
+# a message which was both edited and deleted.
+for must in ('goldgramDashboardArchiveChanged:', 'goldgramDashboardLoadCounts',
+             'goldgramDashboardTotalsCard:', 'goldgramOpenGhostExceptions',
+             'identifier == 20 ? 4', 'goldgramDashboardSettingsList:russian',
+             'presentClearHistoryFromController:', 'goldgramGhostGroupExpanded:',
+             'kGhostModeEnabled'):
+    if must not in mx_ui_source:
+        raise SystemExit('Goldgram #242: required capability absent ' + must)
+if 'Все функции Mx' in mx_ui_source or 'All Mx features' in mx_ui_source:
+    raise SystemExit('Goldgram #242: duplicate root tile was not removed')
+mx_ui_path.write_text(mx_ui_source)
+print('Goldgram #242: scoped totals, direct edit/deletion archives, one home for each Mx setting')

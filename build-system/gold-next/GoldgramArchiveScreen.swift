@@ -155,6 +155,8 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
     // The work item never queries SQLite on the UI thread.
     private var liveRefreshWork: DispatchWorkItem?
     private var status = "Загрузка истории…"
+    // #242: UI-only filter; raw rows/pagination remain intact.
+    private var channelDisplayFilter = 0
     // Folder summaries contain NO message text. Retain only a bounded first
     // page per account/category so repeated navigation has a zero-I/O first
     // paint. NSCache releases the snapshot under memory pressure.
@@ -1162,8 +1164,25 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
         liveButton.accessibilityLabel = "Goldgram Live"
         navigationItem.rightBarButtonItems = [liveButton, bridgeButton, testButton,
             UIBarButtonItem(title: "Выгрузки", style: .plain, target: self, action: #selector(showProcessDiagnostics))]
-        title = displayName ?? (category == 0 ? "Личные сообщения" :
+        title = displayName ?? (category == 4 ? "Изменённые сообщения" :
+             category == 0 ? "Личные сообщения" :
              category == 1 ? "Группы и чаты" : category == 3 ? "Удалённые сообщения" : "Каналы")
+        if category == 2 && sources != nil {
+            let header = UIView(frame: CGRect(x: 0, y: 0, width: 320, height: 62))
+            let filter = UISegmentedControl(items: ["Все", "Публикации", "Комментарии"])
+            filter.selectedSegmentIndex = 0
+            filter.translatesAutoresizingMaskIntoConstraints = false
+            filter.addTarget(self, action: #selector(didChangeChannelFilter(_:)),
+                             for: .valueChanged)
+            header.addSubview(filter)
+            NSLayoutConstraint.activate([
+                filter.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 16),
+                filter.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -16),
+                filter.topAnchor.constraint(equalTo: header.topAnchor, constant: 10),
+                filter.heightAnchor.constraint(equalToConstant: 36)
+            ])
+            tableView.tableHeaderView = header
+        }
         tableView.rowHeight = UITableView.automaticDimension
         tableView.estimatedRowHeight = 110
     }
@@ -1265,8 +1284,24 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
         }
     }
 
+    @objc private func didChangeChannelFilter(_ control: UISegmentedControl) {
+        channelDisplayFilter = control.selectedSegmentIndex
+        rebuildDisplayItems()
+        tableView.reloadData()
+    }
+
     private func rebuildDisplayItems() {
-        displayItems = sources == nil ? GoldgramArchiveGrouping.folders(items, category: category) : items
+        if sources == nil {
+            displayItems = GoldgramArchiveGrouping.folders(items, category: category)
+        } else if category == 2 && channelDisplayFilter != 0 {
+            // Filter the displayed page only: never rewrite SQLite or cursors.
+            let target: Int32 = channelDisplayFilter == 1 ? 3 : 2
+            displayItems = items.filter {
+                ($0["peerKind"] as? NSNumber)?.int32Value == target
+            }
+        } else {
+            displayItems = items
+        }
     }
 
     private func load(reset: Bool) {
@@ -1296,7 +1331,7 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
         let first = sources?.first
         let request: NSDictionary = [
             "accountId": NSNumber(value: active), "category": NSNumber(value: category),
-            "mode": sources == nil ? "dialogs" : (category == 2 || category == 3) ? "combined" : "messages",
+            "mode": sources == nil ? "dialogs" : (category == 2 || category == 3 || category == 4) ? "combined" : "messages",
             "peerId": first?["peerId"] ?? NSNumber(value: 0),
             "peerKind": first?["peerKind"] ?? NSNumber(value: -1),
             "sources": sources ?? [],
