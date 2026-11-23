@@ -56,9 +56,9 @@
 | **#247** | Mx failed; Native cancelled | Same availability issue |
 | **#248** | Mx + Native cancelled before runners | Infrastructure/runner capacity; not compilation evidence |
 | **#249** | Mx success; Native failed early on **PostboxImportCheck** | New author-search file directly imported Postbox and used `.postbox`, forbidden for new ChatListUI code |
-| **#250** | **Mx success, Native in_progress** at last API check; parent of new commit is exactly green #243 | Isolated branch + Engine wrappers. **Final success and iPhone behavior NOT verified** |
+| **#250** | **SUCCESS** mx/native/build; commit parent is exactly green #243. Installed on iPhone. Search by author returns results; tap to open chat FAILED. Native cold build 6054.604s. Bazel cache saved successfully. | Continue with #251 navigation fix; do not misclassify successful search as successful jump |
 
-Artifacts/links: [#243](https://github.com/sviridovski/Telegram-iOS/actions/runs/45111847167) · [#249](https://github.com/sviridovski/Telegram-iOS/actions/runs/45233819435) · [#250](https://github.com/sviridovski/Telegram-iOS/actions/runs/45240852665) · [#250 commit](https://github.com/sviridovski/Telegram-iOS/commit/a159ca601d72750556f045ebb8820c4541f64ba0).
+Artifacts/links: [#243](https://github.com/sviridovski/Telegram-iOS/actions/runs/45111847167) · [#249](https://github.com/sviridovski/Telegram-iOS/actions/runs/45233819435) · [#250 GREEN](https://github.com/sviridovski/Telegram-iOS/actions/runs/45240852665) · [#251 queued](https://github.com/sviridovski/Telegram-iOS/actions/runs/45264803031) · [navigation fix](https://github.com/sviridovski/Telegram-iOS/commit/caf15ec7e8dac8bdf3bdcf8b80c595be5275f147).
 
 **Important failure classification:**
 1. **queued/timeout/cancelled without runner** ⇒ GitHub infrastructure, not code compile result.
@@ -75,7 +75,16 @@ The public [macOS runner availability issue #15291](https://github.com/actions/r
 - On **#250**, waiting for xcode-27 VM ~5m14s, cache restore step ~1s and native compile far longer than #243. Probable **cold cache due to separate branch scope**; verify final job logs before claiming exact cache miss. Avoid unnecessary new CI branch for future fixes; don't modify compiler flags or reset Bazel cache casually.
 - Target repeat CI **15–20 minutes** when warm; if >20 min, first inspect runner wait, restored key/hit rate, Bazel elapsed/critical path, cache upload/save and Mx per-step time. Do not trade correctness for speed.
 
-## 6. How to continue in a new ChatGPT chat
+## 6. New evidence — 2026-11-23 author-search navigation and warmed CI cache
+
+- **#250 complete:** GitHub Actions [run #250](https://github.com/sviridovski/Telegram-iOS/actions/runs/45240852665) finished **all three jobs green**, IPA artifact exists. User installed it and sent a screenshot proving that author search returned multiple date-stamped messages. However **tapping the message had no effect**.
+- **Cause in source:** `GoldgramAuthorSearch.swift` requires `navigationController as? Display.NavigationController`, but Mx's search UI is embedded in a **UIKit UINavigationController**; a second guard requires `EngineMessage.enginePeers` to contain the peer despite message.id already specifying it. Either guard silently abandons the tap.
+- **#251 proposed correction:** [commit caf15ec](https://github.com/sviridovski/Telegram-iOS/commit/caf15ec7e8dac8bdf3bdcf8b80c595be5275f147) uses `context.sharedContext.makeChatController` with exact `message.id.peerId` and `.message(id: .id(message.id), ...)`. Push onto same UIKit nav stack; back button / left-edge swipe should pop and reveal the *unchanged* search screen/results/scroll offset. **Device success NOT yet verified**.
+- **CI cache:** #250 cold Bazel: **6054.604 seconds**, 7539 local, 791 worker, 1773 internal, **zero disk-cache hits**. After finishing, step reported `Bazel cache save eligible: true`, **7,480,636 KiB** and `Cache saved with key: gold-next-bazel-xcode27-b058a733...-a159ca6...`. Mx cache saved in final job. #251 runs on **same branch with unchanged workflow/Mx input files**, so check that Mx cache is reused directly and native restore-prefix hits saved Bazel cache before interpreting compile duration.
+- **#251 run:** [45264803031](https://github.com/sviridovski/Telegram-iOS/actions/runs/45264803031) was **queued** when added. It has not been declared green, nor installed.
+- The ongoing architecture/collector status did not change in this navigation-only commit; no changes to collector, bridge or SQLite.
+
+## 7. How to continue in a new ChatGPT chat
 
 1. Read **all three Markdown docs** from branch **goldgram-project-docs**: PROJECT_CONTEXT, CURRENT_STATUS, DECISIONS_LOG.
 2. **Verify latest state externally**: repository branch SHA, last green workflow, latest run jobs/steps/artifacts and any actual installed-IPA test results provided by user. The documents are a checkpoint, not a real-time source.
