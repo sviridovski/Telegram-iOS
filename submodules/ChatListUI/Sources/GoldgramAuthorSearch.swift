@@ -44,6 +44,7 @@ private final class GoldgramAuthorSearchScreen: UITableViewController, UISearchB
     private var pending: [PeerId] = []
     private var running: [PeerId: Disposable] = [:]
     private var candidatesLocal = MetaDisposable()
+    private var candidatesLocalYo = MetaDisposable()
     private var candidatesRemote = MetaDisposable()
     private var dialogsDisposable = MetaDisposable()
     private var requestGeneration = 0
@@ -65,6 +66,7 @@ private final class GoldgramAuthorSearchScreen: UITableViewController, UISearchB
 
     deinit {
         candidatesLocal.dispose()
+        candidatesLocalYo.dispose()
         candidatesRemote.dispose()
         dialogsDisposable.dispose()
         for task in running.values { task.dispose() }
@@ -95,6 +97,14 @@ private final class GoldgramAuthorSearchScreen: UITableViewController, UISearchB
         info.text = "Введите имя человека, затем выберите его Telegram-профиль."
     }
 
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        // Do not keep searching after the author-search screen is closed.
+        if isMovingFromParent || isBeingDismissed {
+            cancelSearch()
+        }
+    }
+
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         guard let header = tableView.tableHeaderView else { return }
@@ -123,6 +133,7 @@ private final class GoldgramAuthorSearchScreen: UITableViewController, UISearchB
     func searchBar(_ searchBar: UISearchBar, textDidChange searchText: String) {
         cancelSearch()
         selectedAuthor = nil
+        title = "Поиск по автору"
         candidates = []
         tableView.reloadData()
         let original = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -139,6 +150,17 @@ private final class GoldgramAuthorSearchScreen: UITableViewController, UISearchB
         candidatesLocal.set(local.start(next: { [weak self] matches in
             self?.addCandidates(matches.compactMap { $0.peer }.map(EnginePeer.init), generation: generation)
         }))
+        // The local Postbox index can distinguish е from ё. Query both spellings
+        // so a saved "Лёша Начальник" is found when the user enters "леша".
+        let yoQuery = normalized.replacingOccurrences(of: "е", with: "ё")
+        if yoQuery != normalized {
+            let yoLocal = context.account.postbox.searchPeers(query: yoQuery)
+                |> take(1)
+                |> deliverOnMainQueue
+            candidatesLocalYo.set(yoLocal.start(next: { [weak self] matches in
+                self?.addCandidates(matches.compactMap { $0.peer }.map(EnginePeer.init), generation: generation)
+            }))
+        }
         let remote = context.engine.contacts.searchRemotePeers(query: original, scope: .everywhere)
             |> take(1)
             |> deliverOnMainQueue
@@ -156,6 +178,7 @@ private final class GoldgramAuthorSearchScreen: UITableViewController, UISearchB
         requestGeneration += 1
         dialogsDisposable.set(nil)
         candidatesLocal.set(nil)
+        candidatesLocalYo.set(nil)
         candidatesRemote.set(nil)
         for task in running.values { task.dispose() }
         running.removeAll()
@@ -173,6 +196,7 @@ private final class GoldgramAuthorSearchScreen: UITableViewController, UISearchB
     private func beginSearch() {
         guard selectedAuthor != nil else { return }
         cancelSearch()
+        title = selectedAuthor.map { "Сообщения: " + $0.compactDisplayTitle } ?? "Поиск по автору"
         let generation = requestGeneration
         tableView.reloadData()
         ongoing = true
@@ -224,9 +248,12 @@ private final class GoldgramAuthorSearchScreen: UITableViewController, UISearchB
         if pending.isEmpty && activeRequests == 0 {
             ongoing = false
             let note = incomplete
-                ? " Часть диалогов или страниц истории не проверена."
-                : " Результаты могут быть неполными при сетевых ошибках."
-            info.text = "Проверено чатов: \(checkedDialogs) из \(totalDialogs). Найдено сообщений: \(messages.count)." + note
+                ? " ВНИМАНИЕ: часть диалогов или страниц истории не проверена."
+                : " При сетевых сбоях Telegram может вернуть неполную выдачу."
+            let summary = messages.isEmpty
+                ? "Совпадений среди проверенных чатов нет."
+                : "Найдено сообщений: \(messages.count)."
+            info.text = "Проверено чатов: \(checkedDialogs) из \(totalDialogs). " + summary + note
         } else {
             info.text = "Ищу… Проверено: \(checkedDialogs) из \(totalDialogs), найдено: \(messages.count)."
         }
