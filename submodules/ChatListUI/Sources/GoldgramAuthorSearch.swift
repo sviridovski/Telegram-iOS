@@ -336,15 +336,26 @@ private final class GoldgramAuthorSearchScreen: UITableViewController, UISearchB
             authorInput.resignFirstResponder()
             beginSearch()
         } else {
+            // Mx presents this search in a UIKit UINavigationController, NOT
+            // Telegram's Display.NavigationController. Casting to the latter
+            // silently ignored taps on every matching message.
             guard messages.indices.contains(indexPath.row),
-                  let navigation = navigationController as? NavigationController else { return }
+                  let navigation = navigationController,
+                  navigation.topViewController === self else { return }
             let message = messages[indexPath.row]
-            guard let chatPeer = message.enginePeers[message.id.peerId] else { return }
-            context.sharedContext.navigateToChatController(NavigateToChatControllerParams(
-                navigationController: navigation, context: context,
-                chatLocation: .peer(chatPeer),
+            // The message's source peerId is authoritative. Some Telegram
+            // search responses omit enginePeers[peerId], so do not require it.
+            let chat = context.sharedContext.makeChatController(
+                context: context,
+                chatLocation: .peer(id: message.id.peerId),
                 subject: .message(id: .id(message.id), highlight: nil,
-                    timecode: nil, setupReply: false)))
+                    timecode: nil, setupReply: false),
+                botStart: nil, mode: .standard(.default), params: nil)
+            // Keep the search controller underneath the chat on the SAME
+            // UIKit stack. The normal back button / edge-swipe pops the chat
+            // without losing the author, scope, results or scroll position.
+            navigation.pushViewController(chat, animated: true)
+            navigation.interactivePopGestureRecognizer?.isEnabled = true
         }
     }
 }
