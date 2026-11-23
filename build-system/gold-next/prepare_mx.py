@@ -1776,7 +1776,9 @@ patch_244(
     '''  self.tableView.translatesAutoresizingMaskIntoConstraints = NO;
   if (self.goldgramSection) {
     self.tableView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
-    self.tableView.sectionHeaderTopPadding = 0;
+    if (@available(iOS 15.0, *)) {
+      self.tableView.sectionHeaderTopPadding = 0;
+    }
     self.tableView.estimatedSectionFooterHeight = 0;
   }''',
     'disable double top inset')
