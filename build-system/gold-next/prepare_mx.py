@@ -1100,3 +1100,255 @@ for needed in ('goldgramGhostSourceIndexPath:', 'goldgramBuildInnerHeader',
         raise SystemExit('Goldgram #240: expected feature disappeared: ' + needed)
 mx_ui_path.write_text(mx_ui_source)
 print('Goldgram #240: native compact inner menus and 4 safe Ghost groups, original switch keys preserved')
+
+
+# Goldgram #241: visual polish of native Mx settings.
+# Keep existing archive, collectors, Mx switch keys and actions untouched.
+# Section 0 still has original two controls; groups 1-3 reuse exact indices
+# established by #240, and collapse persists only a NEW UI preference.
+polish_methods_241 = r'''
+- (BOOL)goldgramGhostGroupExpanded:(NSInteger)section {
+  if (section < 1 || section > 3) return YES;
+  NSString *key = [NSString stringWithFormat:@"GoldgramMxGroup%ldExpanded", (long)section];
+  id saved = [[NSUserDefaults standardUserDefaults] objectForKey:key];
+  // First run is concise: presence visible, media and other groups folded.
+  return saved ? [saved boolValue] : (section == 1);
+}
+
+- (NSString *)goldgramGhostGroupTitle:(NSInteger)section {
+  BOOL ru = [[NSLocale preferredLanguages].firstObject hasPrefix:@"ru"];
+  NSArray *titles = ru
+      ? @[@"", @"ПРИСУТСТВИЕ", @"МЕДИА И ЗАПИСЬ", @"ДРУГИЕ ДЕЙСТВИЯ"]
+      : @[@"", @"PRESENCE", @"MEDIA AND RECORDING", @"OTHER ACTIVITY"];
+  if (section < 1 || section >= (NSInteger)titles.count) return @"";
+  NSArray<NSArray<NSNumber *> *> *groups = [Mx goldgramGhostRows];
+  NSArray<NSString *> *keys = [Mx ghostSubFeatureKeys];
+  NSArray<NSNumber *> *rows = groups[section];
+  NSInteger enabled = 0;
+  for (NSNumber *rowNumber in rows) {
+    NSInteger index = rowNumber.integerValue - 2;
+    if (index >= 0 && index < (NSInteger)keys.count &&
+        [[NSUserDefaults standardUserDefaults] boolForKey:keys[index]]) {
+      enabled++;
+    }
+  }
+  return [NSString stringWithFormat:@"%@  ·  %ld/%ld",
+          titles[section], (long)enabled, (long)rows.count];
+}
+
+- (void)goldgramSetGhostGroupButton:(UIButton *)button section:(NSInteger)section {
+  BOOL expanded = [self goldgramGhostGroupExpanded:section];
+  NSString *title = [self goldgramGhostGroupTitle:section];
+  [button setTitle:title forState:UIControlStateNormal];
+  UIImage *chevron = [UIImage systemImageNamed:
+                      expanded ? @"chevron.down" : @"chevron.right"];
+  [button setImage:chevron forState:UIControlStateNormal];
+  button.accessibilityLabel = title;
+  button.accessibilityHint = expanded ? @"Свернуть группу" : @"Раскрыть группу";
+}
+
+- (void)goldgramGhostGroupTapped:(UIButton *)button {
+  NSInteger section = button.tag;
+  if (!self.goldgramSection ||
+      self.goldgramSection.integerValue != GHOST_MODE ||
+      section < 1 || section > 3 || !self.isGhostModeExpanded) return;
+  BOOL next = ![self goldgramGhostGroupExpanded:section];
+  NSString *key = [NSString stringWithFormat:@"GoldgramMxGroup%ldExpanded", (long)section];
+  [[NSUserDefaults standardUserDefaults] setBool:next forKey:key];
+  [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:section]
+                withRowAnimation:UITableViewRowAnimationFade];
+}
+
+- (void)goldgramRefreshGhostGroupTitles {
+  if (!self.goldgramSection ||
+      self.goldgramSection.integerValue != GHOST_MODE ||
+      !self.isGhostModeExpanded) return;
+  for (NSInteger section = 1; section < 4; section++) {
+    UITableViewHeaderFooterView *header = [self.tableView headerViewForSection:section];
+    UIButton *button = (UIButton *)header.contentView.subviews.firstObject;
+    if ([button isKindOfClass:UIButton.class])
+      [self goldgramSetGhostGroupButton:button section:section];
+  }
+}
+
+- (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
+  if (!self.goldgramSection ||
+      self.goldgramSection.integerValue != GHOST_MODE ||
+      !self.isGhostModeExpanded || section < 1 || section > 3)
+    return nil;
+
+  NSString *reuse = @"GoldgramGhostGroupHeader";
+  UITableViewHeaderFooterView *header =
+      [tableView dequeueReusableHeaderFooterViewWithIdentifier:reuse];
+  if (!header) {
+    header = [[UITableViewHeaderFooterView alloc] initWithReuseIdentifier:reuse];
+    header.contentView.backgroundColor = UIColor.clearColor;
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+    button.translatesAutoresizingMaskIntoConstraints = NO;
+    button.backgroundColor = UIColor.secondarySystemGroupedBackgroundColor;
+    button.layer.cornerRadius = 15.0;
+    button.layer.masksToBounds = YES;
+    button.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeft;
+    button.contentEdgeInsets = UIEdgeInsetsMake(8, 14, 8, 14);
+    button.tintColor = UIColor.secondaryLabelColor;
+    [button setTitleColor:UIColor.labelColor forState:UIControlStateNormal];
+    button.titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+    button.titleLabel.adjustsFontForContentSizeCategory = YES;
+    button.titleLabel.numberOfLines = 1;
+    button.isAccessibilityElement = YES;
+    button.accessibilityTraits = UIAccessibilityTraitButton;
+    button.imageEdgeInsets = UIEdgeInsetsMake(0, 0, 0, 8);
+    [button addTarget:self action:@selector(goldgramGhostGroupTapped:)
+      forControlEvents:UIControlEventTouchUpInside];
+    [header.contentView addSubview:button];
+    [NSLayoutConstraint activateConstraints:@[
+      [button.leadingAnchor constraintEqualToAnchor:header.contentView.leadingAnchor constant:16],
+      [button.trailingAnchor constraintEqualToAnchor:header.contentView.trailingAnchor constant:-16],
+      [button.topAnchor constraintEqualToAnchor:header.contentView.topAnchor constant:4],
+      [button.bottomAnchor constraintEqualToAnchor:header.contentView.bottomAnchor constant:-4]
+    ]];
+  }
+  UIButton *button = (UIButton *)header.contentView.subviews.firstObject;
+  button.tag = section;
+  [self goldgramSetGhostGroupButton:button section:section];
+  return header;
+}
+
+- (CGFloat)tableView:(UITableView *)tableView
+    heightForHeaderInSection:(NSInteger)section {
+  if (!self.goldgramSection) return UITableViewAutomaticDimension;
+  if (self.goldgramSection.integerValue == GHOST_MODE &&
+      self.isGhostModeExpanded && section > 0 && section < 4) return 56.0;
+  return CGFLOAT_MIN;  // no duplicate title immediately below the navigation bar
+}
+'''
+if mx_ui_source.count('- (void)viewDidLoad {') != 1:
+    raise SystemExit('Goldgram #241: expected a single Mx viewDidLoad')
+mx_ui_source = mx_ui_source.replace('- (void)viewDidLoad {',
+                                    polish_methods_241 + '- (void)viewDidLoad {')
+
+# The #240 header displayed the navigation title a second/third time and
+# occupied 120+ points. Replace with a single contextual line under the navbar.
+polish_header_start = '- (void)goldgramBuildInnerHeader {'
+polish_header_end = '- (void)goldgramFitInnerHeader {'
+if mx_ui_source.count(polish_header_start) != 1 or mx_ui_source.count(polish_header_end) != 1:
+    raise SystemExit('Goldgram #241: inner header boundaries changed')
+start = mx_ui_source.index(polish_header_start)
+end = mx_ui_source.index(polish_header_end, start)
+compact_header_241 = r'''- (void)goldgramBuildInnerHeader {
+  if (!self.goldgramSection) return;
+  UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 320, 1)];
+  UIImageView *symbol = [[UIImageView alloc] initWithImage:
+      [UIImage systemImageNamed:[self goldgramInnerSymbol]]];
+  symbol.translatesAutoresizingMaskIntoConstraints = NO;
+  symbol.tintColor = [self goldgramInnerTint];
+  symbol.contentMode = UIViewContentModeScaleAspectFit;
+  UILabel *summary = [UILabel new];
+  summary.translatesAutoresizingMaskIntoConstraints = NO;
+  summary.text = [self goldgramInnerSummary];
+  summary.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+  summary.adjustsFontForContentSizeCategory = YES;
+  summary.textColor = UIColor.secondaryLabelColor;
+  summary.numberOfLines = 0;
+  [header addSubview:symbol];
+  [header addSubview:summary];
+  [NSLayoutConstraint activateConstraints:@[
+    [symbol.leadingAnchor constraintEqualToAnchor:header.leadingAnchor constant:30],
+    [symbol.centerYAnchor constraintEqualToAnchor:summary.centerYAnchor],
+    [symbol.heightAnchor constraintEqualToConstant:20],
+    [symbol.widthAnchor constraintEqualToConstant:20],
+    [summary.leadingAnchor constraintEqualToAnchor:symbol.trailingAnchor constant:11],
+    [summary.trailingAnchor constraintEqualToAnchor:header.trailingAnchor constant:-30],
+    [summary.topAnchor constraintEqualToAnchor:header.topAnchor constant:11],
+    [summary.bottomAnchor constraintEqualToAnchor:header.bottomAnchor constant:-11]
+  ]];
+  self.goldgramInnerHeader = header;
+  self.tableView.tableHeaderView = header;
+}
+
+'''
+mx_ui_source = mx_ui_source[:start] + compact_header_241 + mx_ui_source[end:]
+
+# Hide legacy section-title headers; the navigation title and contextual subtitle
+# identify the section. Ghost headers 1..3 become real collapsible buttons.
+old_title_241 = '    titleForHeaderInSection:(NSInteger)section {\n  if (self.goldgramSection && self.goldgramSection.integerValue == GHOST_MODE && section > 0) {'
+new_title_241 = '    titleForHeaderInSection:(NSInteger)section {\n  if (self.goldgramSection) return nil;\n  if (self.goldgramSection && self.goldgramSection.integerValue == GHOST_MODE && section > 0) {'
+if mx_ui_source.count(old_title_241) != 1:
+    raise SystemExit('Goldgram #241: section title anchor changed')
+mx_ui_source = mx_ui_source.replace(old_title_241, new_title_241)
+
+old_rows_241 = '    return section >= 0 && section < (NSInteger)groups.count ? [groups[section] count] : 0;'
+new_rows_241 = ('    if (section < 0 || section >= (NSInteger)groups.count) return 0;\n'
+                '    if (section > 0 && ![self goldgramGhostGroupExpanded:section]) return 0;\n'
+                '    return [groups[section] count];')
+if mx_ui_source.count(old_rows_241) != 1:
+    raise SystemExit('Goldgram #241: Ghost group row anchor changed')
+mx_ui_source = mx_ui_source.replace(old_rows_241, new_rows_241)
+
+# Only the two original hardcoded English Ghost rows; other labels still use
+# MxLocalization and their original per-feature keys.
+polish_text_241 = [
+  ('      cell.textLabel.text = @"Advanced Settings";',
+   '      cell.textLabel.text = [[NSLocale preferredLanguages].firstObject hasPrefix:@"ru"] ? @"Дополнительные настройки" : @"Advanced Settings";'),
+  ('      cell.detailTextLabel.text = self.isGhostModeExpanded ? @"Hide detail settings" : @"Show detail settings";',
+   '      BOOL ru = [[NSLocale preferredLanguages].firstObject hasPrefix:@"ru"];\n'
+   '      cell.detailTextLabel.text = self.isGhostModeExpanded\n'
+   '          ? (ru ? @"Скрыть группы настроек" : @"Hide settings groups")\n'
+   '          : (ru ? @"Показать группы настроек" : @"Show settings groups");'),
+  ('      cell.textLabel.text = @"Ghost Mode";',
+   '      cell.textLabel.text = [[NSLocale preferredLanguages].firstObject hasPrefix:@"ru"] ? @"Режим призрака" : @"Ghost Mode";'),
+  ('      cell.detailTextLabel.text = @"Main toggle for all ghost features";',
+   '      cell.detailTextLabel.text = [[NSLocale preferredLanguages].firstObject hasPrefix:@"ru"] ? @"Общий переключатель невидимки" : @"Main toggle for ghost features";'),
+  ('  cell.textLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];',
+   '  cell.textLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCallout];'),
+  ('  cell.detailTextLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];',
+   '  cell.detailTextLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];'),
+]
+for before, after in polish_text_241:
+    if mx_ui_source.count(before) != 1:
+        raise SystemExit('Goldgram #241: Polish anchor mismatch: ' + before[:80])
+    mx_ui_source = mx_ui_source.replace(before, after)
+
+# Set fonts before the self-sizing cell is measured, not only willDisplayCell.
+polish_cells_241 = [
+  ('  return switchCell;\n}', '''
+  if (self.goldgramSection) {
+    switchCell.textLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCallout];
+    switchCell.detailTextLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
+    switchCell.textLabel.adjustsFontForContentSizeCategory = YES;
+    switchCell.detailTextLabel.adjustsFontForContentSizeCategory = YES;
+  }
+  return switchCell;
+}'''),
+  ('  return normalCell;\n}', '''
+  if (self.goldgramSection) {
+    normalCell.textLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCallout];
+    normalCell.detailTextLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
+    normalCell.textLabel.adjustsFontForContentSizeCategory = YES;
+    normalCell.detailTextLabel.adjustsFontForContentSizeCategory = YES;
+  }
+  return normalCell;
+}''')
+]
+for before, after in polish_cells_241:
+    if mx_ui_source.count(before) != 1:
+        raise SystemExit('Goldgram #241: cell factory anchor mismatch')
+    mx_ui_source = mx_ui_source.replace(before, after)
+
+# Preserve original switchChanged: write path and its account/ghost validation;
+# only refresh labels from user defaults once the existing write finishes.
+post_switch_241 = '    mxDiag("switch section=%ld row=%ld has NO KEY", (long)section, (long)row);\n  }\n}'
+if mx_ui_source.count(post_switch_241) != 1:
+    raise SystemExit('Goldgram #241: switch handler anchor mismatch')
+mx_ui_source = mx_ui_source.replace(post_switch_241,
+    post_switch_241[:-1] + '  [self goldgramRefreshGhostGroupTitles];\n}')
+
+for needed in ('goldgramGhostGroupExpanded:', 'goldgramGhostGroupTapped:',
+               'goldgramGhostGroupTitle:', 'goldgramRefreshGhostGroupTitles',
+               'goldgramDashboardTap:', 'presentClearHistoryFromController:',
+               'kGhostModeEnabled', 'switchKeyForIndexPath:',
+               'goldgramGhostSourceIndexPath:'):
+    if needed not in mx_ui_source:
+        raise SystemExit('Goldgram #241: required preserved capability absent: ' + needed)
+mx_ui_path.write_text(mx_ui_source)
+print('Goldgram #241: compact inner Mx UI, collapsible Ghost groups with real switch counts; original archive & keys intact')
