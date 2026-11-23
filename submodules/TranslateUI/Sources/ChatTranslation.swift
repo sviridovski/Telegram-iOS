@@ -1,3 +1,5 @@
+import SGSimpleSettings // MARK: Swiftgram
+import SGLogging // MARK: Swiftgram
 import TextFormat
 import Foundation
 import NaturalLanguage
@@ -6,7 +8,7 @@ import TelegramCore
 import AccountContext
 import TelegramUIPreferences
 
-public struct ChatTranslationState: Codable {
+public struct ChatTranslationState: Codable, Equatable {
     enum CodingKeys: String, CodingKey {
         case baseLang
         case fromLang
@@ -85,7 +87,83 @@ public struct ChatTranslationState: Codable {
     }
 }
 
-private func cachedChatTranslationState(engine: TelegramEngine, peerId: EnginePeer.Id, threadId: Int64?) -> Signal<ChatTranslationState?, NoError> {
+/// Whether to translate a chat and into which language: the user's choice, as opposed to the language a chat is
+/// detected to be in. A peer with threads (forum topics, a discussion group's comment threads) has one choice that every
+/// thread and the peer's own chat share, so enabling translation in one topic enables it in all of them; the detected
+/// language stays each location's own (`ChatTranslationState.fromLang`), so a topic in an ignored language shows no
+/// translation without turning it off for the others.
+public struct ChatTranslationPeerChoice: Codable, Equatable {
+    public let isEnabled: Bool
+    public let toLang: String?
+    
+    public init(isEnabled: Bool, toLang: String?) {
+        self.isEnabled = isEnabled
+        self.toLang = toLang
+    }
+    
+    public init(_ state: ChatTranslationState) {
+        self.init(isEnabled: state.isEnabled, toLang: state.toLang)
+    }
+}
+
+/// Whether a peer's locations share one `ChatTranslationPeerChoice`. A monoforum's threads are separate conversations,
+/// each with a different user, so each keeps its own choice, as separate private chats do.
+public func chatTranslationSharesPeerChoice(peer: EnginePeer?) -> Bool {
+    if let peer, peer.isMonoForum {
+        return false
+    }
+    return true
+}
+
+/// The choice to store for a peer that has none yet, from the state of one of its locations: translation was stored
+/// per topic before the choice was shared, so a location translated then enables the whole peer.
+public func chatTranslationPeerChoiceToMigrate(locationState: ChatTranslationState, peerChoice: ChatTranslationPeerChoice?) -> ChatTranslationPeerChoice? {
+    if peerChoice == nil && locationState.isEnabled {
+        return ChatTranslationPeerChoice(locationState)
+    }
+    return nil
+}
+
+/// Whether discarding a location's state (its language added to "Do not translate") discards the peer's choice too. In a
+/// chat without topics the location is the whole peer, so its choice goes with it and the chat comes back untranslated,
+/// as before the choice was shared; in a forum the other topics, in other languages, keep translating.
+public func chatTranslationDiscardsPeerChoice(peer: EnginePeer?, threadId: Int64?) -> Bool {
+    if threadId != nil {
+        return false
+    }
+    if let peer, peer._asPeer().isForum {
+        return false
+    }
+    return true
+}
+
+public extension ChatTranslationState {
+    /// The state with the peer's choice in place of the location's own one, if the peer has a choice.
+    func withPeerChoice(_ peerChoice: ChatTranslationPeerChoice?) -> ChatTranslationState {
+        guard let peerChoice else {
+            return self
+        }
+        return self.withToLang(peerChoice.toLang).withIsEnabled(peerChoice.isEnabled)
+    }
+}
+
+/// A location's state under the peer's choice. When the choice's target language is the language the location is
+/// detected to be in (a topic already in the language the forum is translated into), the location has nothing to
+/// translate into it: it is shown untranslated, offering the base language, so its bar still lets the user translate it
+/// or pick another language.
+public func effectiveChatTranslationState(_ locationState: ChatTranslationState, peerChoice: ChatTranslationPeerChoice?) -> ChatTranslationState {
+    guard let peerChoice else {
+        return locationState
+    }
+    let toLang = normalizeTranslationLanguage(peerChoice.toLang ?? locationState.baseLang)
+    if toLang == normalizeTranslationLanguage(locationState.fromLang) {
+        return locationState.withToLang(nil).withIsEnabled(false)
+    }
+    return locationState.withPeerChoice(peerChoice)
+}
+
+/// A location's state: the peer's own chat, or one of its threads.
+func chatTranslationStateKey(peerId: EnginePeer.Id, threadId: Int64?) -> EngineDataBuffer {
     let key: EngineDataBuffer
     if let threadId {
         key = EngineDataBuffer(length: 16)
@@ -95,6 +173,20 @@ private func cachedChatTranslationState(engine: TelegramEngine, peerId: EnginePe
         key = EngineDataBuffer(length: 8)
         key.setInt64(0, value: peerId.id._internalGetInt64Value())
     }
+    return key
+}
+
+/// The peer's `ChatTranslationPeerChoice`, in the same collection (so resetting translation states clears it too), under
+/// a key length no location's key has.
+func chatTranslationPeerChoiceKey(peerId: EnginePeer.Id) -> EngineDataBuffer {
+    let key = EngineDataBuffer(length: 12)
+    key.setInt64(0, value: peerId.id._internalGetInt64Value())
+    key.setInt32(8, value: peerId.namespace._internalGetInt32Value())
+    return key
+}
+
+private func cachedChatTranslationState(engine: TelegramEngine, peerId: EnginePeer.Id, threadId: Int64?) -> Signal<ChatTranslationState?, NoError> {
+    let key = chatTranslationStateKey(peerId: peerId, threadId: threadId)
     
     return engine.data.subscribe(TelegramEngine.EngineData.Item.ItemCache.Item(collectionId: ApplicationSpecificItemCacheCollectionId.translationState, id: key))
     |> map { entry -> ChatTranslationState? in
@@ -103,15 +195,7 @@ private func cachedChatTranslationState(engine: TelegramEngine, peerId: EnginePe
 }
 
 private func updateChatTranslationState(engine: TelegramEngine, peerId: EnginePeer.Id, threadId: Int64?, state: ChatTranslationState?) -> Signal<Never, NoError> {
-    let key: EngineDataBuffer
-    if let threadId {
-        key = EngineDataBuffer(length: 16)
-        key.setInt64(0, value: peerId.id._internalGetInt64Value())
-        key.setInt64(8, value: threadId)
-    } else {
-        key = EngineDataBuffer(length: 8)
-        key.setInt64(0, value: peerId.id._internalGetInt64Value())
-    }
+    let key = chatTranslationStateKey(peerId: peerId, threadId: threadId)
     
     if let state {
         return engine.itemCache.put(collectionId: ApplicationSpecificItemCacheCollectionId.translationState, id: key, item: state)
@@ -120,24 +204,40 @@ private func updateChatTranslationState(engine: TelegramEngine, peerId: EnginePe
     }
 }
 
+private func cachedChatTranslationPeerChoice(engine: TelegramEngine, peerId: EnginePeer.Id) -> Signal<ChatTranslationPeerChoice?, NoError> {
+    return engine.data.subscribe(TelegramEngine.EngineData.Item.ItemCache.Item(collectionId: ApplicationSpecificItemCacheCollectionId.translationState, id: chatTranslationPeerChoiceKey(peerId: peerId)))
+    |> map { entry -> ChatTranslationPeerChoice? in
+        return entry?.get(ChatTranslationPeerChoice.self)
+    }
+    |> distinctUntilChanged
+}
+
+private func updateChatTranslationPeerChoice(engine: TelegramEngine, peerId: EnginePeer.Id, choice: ChatTranslationPeerChoice) -> Signal<Never, NoError> {
+    return engine.itemCache.put(collectionId: ApplicationSpecificItemCacheCollectionId.translationState, id: chatTranslationPeerChoiceKey(peerId: peerId), item: choice)
+}
+
 public func updateChatTranslationStateInteractively(engine: TelegramEngine, peerId: EnginePeer.Id, threadId: Int64?, _ f: @escaping (ChatTranslationState?) -> ChatTranslationState?) -> Signal<Never, NoError> {
-    let key: EngineDataBuffer
-    if let threadId {
-        key = EngineDataBuffer(length: 16)
-        key.setInt64(0, value: peerId.id._internalGetInt64Value())
-        key.setInt64(8, value: threadId)
-    } else {
-        key = EngineDataBuffer(length: 8)
-        key.setInt64(0, value: peerId.id._internalGetInt64Value())
-    }
-    
-    return engine.data.get(TelegramEngine.EngineData.Item.ItemCache.Item(collectionId: ApplicationSpecificItemCacheCollectionId.translationState, id: key))
-    |> map { entry -> ChatTranslationState? in
-        return entry?.get(ChatTranslationState.self)
-    }
-    |> mapToSignal { current -> Signal<Never, NoError> in
-        if let current {
-            return updateChatTranslationState(engine: engine, peerId: peerId, threadId: threadId, state: f(current))
+    return engine.data.get(
+        TelegramEngine.EngineData.Item.ItemCache.Item(collectionId: ApplicationSpecificItemCacheCollectionId.translationState, id: chatTranslationStateKey(peerId: peerId, threadId: threadId)),
+        TelegramEngine.EngineData.Item.ItemCache.Item(collectionId: ApplicationSpecificItemCacheCollectionId.translationState, id: chatTranslationPeerChoiceKey(peerId: peerId)),
+        TelegramEngine.EngineData.Item.Peer.Peer(id: peerId)
+    )
+    |> mapToSignal { entry, peerChoiceEntry, peer -> Signal<Never, NoError> in
+        if let current = entry?.get(ChatTranslationState.self) {
+            let sharesPeerChoice = chatTranslationSharesPeerChoice(peer: peer)
+            let peerChoice = sharesPeerChoice ? peerChoiceEntry?.get(ChatTranslationPeerChoice.self) : nil
+            let updated = f(effectiveChatTranslationState(current, peerChoice: peerChoice))
+            // The choice is written first: readers take it over the location's own, so the toggle shows at once.
+            if sharesPeerChoice, let updated {
+                return updateChatTranslationPeerChoice(engine: engine, peerId: peerId, choice: ChatTranslationPeerChoice(updated))
+                |> then(updateChatTranslationState(engine: engine, peerId: peerId, threadId: threadId, state: updated))
+            } else if sharesPeerChoice, chatTranslationDiscardsPeerChoice(peer: peer, threadId: threadId) {
+                // The location goes first, so that no reader sees it still enabled with no choice and migrates it back.
+                return updateChatTranslationState(engine: engine, peerId: peerId, threadId: threadId, state: updated)
+                |> then(engine.itemCache.remove(collectionId: ApplicationSpecificItemCacheCollectionId.translationState, id: chatTranslationPeerChoiceKey(peerId: peerId)))
+            } else {
+                return updateChatTranslationState(engine: engine, peerId: peerId, threadId: threadId, state: updated)
+            }
         } else {
             return .never()
         }
@@ -149,6 +249,13 @@ public func updateChatTranslationStateInteractively(engine: TelegramEngine, peer
 private let languageRecognizer = NLLanguageRecognizer()
 
 public func translateMessageIds(context: AccountContext, messageIds: [EngineMessage.Id], fromLang: String?, toLang: String, viaText: Bool = false, forQuickTranslate: Bool = false) -> Signal<Never, NoError> {
+    // MARK: Swiftgram
+    let sgBackend = SGSimpleSettings.shared.translationBackendEnum
+    var sgUseMessageIds = true
+    if viaText || !context.isPremium || sgBackend != .default {
+        sgUseMessageIds = false
+    }
+    //
     return context.account.postbox.transaction { transaction -> Signal<Never, NoError> in
         var messageDictToTranslate: [EngineMessage.Id: String] = [:]
         var messageIdsToTranslate: [EngineMessage.Id] = []
@@ -181,31 +288,24 @@ public func translateMessageIds(context: AccountContext, messageIds: [EngineMess
                         messageIdsSet.insert(messageId)
                         messageDictToTranslate[messageId] = message.text
                     }
-                } else if let _ = message.richText {
+                } else if sgUseMessageIds, let _ = message.richText {
                     if !messageIdsSet.contains(messageId) {
                         messageIdsToTranslate.append(messageId)
                         messageIdsSet.insert(messageId)
-                        messageDictToTranslate[messageId] = message.text
-                    }
-                } else if let _ = message.richText {
-                    if !messageIdsSet.contains(messageId) {
-                        messageIdsToTranslate.append(messageId)
-                        messageIdsSet.insert(messageId)
-                        messageDictToTranslate[messageId] = message.text
                     }
                 // TODO(swiftgram): Translate polls
-                } else if let _ = message.media.first(where: { $0 is TelegramMediaPoll }), !viaText {
+                } else if let _ = message.media.first(where: { $0 is TelegramMediaPoll }), sgUseMessageIds {
                     if !messageIdsSet.contains(messageId) {
                         messageIdsToTranslate.append(messageId)
                         messageIdsSet.insert(messageId)
                     }
-                } else if let audioTranscription = message.attributes.first(where: { $0 is AudioTranscriptionMessageAttribute }) as? AudioTranscriptionMessageAttribute, !audioTranscription.text.isEmpty && !audioTranscription.isPending {
+                } else if sgUseMessageIds, let audioTranscription = message.attributes.first(where: { $0 is AudioTranscriptionMessageAttribute }) as? AudioTranscriptionMessageAttribute, !audioTranscription.text.isEmpty && !audioTranscription.isPending {
                     if !messageIdsSet.contains(messageId) {
                         messageIdsToTranslate.append(messageId)
                         messageIdsSet.insert(messageId)
                     }
                 }
-            } else {
+            } else if sgUseMessageIds {
                 if !messageIdsSet.contains(messageId) {
                     messageIdsToTranslate.append(messageId)
                     messageIdsSet.insert(messageId)
@@ -223,7 +323,17 @@ public func translateMessageIds(context: AccountContext, messageIds: [EngineMess
         default:
             break
         }
-        if viaText {
+        // MARK: Swiftgram
+        let sgInputLength = messageDictToTranslate.values.reduce(0) { $0 + $1.count }
+        // MARK: Swiftgram
+        if SGSimpleSettings.shared.translatorLogsEnabled {
+            SGLogger.shared.log("Translate", "[\(sgUseMessageIds ? "Telegram" : sgBackend.rawValue)] translating \(sgInputLength) chars\(fromLang.flatMap { " from '\($0)'" } ?? "") to '\(toLang)'")
+        }
+        //
+        if !sgUseMessageIds {
+            guard !messageDictToTranslate.isEmpty else {
+                return .complete()
+            }
         return context.engine.messages.translateMessagesViaText(messagesDict: messageDictToTranslate, fromLang: fromLang, toLang: toLang, generateEntitiesFunction: { text in
             generateTextEntities(text, enabledTypes: .all)
         }, enableLocalIfPossible: enableLocalIfPossible) //context.sharedContext.immediateExperimentalUISettings.enableLocalTranslation)
@@ -233,14 +343,55 @@ public func translateMessageIds(context: AccountContext, messageIds: [EngineMess
         } else {
         if forQuickTranslate && messageIdsToTranslate.isEmpty { return .complete() } // Otherwise Telegram's API will return .never()
         return context.engine.messages.translateMessages(messageIds: messageIdsToTranslate, fromLang: fromLang, toLang: toLang, enableLocalIfPossible: enableLocalIfPossible)
-        |> `catch` { _ -> Signal<Never, NoError> in
-            return translateMessageIds(context: context, messageIds: messageIdsToTranslate, fromLang: fromLang, toLang: toLang, viaText: true, forQuickTranslate: forQuickTranslate)
+        |> `catch` { error -> Signal<Never, NoError> in
+            // MARK: Swiftgram
+            if SGSimpleSettings.shared.translatorLogsEnabled {
+                SGLogger.shared.log("Translate", "[\(sgBackend.rawValue)] error translating \(sgInputLength) chars\(fromLang.flatMap { " from '\($0)'" } ?? "") to '\(toLang)', error: \(error)")
+                SGLogger.shared.log("Translate", "[\(SGSimpleSettings.TranslationBackend.gtranslate.rawValue)] attempting GTranslate fallback for \(sgInputLength) chars\(fromLang.flatMap { " from '\($0)'" } ?? "") to '\(toLang)'")
+            }
+            //
+            guard !messageDictToTranslate.isEmpty else {
+                return .complete()
+            }
+            return context.engine.messages.translateMessagesViaText(messagesDict: messageDictToTranslate, fromLang: fromLang, toLang: toLang, generateEntitiesFunction: { text in
+                generateTextEntities(text, enabledTypes: .all)
+            }, enableLocalIfPossible: false, forceGTranslate: true)
+            |> `catch` { _ -> Signal<Never, NoError> in
+                return .complete()
+            }
         }
         }
+        //
     } |> switchToLatest
 }
 
 public func chatTranslationState(context: AccountContext, peerId: EnginePeer.Id, threadId: Int64?, forcePredict: Bool = false) -> Signal<ChatTranslationState?, NoError> {
+    let sharesPeerChoice = context.engine.data.get(TelegramEngine.EngineData.Item.Peer.Peer(id: peerId))
+    |> map { peer -> Bool in
+        return chatTranslationSharesPeerChoice(peer: peer)
+    }
+    
+    return chatTranslationLocationState(context: context, peerId: peerId, threadId: threadId, forcePredict: forcePredict)
+    |> mapToSignal { state -> Signal<ChatTranslationState?, NoError> in
+        guard let state else {
+            return .single(nil)
+        }
+        return combineLatest(sharesPeerChoice, cachedChatTranslationPeerChoice(engine: context.engine, peerId: peerId))
+        |> map { sharesPeerChoice, peerChoice -> ChatTranslationState? in
+            guard sharesPeerChoice else {
+                return state
+            }
+            if let migratedChoice = chatTranslationPeerChoiceToMigrate(locationState: state, peerChoice: peerChoice) {
+                // Every subscriber of the chat (its bar, its history) may write the same choice; the writes are idempotent.
+                let _ = updateChatTranslationPeerChoice(engine: context.engine, peerId: peerId, choice: migratedChoice).start()
+            }
+            return effectiveChatTranslationState(state, peerChoice: peerChoice)
+        }
+    }
+    |> distinctUntilChanged
+}
+
+private func chatTranslationLocationState(context: AccountContext, peerId: EnginePeer.Id, threadId: Int64?, forcePredict: Bool = false) -> Signal<ChatTranslationState?, NoError> {
     if peerId.id == EnginePeer.Id.Id._internalFromInt64Value(777000) {
         return .single(nil)
     }

@@ -17,6 +17,10 @@ public final class TelegramEngine {
         return Payments(account: self.account)
     }()
 
+    public lazy var wallet: Wallet = {
+        return Wallet(account: self.account)
+    }()
+
     public lazy var peers: Peers = {
         return Peers(account: self.account)
     }()
@@ -91,6 +95,14 @@ public final class TelegramEngine {
 
     public lazy var preferences: Preferences = {
         return Preferences(account: self.account)
+    }()
+
+    public lazy var feed: Feed = {
+        return Feed(account: self.account)
+    }()
+
+    public lazy var agent: Agent = {
+        return Agent(account: self.account)
     }()
 }
 

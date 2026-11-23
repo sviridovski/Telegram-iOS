@@ -123,7 +123,7 @@ static TGMediaLivePhotoMode TGMediaPickerGalleryResolvedLivePhotoMode(NSNumber *
     TGPhotoCaptionInputMixin *_captionMixin;
     
     TGModernButton *_muteButton;
-    TGModernButton *_telescopeButton;
+    TGModernButton *_telescopeButton; // MARK: Swiftgram
     TGCheckButtonView *_checkButton;
     bool _ignoreSetSelected;
     TGMediaPickerPhotoCounterButton *_photoCounterButton;
@@ -160,8 +160,10 @@ static TGMediaLivePhotoMode TGMediaPickerGalleryResolvedLivePhotoMode(NSNumber *
     id<LegacyComponentsContext> _context;
     
     bool _ignoreSelectionUpdates;
+    // MARK: Swiftgram
     bool _canSendTelescope;
     bool _canShowTelescope;
+    //
 }
 
 @property (nonatomic, strong) ASHandle *actionHandle;
@@ -173,7 +175,7 @@ static TGMediaLivePhotoMode TGMediaPickerGalleryResolvedLivePhotoMode(NSNumber *
 
 @synthesize safeAreaInset = _safeAreaInset;
 
-- (instancetype)initWithContext:(id<LegacyComponentsContext>)context focusItem:(id<TGModernGalleryItem>)focusItem selectionContext:(TGMediaSelectionContext *)selectionContext editingContext:(TGMediaEditingContext *)editingContext stickersContext:(id<TGPhotoPaintStickersContext>)stickersContext hasSelectionPanel:(bool)hasSelectionPanel hasCameraButton:(bool)hasCameraButton recipientName:(NSString *)recipientName isScheduledMessages:(bool)isScheduledMessages canShowTelescope:(bool)canShowTelescope canSendTelescope:(bool)canSendTelescope hasCoverButton:(bool)hasCoverButton
+- (instancetype)initWithContext:(id<LegacyComponentsContext>)context focusItem:(id<TGModernGalleryItem>)focusItem selectionContext:(TGMediaSelectionContext *)selectionContext editingContext:(TGMediaEditingContext *)editingContext stickersContext:(id<TGPhotoPaintStickersContext>)stickersContext hasSelectionPanel:(bool)hasSelectionPanel hasCameraButton:(bool)hasCameraButton recipientName:(NSString *)recipientName isScheduledMessages:(bool)isScheduledMessages isActionButtonDone:(bool)isActionButtonDone /* MARK: Swiftgram */ canShowTelescope:(bool)canShowTelescope canSendTelescope:(bool)canSendTelescope hasCoverButton:(bool)hasCoverButton
 {
     self = [super initWithFrame:CGRectZero];
     if (self != nil)
@@ -248,22 +250,30 @@ static TGMediaLivePhotoMode TGMediaPickerGalleryResolvedLivePhotoMode(NSNumber *
             [[NSUserDefaults standardUserDefaults] setObject:@(3) forKey:@"TG_displayedMediaTimerTooltip_v3"];
         };
         
+        // MARK: Swiftgram
         _canSendTelescope = canSendTelescope;
         _canShowTelescope = canShowTelescope;
+        //
         
         _muteButton = [[TGModernButton alloc] initWithFrame:CGRectMake(0, 0, 40.0f, 40.0f)];
         _muteButton.hidden = true;
+        #pragma clang diagnostic push
+        #pragma clang diagnostic ignored "-Wdeprecated-declarations" // legacy non-configuration UIButton: property is still honored
         _muteButton.adjustsImageWhenHighlighted = false;
+        #pragma clang diagnostic pop
         [_muteButton setBackgroundImage:[TGPhotoEditorInterfaceAssets gifBackgroundImage] forState:UIControlStateNormal];
         [_muteButton setImage:[TGPhotoEditorInterfaceAssets muteIcon] forState:UIControlStateNormal];
         [_muteButton setImage:[TGPhotoEditorInterfaceAssets muteActiveIcon] forState:UIControlStateSelected];
         [_muteButton setImage:[TGPhotoEditorInterfaceAssets muteActiveIcon]  forState:UIControlStateSelected | UIControlStateHighlighted];
         [_muteButton addTarget:self action:@selector(toggleSendAsGif) forControlEvents:UIControlEventTouchUpInside];
-        [_wrapperView addSubview:_muteButton];  
-    
+        [_wrapperView addSubview:_muteButton];
+        // MARK: Swiftgram
         _telescopeButton = [[TGModernButton alloc] initWithFrame:CGRectMake(0, 0, 40.0f, 40.0f)];
         _telescopeButton.hidden = true;
+        #pragma clang diagnostic push
+        #pragma clang diagnostic ignored "-Wdeprecated-declarations" // legacy non-configuration UIButton: property is still honored
         _telescopeButton.adjustsImageWhenHighlighted = false;
+        #pragma clang diagnostic pop
         [_telescopeButton setBackgroundImage:[TGPhotoEditorInterfaceAssets gifBackgroundImage] forState:UIControlStateNormal];
         [_telescopeButton setImage:[TGPhotoEditorInterfaceAssets telescopeIcon] forState:UIControlStateNormal];
         if (_canSendTelescope) {
@@ -275,6 +285,7 @@ static TGMediaLivePhotoMode TGMediaPickerGalleryResolvedLivePhotoMode(NSNumber *
         }
         [_telescopeButton addTarget:self action:@selector(toggleSendAsTelescope) forControlEvents:UIControlEventTouchUpInside];
         [_wrapperView addSubview:_telescopeButton];
+        //
         
         if (recipientName.length > 0)
         {
@@ -499,13 +510,17 @@ static TGMediaLivePhotoMode TGMediaPickerGalleryResolvedLivePhotoMode(NSNumber *
         if (hasCameraButton)
         {
             _cameraButton = [[TGMediaPickerCameraButton alloc] initWithFrame:CGRectMake(0.0f, 0.0f, 44.0f, 44.0f)];
+            #pragma clang diagnostic push
+            #pragma clang diagnostic ignored "-Wdeprecated-declarations" // legacy non-configuration UIButton: property is still honored
             _cameraButton.adjustsImageWhenHighlighted = false;
+            #pragma clang diagnostic pop
             [_cameraButton addTarget:self action:@selector(cameraButtonPressed) forControlEvents:UIControlEventTouchUpInside];
             
             [_wrapperView addSubview:_cameraButton];
         }
         
-        TGPhotoEditorDoneButton doneButton = isScheduledMessages ? TGPhotoEditorDoneButtonSchedule : TGPhotoEditorDoneButtonSend;
+        TGPhotoEditorDoneButton doneButton = isScheduledMessages ? TGPhotoEditorDoneButtonSchedule : (isActionButtonDone ? TGPhotoEditorDoneButtonCheck : TGPhotoEditorDoneButtonSend);
+        
         
         _portraitToolbarView = TGMediaPickerCreatePhotoToolbarView(_context, TGPhotoEditorBackButtonBack, doneButton, false, stickersContext, editingContext.sendPaidMessageStars > 0);
         _portraitToolbarView.cancelPressed = toolbarCancelPressed;
@@ -591,8 +606,7 @@ static TGMediaLivePhotoMode TGMediaPickerGalleryResolvedLivePhotoMode(NSNumber *
                 }
                 
                 id<TGMediaEditAdjustments> adjustments = [_editingContext adjustmentsForItem:item];
-                if ([adjustments isKindOfClass:[TGMediaVideoEditAdjustments class]] && (((TGMediaVideoEditAdjustments *)adjustments).sendAsGif || ((TGMediaVideoEditAdjustments *)adjustments).sendAsTelescope))
-
+                if ([adjustments isKindOfClass:[TGMediaVideoEditAdjustments class]] && (((TGMediaVideoEditAdjustments *)adjustments).sendAsGif || ((TGMediaVideoEditAdjustments *)adjustments).sendAsTelescope)) // MARK: Swiftgram
                 {
                     onlyGroupableMedia = false;
                     break;
@@ -788,9 +802,11 @@ static TGMediaLivePhotoMode TGMediaPickerGalleryResolvedLivePhotoMode(NSNumber *
             }
             strongSelf->_muteButton.hidden = !sendableAsGif;
             
+            // MARK: Swiftgram
             if (strongSelf->_canShowTelescope) {
                 strongSelf->_telescopeButton.hidden = !sendableAsGif;
             }
+            //
 
             bool canHaveCover = false;
             if ([strongItemView isKindOfClass:[TGMediaPickerGalleryVideoItemView class]]) {
@@ -1232,7 +1248,7 @@ static TGMediaLivePhotoMode TGMediaPickerGalleryResolvedLivePhotoMode(NSNumber *
     TGPhotoEditorTab disabledButtons = TGPhotoEditorNoneTab;
     
     _muteButton.selected = adjustments.sendAsGif;
-    _telescopeButton.selected = adjustments.sendAsTelescope;
+    _telescopeButton.selected = adjustments.sendAsTelescope; // MARK: Swiftgram
     
     UIView *qualityButton = [_portraitToolbarView viewForTab:TGPhotoEditorQualityTab];
     if (qualityButton != nil)
@@ -1292,7 +1308,7 @@ static TGMediaLivePhotoMode TGMediaPickerGalleryResolvedLivePhotoMode(NSNumber *
         });
     }
     
-    if (adjustments.sendAsGif || adjustments.sendAsTelescope)
+    if (adjustments.sendAsGif || adjustments.sendAsTelescope) // MARK: Swiftgram
         disabledButtons |= TGPhotoEditorQualityTab;
     
     [_portraitToolbarView setEditButtonsHighlighted:highlightedButtons];
@@ -1443,7 +1459,7 @@ static TGMediaLivePhotoMode TGMediaPickerGalleryResolvedLivePhotoMode(NSNumber *
         {
             _checkButton.alpha = alpha;
             _muteButton.alpha = alpha;
-            _telescopeButton.alpha = alpha;
+            _telescopeButton.alpha = alpha; // MARK: Swiftgram
             _coverButton.alpha = alpha;
             _arrowView.alpha = alpha * 0.6f;
             _recipientLabel.alpha = alpha * 0.6;
@@ -1454,7 +1470,7 @@ static TGMediaLivePhotoMode TGMediaPickerGalleryResolvedLivePhotoMode(NSNumber *
             {
                 _checkButton.userInteractionEnabled = !hidden;
                 _muteButton.userInteractionEnabled = !hidden;
-                _telescopeButton.userInteractionEnabled = !hidden;
+                _telescopeButton.userInteractionEnabled = !hidden; // MARK: Swiftgram
                 _coverButton.userInteractionEnabled = !hidden;
                 _captionMixin.livePhotoButtonView.userInteractionEnabled = !hidden;
             }
@@ -1478,10 +1494,11 @@ static TGMediaLivePhotoMode TGMediaPickerGalleryResolvedLivePhotoMode(NSNumber *
         _checkButton.userInteractionEnabled = !hidden;
         
         _muteButton.alpha = alpha;
-        _muteButton.userInteractionEnabled = !hidden; 
-        
+        _muteButton.userInteractionEnabled = !hidden;
+        // MARK: Swiftgram
         _telescopeButton.alpha = alpha;
         _telescopeButton.userInteractionEnabled = !hidden;
+        //
         
         _coverButton.alpha = alpha;
         _coverButton.userInteractionEnabled = !hidden;
@@ -1518,7 +1535,7 @@ static TGMediaLivePhotoMode TGMediaPickerGalleryResolvedLivePhotoMode(NSNumber *
         {
             _checkButton.alpha = alpha;
             _muteButton.alpha = alpha;
-            _telescopeButton.alpha = alpha;
+            _telescopeButton.alpha = alpha; // MARK: Swiftgram
             _coverButton.alpha = alpha;
             _arrowView.alpha = alpha * 0.6;
             _recipientLabel.alpha = alpha * 0.6;
@@ -1532,7 +1549,7 @@ static TGMediaLivePhotoMode TGMediaPickerGalleryResolvedLivePhotoMode(NSNumber *
             {
                 _checkButton.userInteractionEnabled = !hidden;
                 _muteButton.userInteractionEnabled = !hidden;
-                _telescopeButton.userInteractionEnabled = !hidden;
+                _telescopeButton.userInteractionEnabled = !hidden; // MARK: Swiftgram
                 _coverButton.userInteractionEnabled = !hidden;
                 _portraitToolbarView.userInteractionEnabled = !hidden;
                 _landscapeToolbarView.userInteractionEnabled = !hidden;
@@ -1559,10 +1576,11 @@ static TGMediaLivePhotoMode TGMediaPickerGalleryResolvedLivePhotoMode(NSNumber *
         _checkButton.userInteractionEnabled = !hidden;
         
         _muteButton.alpha = alpha;
-        _muteButton.userInteractionEnabled = !hidden;       
-
+        _muteButton.userInteractionEnabled = !hidden;
+        // MARK: Swiftgram
         _telescopeButton.alpha = alpha;
         _telescopeButton.userInteractionEnabled = !hidden;
+        //
         
         _coverButton.alpha = alpha;
         _coverButton.userInteractionEnabled = !hidden;
@@ -1657,6 +1675,7 @@ static TGMediaLivePhotoMode TGMediaPickerGalleryResolvedLivePhotoMode(NSNumber *
         [(TGMediaPickerGalleryVideoItemView *)currentItemView toggleSendAsGif:true];
 }
 
+// MARK: Swiftgram
 - (void)toggleSendAsTelescope
 {
     if (![_currentItem conformsToProtocol:@protocol(TGModernGalleryEditableItem)])
@@ -1669,6 +1688,7 @@ static TGMediaLivePhotoMode TGMediaPickerGalleryResolvedLivePhotoMode(NSNumber *
              [self cancelButtonPressed];
         }];
 }
+//
 
 - (void)toggleGrouping
 {
@@ -1848,7 +1868,7 @@ static TGMediaLivePhotoMode TGMediaPickerGalleryResolvedLivePhotoMode(NSNumber *
         if (view == _photoCounterButton
             || view == _checkButton
             || view == _muteButton
-            || view == _telescopeButton
+            || view == _telescopeButton // MARK: Swiftgram
             || view == _groupButton
             || view == _cameraButton
             || view == _coverButton
@@ -1931,6 +1951,7 @@ static TGMediaLivePhotoMode TGMediaPickerGalleryResolvedLivePhotoMode(NSNumber *
 }
 
 
+// MARK: Swiftgram
 - (CGRect)_telescopeButtonFrameForOrientation:(UIInterfaceOrientation)orientation screenEdges:(UIEdgeInsets)screenEdges hasHeaderView:(bool)hasHeaderView
 {
     CGRect frame = CGRectZero;
@@ -1960,6 +1981,7 @@ static TGMediaLivePhotoMode TGMediaPickerGalleryResolvedLivePhotoMode(NSNumber *
     
     return frame;
 }
+//
 
 - (CGRect)_groupButtonFrameForOrientation:(UIInterfaceOrientation)orientation screenEdges:(UIEdgeInsets)screenEdges hasHeaderView:(bool)hasHeaderView
 {
@@ -2016,10 +2038,20 @@ static TGMediaLivePhotoMode TGMediaPickerGalleryResolvedLivePhotoMode(NSNumber *
     return frame;
 }
 
+// Beside a status island (iPhone Duo's unfolded screen) the top row stays at the top with its right control left of the
+// island, as full-screen viewers do there, instead of moving below the island with the safe area's top inset.
+- (CGFloat)_statusIslandTrailingInset
+{
+    if ([_context respondsToSelector:@selector(statusIslandTrailingInset)])
+        return [_context statusIslandTrailingInset];
+    return 0.0f;
+}
+
 - (CGRect)_checkButtonFrameForOrientation:(UIInterfaceOrientation)orientation screenEdges:(UIEdgeInsets)screenEdges hasHeaderView:(bool)hasHeaderView
 {
     CGRect frame = CGRectZero;
-    if (_safeAreaInset.top > 20.0f)
+    CGFloat statusIslandInset = [self _statusIslandTrailingInset];
+    if (_safeAreaInset.top > 20.0f && statusIslandInset < FLT_EPSILON)
         screenEdges.top += _safeAreaInset.top;
     screenEdges.left += _safeAreaInset.left;
     screenEdges.right -= _safeAreaInset.right;
@@ -2035,7 +2067,7 @@ static TGMediaLivePhotoMode TGMediaPickerGalleryResolvedLivePhotoMode(NSNumber *
             break;
             
         default:
-            frame = CGRectMake(screenEdges.right - 44, screenEdges.top + 5, _checkButton.frame.size.width, _checkButton.frame.size.height);
+            frame = CGRectMake(screenEdges.right - 44 - statusIslandInset, screenEdges.top + 5, _checkButton.frame.size.width, _checkButton.frame.size.height);
             break;
     }
     
@@ -2075,10 +2107,11 @@ static TGMediaLivePhotoMode TGMediaPickerGalleryResolvedLivePhotoMode(NSNumber *
 - (void)_layoutRecipientLabelForOrientation:(UIInterfaceOrientation)orientation screenEdges:(UIEdgeInsets)screenEdges hasHeaderView:(bool)hasHeaderView
 {
     CGFloat screenWidth = MIN(self.frame.size.width, self.frame.size.height);
-    CGFloat recipientWidth = MIN(_recipientLabel.frame.size.width, screenWidth - 150.0f);
+    CGFloat statusIslandInset = [self _statusIslandTrailingInset];
+    CGFloat recipientWidth = MIN(_recipientLabel.frame.size.width, screenWidth - 150.0f - statusIslandInset);
     
     CGRect frame = CGRectZero;
-    if (_safeAreaInset.top > 20.0f + FLT_EPSILON)
+    if (_safeAreaInset.top > 20.0f + FLT_EPSILON && statusIslandInset < FLT_EPSILON)
         screenEdges.top += _safeAreaInset.top;
     screenEdges.left += _safeAreaInset.left;
     screenEdges.right -= _safeAreaInset.right;
@@ -2167,10 +2200,11 @@ static TGMediaLivePhotoMode TGMediaPickerGalleryResolvedLivePhotoMode(NSNumber *
 - (void)layoutSubviews
 {
     [super layoutSubviews];
-    
-    [_captionMixin setContentAreaHeight:self.frame.size.height];
-    
+
     UIInterfaceOrientation orientation = [self interfaceOrientation];
+    _captionMixin.interfaceOrientation = [[LegacyComponentsGlobals provider] applicationStatusBarOrientation];
+    [_captionMixin setContentAreaHeight:self.frame.size.height];
+
     CGSize screenSize = TGScreenSize();
     if (TGIsPad())
         screenSize = [self referenceViewSize];
@@ -2265,7 +2299,7 @@ static TGMediaLivePhotoMode TGMediaPickerGalleryResolvedLivePhotoMode(NSNumber *
     }
     
     _muteButton.frame = [self _muteButtonFrameForOrientation:orientation screenEdges:screenEdges hasHeaderView:true];
-    _telescopeButton.frame = [self _telescopeButtonFrameForOrientation:orientation screenEdges:screenEdges hasHeaderView:true];
+    _telescopeButton.frame = [self _telescopeButtonFrameForOrientation:orientation screenEdges:screenEdges hasHeaderView:true]; // MARK: Swiftgram
     _checkButton.frame = [self _checkButtonFrameForOrientation:orientation screenEdges:screenEdges hasHeaderView:hasHeaderView];
     _groupButton.frame = [self _groupButtonFrameForOrientation:orientation screenEdges:screenEdges hasHeaderView:hasHeaderView];
     _coverButton.frame = [self _coverButtonFrameForOrientation:orientation screenEdges:screenEdges hasHeaderView:hasHeaderView];

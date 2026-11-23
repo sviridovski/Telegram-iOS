@@ -1,6 +1,7 @@
 // Goldgram #80: account-scoped named channel/discussion archive.
 import Foundation
 import UIKit
+import UniformTypeIdentifiers
 import tgapiC
 
 // Mirror the tiny, versioned diagnostic record without linking the app-only
@@ -137,7 +138,7 @@ private struct GoldgramLocationLabReportRow: Decodable {
 }
 
 @objc(GoldgramArchiveScreen)
-public final class GoldgramArchiveScreen: UITableViewController {
+public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPickerDelegate {
     private let category: Int
     // nil = dialog index; non-nil = one conversation or a verified channel pair.
     private let sources: [[String: Any]]?
@@ -149,7 +150,35 @@ public final class GoldgramArchiveScreen: UITableViewController {
     private var inFlight = false
     private var generation = 0
     private var openingMessage = false
+    private var preserveListOnNextAppearance = false
+    // #224: coalesce consecutive Live commits into one visible archive refresh.
+    // The work item never queries SQLite on the UI thread.
+    private var liveRefreshWork: DispatchWorkItem?
     private var status = "Загрузка истории…"
+    // #242: UI-only filter; raw rows/pagination remain intact.
+    private var channelDisplayFilter = 0
+    // Folder summaries contain NO message text. Retain only a bounded first
+    // page per account/category so repeated navigation has a zero-I/O first
+    // paint. NSCache releases the snapshot under memory pressure.
+    private static let fastFolderCache: NSCache<NSString, NSArray> = {
+        let cache = NSCache<NSString, NSArray>()
+        cache.countLimit = 12
+        return cache
+    }()
+    private func folderCacheKey(_ account: Int64) -> NSString {
+        "\(account):\(category)" as NSString
+    }
+    private func restoreFolderSnapshot(account: Int64) {
+        guard sources == nil, items.isEmpty,
+              let cached = Self.fastFolderCache.object(forKey: folderCacheKey(account))
+                as? [[String: Any]], !cached.isEmpty else { return }
+        boundAccount = account
+        items = cached
+        hasMore = cached.count == 30
+        rebuildDisplayItems()
+        tableView.reloadData()
+    }
+
     private let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateStyle = .short
@@ -170,6 +199,11 @@ public final class GoldgramArchiveScreen: UITableViewController {
     }
 
     required init?(coder: NSCoder) { return nil }
+
+    deinit {
+        liveRefreshWork?.cancel()
+        NotificationCenter.default.removeObserver(self)
+    }
 
     // #137: -1 means enabled until explicitly stopped. Legacy positive
     // deadlines are honored so an already-running timed session is not lost.
@@ -258,6 +292,26 @@ public final class GoldgramArchiveScreen: UITableViewController {
         let menu = UIAlertController(title: "Тест захвата Goldgram",
                                      message: "Только счётчики этапов и состояние SQLite. Без текстов, имён и ID сообщений.",
                                      preferredStyle: .actionSheet)
+        menu.addAction(UIAlertAction(title: "Состояние проверки удалений", style: .default) { _ in
+            let row = defaults.dictionary(forKey: "GoldgramDeletionScanProgressV1." + String(account)) ?? [:]
+            let labels = ["local_selection": "выбор сохранённых сообщений", "no_candidates": "нет доступной пачки",
+                "rpc_requested": "запрос отправлен", "rpc_failed": "ошибка запроса",
+                "await_apply": "ответ получен, ожидание Postbox", "applying": "обработка ответа",
+                "completed": "пачка проверена", "access_unconfirmed": "доступ не подтверждён",
+                "cancelled_or_deadline": "проверка отменена или истекло время"]
+            let phase = labels[row["phase"] as? String ?? ""] ?? "проверка ещё не запускалась"
+            let formatter = DateFormatter()
+            formatter.dateStyle = .short
+            formatter.timeStyle = .medium
+            let last = (row["lastSuccessAt"] as? NSNumber).map {
+                formatter.string(from: Date(timeIntervalSince1970: $0.doubleValue))
+            } ?? "нет"
+            let report = "Автоматический обход временно отключён после вылетов №182.\n\nПоследний этап: \(phase)\nПоследняя успешная пачка: \(last)\nПачек проверено: \((row["batches"] as? NSNumber)?.int64Value ?? 0)\nПроверок сообщений: \((row["checked"] as? NSNumber)?.int64Value ?? 0)\nПередано в архив: \((row["retained"] as? NSNumber)?.int64Value ?? 0)\nПачек без подтверждённого доступа: \((row["unavailable"] as? NSNumber)?.int64Value ?? 0)\n\nСчётчики могут включать повторные проверки. Успешная пачка не означает завершение всего обхода."
+            let alert = UIAlertController(title: "Проверка удалений", message: report, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "Скопировать", style: .default) { _ in UIPasteboard.general.string = report })
+            alert.addAction(UIAlertAction(title: "Закрыть", style: .cancel))
+            self.present(alert, animated: true)
+        })
         menu.addAction(UIAlertAction(title: "Журнал запусков", style: .default) { _ in
             let history = defaults.array(forKey: "GoldgramProcessHistoryV1") as? [[String: Any]] ?? []
             let formatter = DateFormatter()
@@ -927,20 +981,297 @@ public final class GoldgramArchiveScreen: UITableViewController {
         }
     }
 
+
+    // Goldgram Bridge Live: explicit pairing; the existing archive SQLite is
+    // still the sole receiver. All credentials are kept by GoldgramLiveBridge
+    // in Keychain and never included in screenshots/log messages.
+    @objc private func showLiveMenu() {
+        guard let account = GoldgramArchiveReader.activeAccountId()?.int64Value,
+              account > 0 else {
+            showPhone8ImportResult("Для Live сначала выберите Telegram-аккаунт.")
+            return
+        }
+        let bridge = GoldgramLiveBridge.shared
+        let enabled = bridge.isEnabled(account: account)
+        let automatic = bridge.automaticRoutingEnabled(account: account)
+        let report = "Состояние: \(enabled ? "включено" : "выключено")\n" +
+            "Маршрут: \(bridge.currentRouteDescription(account: account))\n" +
+            "\(bridge.lastStatus)\n\n" +
+            "Live работает по HTTPS через локальную сеть или личный VPS. " +
+            "Пока Swiftgram активен, проверки выполняются примерно раз в 12 секунд. " +
+            "При приостановке iOS события накапливаются на iPhone 8."
+        let alert = UIAlertController(title: "Goldgram Bridge Live",
+                                      message: report, preferredStyle: .actionSheet)
+        alert.addAction(UIAlertAction(title: "Подключить iPhone 8", style: .default) { [weak self] _ in
+            self?.showLivePairing(account: account)
+        })
+        if enabled {
+            alert.addAction(UIAlertAction(
+                title: automatic ? "Отключить авто-маршрут" : "Авто: Wi-Fi → F3 Cloud",
+                style: .default) { [weak self] _ in
+                let ok = bridge.setAutomaticRouting(account: account, enabled: !automatic)
+                self?.showPhone8ImportResult(ok
+                    ? (!automatic
+                        ? "Автомаршрут включён: сначала домашний Wi-Fi, при недоступности — F3 Cloud. TLS PIN, токен и курсоры общие."
+                        : "Автомаршрут выключен; используется адрес, сохранённый вручную.")
+                    : "Не удалось изменить маршрут; проверь настройки Live.")
+            })
+            alert.addAction(UIAlertAction(title: "Синхронизировать сейчас", style: .default) { _ in
+                bridge.pollNow()
+            })
+            alert.addAction(UIAlertAction(title: "Отключить Live", style: .destructive) { _ in
+                bridge.disable(account: account)
+            })
+        }
+        alert.addAction(UIAlertAction(title: "Отмена", style: .cancel))
+        if let pop = alert.popoverPresentationController {
+            pop.sourceView = view
+            pop.sourceRect = CGRect(x: view.bounds.midX, y: 32, width: 1, height: 1)
+        }
+        present(alert, animated: true)
+    }
+
+    private func showLivePairing(account: Int64) {
+        let bridge = GoldgramLiveBridge.shared
+        let alert = UIAlertController(
+            title: "iPhone 8 · защищённое подключение",
+            message: "Введи IP iPhone 8, F3 Cloud 179.253.88.30 или " +
+                "резервный RUVDS 194.87.235.144, SHA-256 сертификата и " +
+                "секрет подключения. Порты: локально 8873, VPS 443. " +
+                "При смене адреса существующий секрет можно не вводить. " +
+                "После подключения можно включить автоматический маршрут в меню Live.",
+            preferredStyle: .alert)
+        alert.addTextField { field in
+            field.placeholder = "192.168.1.102 или 179.253.88.30"
+            field.text = bridge.configuredHost(account: account)
+            field.keyboardType = .numbersAndPunctuation
+            field.autocorrectionType = .no
+        }
+        alert.addTextField { field in
+            field.placeholder = "SHA256 сертификата — 64 символа"
+            field.text = bridge.configuredPin(account: account)
+            field.autocorrectionType = .no
+            field.autocapitalizationType = .none
+        }
+        alert.addTextField { field in
+            field.placeholder = "Секрет (пусто — сохранить прежний)"
+            field.isSecureTextEntry = true
+            field.autocorrectionType = .no
+            field.autocapitalizationType = .none
+        }
+        alert.addAction(UIAlertAction(title: "Отмена", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Включить Live", style: .default) { [weak self] _ in
+            let inputs = alert.textFields ?? []
+            guard inputs.count == 3,
+                  bridge.configure(account: account,
+                                   host: inputs[0].text ?? "",
+                                   pin: inputs[1].text ?? "",
+                                   token: inputs[2].text ?? "") else {
+                self?.showPhone8ImportResult(
+                    "Не удалось включить Live. Проверь IP, отпечаток сертификата и секрет подключения.")
+                return
+            }
+            self?.showPhone8ImportResult(
+                "Goldgram Bridge Live включён.\n\n" +
+                "После подключения события будут импортироваться примерно каждые 12 секунд, " +
+                "пока Swiftgram работает. Статус — в меню Live.")
+        })
+        present(alert, animated: true)
+    }
+
+    // #185: one-time, opt-in proof of import. A later transport can reuse the
+    // account-checked SQLite importer without changing these archives.
+    @objc private func importPhone8File() {
+        guard GoldgramArchiveReader.activeAccountId()?.int64Value != nil else {
+            showPhone8ImportResult("Сначала откройте архив нужного Telegram-аккаунта.")
+            return
+        }
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.json], asCopy: true)
+        picker.delegate = self
+        picker.allowsMultipleSelection = false
+        present(picker, animated: true)
+    }
+
+    public func documentPicker(_ controller: UIDocumentPickerViewController,
+                               didPickDocumentsAt urls: [URL]) {
+        guard let account = GoldgramArchiveReader.activeAccountId()?.int64Value,
+              let url = urls.first else {
+            showPhone8ImportResult("Аккаунт не выбран или файл не получен.")
+            return
+        }
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = attributes[.size] as? NSNumber, size.intValue <= 1_000_000,
+              let data = try? Data(contentsOf: url), data.count <= 1_000_000 else {
+            showPhone8ImportResult("Нужен тестовый JSON размером не более 1 МБ.")
+            return
+        }
+        GoldgramHistoryStore.importPhone8Bundle(data, accountId: account) { [weak self] result in
+            guard let self else { return }
+            let message: String
+            if result["wrongAccount"] != nil {
+                message = "Отказ: Telegram-аккаунты iPhone 8 и Swiftgram не совпадают."
+            } else if result["disabled"] != nil {
+                message = "Архив выключен или активный Telegram-аккаунт изменился."
+            } else if result["error"] != nil || result["invalid"] == 1 && result.count == 1 {
+                message = "Не удалось импортировать пакет. Существующая история не изменена."
+            } else {
+                let imported = result["imported"] ?? 0
+                let edits = result["edits"] ?? 0
+                let deletes = result["deletions"] ?? 0
+                let pending = result["pending"] ?? 0
+                let dup = result["duplicates"] ?? 0
+                let unclassified = result["unknownChannels"] ?? 0
+                let conflicts = result["conflicts"] ?? 0
+                let invalid = result["invalid"] ?? 0
+                message = "Подтверждено оригиналов: \(imported)\n" +
+                    "Новых записей редакций: \(edits)\n" +
+                    "Событий удаления: \(deletes)\n" +
+                    "Спорных записей на проверку: \(pending)\n" +
+                    "Повторов: \(dup)\n" +
+                    "Неопределённых каналов: \(unclassified)\n" +
+                    "Конфликтов: \(conflicts)\n" +
+                    "Отклонённых строк: \(invalid)\n\n" +
+                    "Существующие оригиналы и история не перезаписывались."
+                if GoldgramArchiveReader.activeAccountId()?.int64Value == account {
+                    self.load(reset: true)
+                }
+            }
+            self.showPhone8ImportResult(message)
+        }
+    }
+
+    private func showPhone8ImportResult(_ message: String) {
+        let alert = UIAlertController(title: "Goldgram Bridge · iPhone 8",
+                                      message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Закрыть", style: .default))
+        present(alert, animated: true)
+    }
+
     public override func viewDidLoad() {
         super.viewDidLoad()
-        let testButton = UIBarButtonItem(
-            title: "Тест", style: .plain, target: self, action: #selector(captureDiagnosticMenu))
-        navigationItem.rightBarButtonItems = [testButton, UIBarButtonItem(title: "Выгрузки", style: .plain, target: self, action: #selector(showProcessDiagnostics))]
-        title = displayName ?? (category == 0 ? "Личные сообщения" :
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(didCommitLiveArchiveChange(_:)),
+            name: Notification.Name("GoldgramArchiveChanged"), object: nil)
+        // #244: keep immediate refresh visible; move ALL former top-bar tools
+        // into a single menu without changing their existing handlers.
+        let refreshButton = UIBarButtonItem(image: UIImage(systemName: "arrow.clockwise"),
+                                            style: .plain, target: self,
+                                            action: #selector(refreshArchiveManually))
+        refreshButton.accessibilityLabel = "Обновить архив"
+        let toolsButton = UIBarButtonItem(image: UIImage(systemName: "ellipsis.circle"),
+                                          style: .plain, target: self,
+                                          action: #selector(showArchiveTools))
+        toolsButton.accessibilityLabel = "Инструменты Goldgram"
+        navigationItem.rightBarButtonItems = [toolsButton, refreshButton]
+        title = displayName ?? (category == 4 ? "Изменённые сообщения" :
+             category == 0 ? "Личные сообщения" :
              category == 1 ? "Группы и чаты" : category == 3 ? "Удалённые сообщения" : "Каналы")
+        if category == 2 && sources != nil {
+            let header = UIView(frame: CGRect(x: 0, y: 0, width: 320, height: 62))
+            let filter = UISegmentedControl(items: ["Все", "Публикации", "Комментарии"])
+            filter.selectedSegmentIndex = 0
+            filter.translatesAutoresizingMaskIntoConstraints = false
+            filter.addTarget(self, action: #selector(didChangeChannelFilter(_:)),
+                             for: .valueChanged)
+            header.addSubview(filter)
+            NSLayoutConstraint.activate([
+                filter.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 16),
+                filter.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -16),
+                filter.topAnchor.constraint(equalTo: header.topAnchor, constant: 10),
+                filter.heightAnchor.constraint(equalToConstant: 36)
+            ])
+            tableView.tableHeaderView = header
+        }
         tableView.rowHeight = UITableView.automaticDimension
         tableView.estimatedRowHeight = 110
     }
 
+    @objc private func refreshArchiveManually() {
+        // Reuse the existing read-only, selected-account and paging guards.
+        load(reset: true)
+    }
+
+    @objc private func showArchiveTools() {
+        let sheet = UIAlertController(title: "Инструменты Goldgram",
+                                      message: nil, preferredStyle: .actionSheet)
+        sheet.addAction(UIAlertAction(title: "Goldgram Live",
+                                      style: .default) { [weak self] _ in
+            self?.showLiveMenu()
+        })
+        sheet.addAction(UIAlertAction(title: "Импорт с iPhone 8",
+                                      style: .default) { [weak self] _ in
+            self?.importPhone8File()
+        })
+        sheet.addAction(UIAlertAction(title: "Тест и диагностика",
+                                      style: .default) { [weak self] _ in
+            self?.captureDiagnosticMenu()
+        })
+        sheet.addAction(UIAlertAction(title: "Выгрузки",
+                                      style: .default) { [weak self] _ in
+            self?.showProcessDiagnostics()
+        })
+        sheet.addAction(UIAlertAction(title: "Отмена", style: .cancel))
+        if let popover = sheet.popoverPresentationController {
+            popover.barButtonItem = navigationItem.rightBarButtonItems?.first
+        }
+        present(sheet, animated: true)
+    }
+
     public override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        // On an already-running Live session, merely starting the timer can
+        // leave us waiting for its next 12-second tick. Poll immediately.
+        GoldgramLiveBridge.shared.pollNow()
+        if let account = GoldgramArchiveReader.activeAccountId()?.int64Value {
+            GoldgramArchiveReader.runJournalAutoclearIfDue(
+                forAccount: NSNumber(value: account))
+            restoreFolderSnapshot(account: account)
+        }
+        if self.preserveListOnNextAppearance,
+           GoldgramArchiveReader.activeAccountId()?.int64Value == self.boundAccount {
+            self.preserveListOnNextAppearance = false
+            return
+        }
+        self.preserveListOnNextAppearance = false
         load(reset: true)
+    }
+
+    // Only refresh the visible archive of the account whose SQLite COMMIT
+    // succeeded. Rapid catch-up batches are debounced so the list isn't
+    // repeatedly redrawn while the backlog is still being imported.
+    @objc private func didCommitLiveArchiveChange(_ note: Notification) {
+        // Historical Postbox-only sweeps do not change archive rows.
+        if note.userInfo?["inlineOnly"] as? Bool == true { return }
+        if note.userInfo?["journalPurge"] as? Bool == true {
+            Self.fastFolderCache.removeAllObjects()
+        }
+        guard let account = (note.object as? NSNumber)?.int64Value,
+              account == boundAccount,
+              GoldgramArchiveReader.activeAccountId()?.int64Value == account,
+              isViewLoaded, view.window != nil else { return }
+        // #235: throttle, not a trailing debounce. Continuous packets must
+        // not postpone the FIRST visible update until the backlog is empty.
+        if liveRefreshWork != nil { return }
+        scheduleLiveRefresh(account: account)
+    }
+
+    private func scheduleLiveRefresh(account: Int64) {
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.liveRefreshWork = nil
+            guard self.isViewLoaded, self.view.window != nil,
+                  self.boundAccount == account,
+                  GoldgramArchiveReader.activeAccountId()?.int64Value == account else { return }
+            if self.inFlight {
+                self.scheduleLiveRefresh(account: account)
+                return
+            }
+            self.load(reset: true)
+        }
+        liveRefreshWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(350), execute: work)
     }
 
     private static func key(_ row: [String: Any]) -> String {
@@ -985,16 +1316,33 @@ public final class GoldgramArchiveScreen: UITableViewController {
         }
     }
 
+    @objc private func didChangeChannelFilter(_ control: UISegmentedControl) {
+        channelDisplayFilter = control.selectedSegmentIndex
+        rebuildDisplayItems()
+        tableView.reloadData()
+    }
+
     private func rebuildDisplayItems() {
-        displayItems = sources == nil ? GoldgramArchiveGrouping.folders(items, category: category) : items
+        if sources == nil {
+            displayItems = GoldgramArchiveGrouping.folders(items, category: category)
+        } else if category == 2 && channelDisplayFilter != 0 {
+            // Filter the displayed page only: never rewrite SQLite or cursors.
+            let target: Int32 = channelDisplayFilter == 1 ? 3 : 2
+            displayItems = items.filter {
+                ($0["peerKind"] as? NSNumber)?.int32Value == target
+            }
+        } else {
+            displayItems = items
+        }
     }
 
     private func load(reset: Bool) {
         if reset {
             generation += 1
-            items = []; displayItems = []
-            hasMore = false; inFlight = false
-            status = "Загрузка истории…"
+            // Keep the previous (account-scoped) first paint visible until the
+            // new SQLite result is ready. Never show old data after account swap.
+            inFlight = false
+            if items.isEmpty { status = "Загрузка истории…" }
         }
         guard !inFlight else { return }
         guard let active = GoldgramArchiveReader.activeAccountId()?.int64Value, active > 0 else {
@@ -1008,39 +1356,75 @@ public final class GoldgramArchiveScreen: UITableViewController {
             tableView.reloadData(); return
         }
         boundAccount = active
-        guard items.count <= 5000 else { hasMore = false; return }
+        guard reset || items.count <= 5000 else { hasMore = false; return }
         inFlight = true
         let callGeneration = generation
+        let startOffset = reset ? 0 : items.count
         let first = sources?.first
         let request: NSDictionary = [
             "accountId": NSNumber(value: active), "category": NSNumber(value: category),
-            "mode": sources == nil ? "dialogs" : (category == 2 || category == 3) ? "combined" : "messages",
+            "mode": sources == nil ? "dialogs" : (category == 2 || category == 3 || category == 4) ? "combined" : "messages",
             "peerId": first?["peerId"] ?? NSNumber(value: 0),
             "peerKind": first?["peerKind"] ?? NSNumber(value: -1),
             "sources": sources ?? [],
-            "offset": NSNumber(value: items.count), "limit": NSNumber(value: 30)
+            "offset": NSNumber(value: startOffset), "limit": NSNumber(value: 30)
         ]
         GoldgramArchiveReader.query(request) { [weak self] answer in
             guard let self, self.generation == callGeneration else { return }
-            let page = answer["items"] as? [[String: Any]] ?? []
-            self.decorate(page, accountId: active) { [weak self] enriched in
-                guard let self, self.generation == callGeneration else { return }
+            guard GoldgramArchiveReader.activeAccountId()?.int64Value == active else {
                 self.inFlight = false
-                guard GoldgramArchiveReader.activeAccountId()?.int64Value == active else {
+                self.items = []; self.displayItems = []; self.hasMore = false
+                self.status = "Аккаунт изменён — откройте архив заново"
+                self.tableView.reloadData()
+                return
+            }
+            self.inFlight = false
+            let code = answer["status"] as? String ?? ""
+            guard code == "ok" else {
+                // A transient locked SQLite must not erase previously rendered
+                // information. A real absent archive does reset its view.
+                if code == "no_archive" {
                     self.items = []; self.displayItems = []; self.hasMore = false
-                    self.status = "Аккаунт изменён — откройте архив заново"
-                    self.tableView.reloadData(); return
+                    if self.sources == nil {
+                        Self.fastFolderCache.removeObject(forKey: self.folderCacheKey(active))
+                    }
                 }
-                let code = answer["status"] as? String ?? ""
-                if code == "ok" {
-                    self.items.append(contentsOf: enriched)
-                    self.rebuildDisplayItems()
-                    self.hasMore = (answer["hasMore"] as? Bool ?? false) && self.items.count <= 5000
-                    self.status = "Записей пока нет"
-                } else {
-                    self.items = []; self.displayItems = []; self.hasMore = false
-                    self.status = code == "no_archive" ? "Локальный архив ещё не создан" :
-                        code == "account_changed" ? "Аккаунт изменён" : "Не удалось прочитать SQLite-архив"
+                self.status = code == "no_archive" ? "Локальный архив ещё не создан" :
+                    code == "account_changed" ? "Аккаунт изменён" : "Не удалось прочитать SQLite-архив"
+                self.tableView.reloadData()
+                return
+            }
+            let page = answer["items"] as? [[String: Any]] ?? []
+            // First paint does NOT wait for Telegram metadata or usernames.
+            // Existing peer names are merged in when the native resolver replies.
+            if reset {
+                self.items = page
+            } else {
+                self.items.append(contentsOf: page)
+            }
+            self.rebuildDisplayItems()
+            self.hasMore = (answer["hasMore"] as? Bool ?? false) && self.items.count <= 5000
+            self.status = "Записей пока нет"
+            self.tableView.reloadData()
+            if self.sources == nil, reset {
+                Self.fastFolderCache.setObject(self.items as NSArray,
+                                               forKey: self.folderCacheKey(active))
+            }
+            self.decorate(page, accountId: active) { [weak self] enriched in
+                guard let self, self.generation == callGeneration,
+                      GoldgramArchiveReader.activeAccountId()?.int64Value == active else { return }
+                // A second page can load while metadata is in flight. Only
+                // decorate matching identities; never append or re-order rows.
+                for (index, row) in enriched.enumerated() {
+                    let slot = startOffset + index
+                    guard self.items.indices.contains(slot),
+                          Self.key(self.items[slot]) == Self.key(row) else { continue }
+                    self.items[slot] = row
+                }
+                self.rebuildDisplayItems()
+                if self.sources == nil, reset {
+                    Self.fastFolderCache.setObject(self.items as NSArray,
+                                                   forKey: self.folderCacheKey(active))
                 }
                 self.tableView.reloadData()
             }
@@ -1110,9 +1494,60 @@ public final class GoldgramArchiveScreen: UITableViewController {
         guard sources != nil, displayItems.indices.contains(indexPath.row) else { return nil }
         let entry = displayItems[indexPath.row]
         return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { _ in
-            UIMenu(children: [UIAction(title: "Маршрут оригинала") { [weak self] _ in
-                self?.showTrace(entry)
-            }])
+            let count = (entry["revisionCount"] as? NSNumber)?.intValue ?? 0
+            return UIMenu(children: [
+                UIAction(title: "Вся история редакций (\(count))",
+                         image: UIImage(systemName: "text.book.closed")) { [weak self] _ in
+                    self?.showRevisionHistory(entry)
+                },
+                UIAction(title: "Маршрут оригинала") { [weak self] _ in
+                    self?.showTrace(entry)
+                }
+            ])
+        }
+    }
+
+    private func showRevisionHistory(_ entry: [String: Any]) {
+        guard let account = GoldgramArchiveReader.activeAccountId()?.int64Value,
+              account == boundAccount,
+              let kind = (entry["peerKind"] as? NSNumber)?.int32Value,
+              let peer = (entry["peerId"] as? NSNumber)?.int64Value,
+              let id = (entry["messageId"] as? NSNumber)?.int32Value else { return }
+        GoldgramHistoryStore.readPhone8RevisionHistory(
+            accountId: account, peerKind: kind, peerId: peer, messageId: id
+        ) { [weak self] revisions in
+            guard let self, self.boundAccount == account,
+                  GoldgramArchiveReader.activeAccountId()?.int64Value == account else { return }
+            let confirmed = (entry["originalObserved"] as? NSNumber)?.boolValue == true
+            let lines: [String] = revisions.map { version in
+                let n = (version["index"] as? NSNumber)?.intValue ?? 0
+                let label = n == 0 && confirmed ? "Оригинал" : "Редакция \(n)"
+                let date = (version["edited"] as? NSNumber).map {
+                    self.dateFormatter.string(from: Date(timeIntervalSince1970:
+                        Double($0.int64Value) / 1000))
+                }
+                return label + (date.map { " · " + $0 } ?? "") +
+                    "\n" + ((version["text"] as? String) ?? "")
+            }
+            let controller = UIViewController()
+            controller.title = "История редакций"
+            controller.view.backgroundColor = .systemBackground
+            let text = UITextView(frame: .zero)
+            text.isEditable = false
+            text.isSelectable = true
+            text.font = UIFont.preferredFont(forTextStyle: .body)
+            text.text = lines.isEmpty ? "История пока недоступна" :
+                lines.joined(separator: "\n\n— — —\n\n")
+            text.translatesAutoresizingMaskIntoConstraints = false
+            controller.view.addSubview(text)
+            NSLayoutConstraint.activate([
+                text.topAnchor.constraint(equalTo: controller.view.safeAreaLayoutGuide.topAnchor),
+                text.bottomAnchor.constraint(equalTo: controller.view.bottomAnchor),
+                text.leadingAnchor.constraint(equalTo: controller.view.leadingAnchor),
+                text.trailingAnchor.constraint(equalTo: controller.view.trailingAnchor)
+            ])
+            self.preserveListOnNextAppearance = true
+            self.navigationController?.pushViewController(controller, animated: true)
         }
     }
 
@@ -1180,7 +1615,9 @@ public final class GoldgramArchiveScreen: UITableViewController {
     }
 
     private static func purgeRetained(_ items: [[String: Any]], account: NSNumber, offset: Int = 0, completion: @escaping (Bool) -> Void) {
-        let end = min(offset + 50, items.count)
+        // #233: 200 IDs per Postbox transaction vs 50 (5000 -> 25
+        // requests instead of 100), still bounded below the 5s watchdog.
+        let end = min(offset + 200, items.count)
         let page = Array(items[offset..<end])
         let request: [AnyHashable: Any] = ["action": "purge_retained", "accountId": account,
             "items": page, "clearMedia": end == items.count]
@@ -1192,8 +1629,103 @@ public final class GoldgramArchiveScreen: UITableViewController {
         }
     }
 
+    // #233: the existing settings button opens a safe, per-category menu.
+    // Never is the independent archive on iPhone 8 cleaned from this screen.
     @objc(presentClearHistoryFromController:)
     public static func presentClearHistory(from controller: UIViewController) {
+        guard let account = GoldgramArchiveReader.activeAccountId() else { return }
+        let sheet = UIAlertController(
+            title: "Очистка Goldgram",
+            message: "Только локальный журнал Swiftgram. Коллектор iPhone 8 и сообщения Telegram не затрагиваются.",
+            preferredStyle: .actionSheet)
+        for category in [1, 3] {
+            let name = category == 1 ? "Изменённые" : "Удалённые"
+            sheet.addAction(UIAlertAction(
+                title: "Очистить «\(name)» полностью",
+                style: .destructive) { [weak controller] _ in
+                guard let controller else { return }
+                confirmClearJournal(from: controller, account: account, category: category)
+            })
+            let hours = GoldgramArchiveReader.journalRetention(
+                forAccount: account, category: category)
+            let current = retentionLabel(hours)
+            sheet.addAction(UIAlertAction(
+                title: "Автоочистка «\(name)»: \(current)", style: .default) { [weak controller] _ in
+                guard let controller else { return }
+                presentRetentionPicker(from: controller, account: account, category: category)
+            })
+        }
+        sheet.addAction(UIAlertAction(title: "Очистить всё (старый режим)",
+                                       style: .destructive) { [weak controller] _ in
+            guard let controller else { return }
+            presentClearAllHistory(from: controller)
+        })
+        sheet.addAction(UIAlertAction(title: "Отмена", style: .cancel))
+        sheet.popoverPresentationController?.sourceView = controller.view
+        sheet.popoverPresentationController?.sourceRect = CGRect(
+            x: controller.view.bounds.midX, y: controller.view.bounds.midY, width: 1, height: 1)
+        controller.present(sheet, animated: true)
+    }
+
+    private static func retentionLabel(_ hours: Int) -> String {
+        switch hours {
+        case 12: return "12 часов"
+        case 24: return "1 день"
+        case 48: return "2 дня"
+        case 72: return "3 дня"
+        case 168: return "1 неделя"
+        default: return "Никогда"
+        }
+    }
+
+    private static func presentRetentionPicker(from controller: UIViewController,
+                                               account: NSNumber, category: Int) {
+        let name = category == 1 ? "Изменённые" : "Удалённые"
+        let picker = UIAlertController(
+            title: "Автоочистка: \(name)",
+            message: "По истечении выбранного срока журнал очищается полностью, когда Swiftgram открыт и может работать. По умолчанию — никогда.",
+            preferredStyle: .actionSheet)
+        for hours in [12, 24, 48, 72, 168, 0] {
+            picker.addAction(UIAlertAction(
+                title: retentionLabel(hours), style: .default) { _ in
+                GoldgramArchiveReader.setJournalRetention(
+                    forAccount: account, category: category, hours: hours)
+            })
+        }
+        picker.addAction(UIAlertAction(title: "Отмена", style: .cancel))
+        picker.popoverPresentationController?.sourceView = controller.view
+        picker.popoverPresentationController?.sourceRect = CGRect(
+            x: controller.view.bounds.midX, y: controller.view.bounds.midY, width: 1, height: 1)
+        controller.present(picker, animated: true)
+    }
+
+    private static func confirmClearJournal(from controller: UIViewController,
+                                            account: NSNumber, category: Int) {
+        let name = category == 1 ? "изменённых" : "удалённых"
+        let alert = UIAlertController(
+            title: "Очистить журнал \(name)?",
+            message: "Удалятся все локальные записи этой категории текущего аккаунта. Данные другой категории, Collector iPhone 8 и Telegram останутся.",
+            preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Отмена", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Удалить", style: .destructive) { [weak controller] _ in
+            GoldgramArchiveReader.clearJournal(forAccount: account, category: category) { response in
+                guard let controller else { return }
+                let ok = response["status"] as? String == "ok"
+                if ok { fastFolderCache.removeAllObjects() }
+                let result = UIAlertController(
+                    title: ok ? "Журнал очищен" : "Ошибка очистки",
+                    message: ok
+                        ? "SQLite очищена за \(String(format: "%.2f", Double(response["elapsedMs"] as? Int ?? 0) / 1000)) с. Соответствующие локальные снимки и атрибуты Postbox очищаются отдельными пакетами."
+                        : "Журнал не изменён или Telegram-аккаунт переключился.",
+                    preferredStyle: .alert)
+                result.addAction(UIAlertAction(title: "OK", style: .default))
+                controller.present(result, animated: true)
+            }
+        })
+        controller.present(alert, animated: true)
+    }
+
+    private static func presentClearAllHistory(from controller: UIViewController) {
         guard let account = GoldgramArchiveReader.activeAccountId() else { return }
         let alert = UIAlertController(
             title: "Очистить логи?",
@@ -1217,6 +1749,7 @@ public final class GoldgramArchiveScreen: UITableViewController {
                 controller.present(result, animated: true)
                 }
                 if status == "ok" {
+                    GoldgramArchiveScreen.fastFolderCache.removeAllObjects()
                     let retained = answer["retainedItems"] as? [[String: Any]] ?? []
                     purgeRetained(retained, account: account, completion: showResult)
                 } else { showResult(false) }
@@ -1251,6 +1784,7 @@ public final class GoldgramArchiveScreen: UITableViewController {
             text.leadingAnchor.constraint(equalTo: controller.view.leadingAnchor),
             text.trailingAnchor.constraint(equalTo: controller.view.trailingAnchor)
         ])
+        self.preserveListOnNextAppearance = true
         navigationController?.pushViewController(controller, animated: true)
     }
 
@@ -1260,18 +1794,36 @@ public final class GoldgramArchiveScreen: UITableViewController {
         var request: [AnyHashable: Any] = ["action": "prepare_jump", "accountId": NSNumber(value: accountId), "items": [entry]]
         goldgramResolveNativeMetadata(request) { [weak self] response in
             guard let self else { return }
-            self.openingMessage = false
             let status = (response as NSDictionary)["status"] as? String
             guard status == "ok", self.boundAccount == accountId else {
+                self.openingMessage = false
                 self.showLocalRecord(entry, accountChanged: status == "account_changed"); return
             }
             request["action"] = "open_message"
-            let open = { goldgramResolveNativeMetadata(request) { _ in } }
-            // Finish dismissing UIKit's archive/menu sheet before the native
-            // Telegram navigation mutates its own controller stack.
-            if let presenter = self.navigationController?.presentingViewController ?? self.presentingViewController {
+            if let archiveNavigation = self.navigationController,
+               let presenter = archiveNavigation.presentingViewController {
+                request["returnNavigation"] = archiveNavigation
+                request["returnPresenter"] = presenter
+                request["returnSnapshot"] = archiveNavigation.view.snapshotView(afterScreenUpdates: false)
+                self.preserveListOnNextAppearance = true
+                let open = {
+                    goldgramResolveNativeMetadata(request) { [weak self] answer in
+                        guard let self else { return }
+                        self.openingMessage = false
+                        guard (answer as NSDictionary)["status"] as? String != "ok",
+                              GoldgramArchiveReader.activeAccountId()?.int64Value == accountId,
+                              presenter.viewIfLoaded?.window != nil,
+                              presenter.presentedViewController == nil else { return }
+                        // A failed native handoff returns the same list as well.
+                        presenter.present(archiveNavigation, animated: true) {
+                            self.showLocalRecord(entry, accountChanged: false)
+                        }
+                    }
+                }
                 presenter.dismiss(animated: true, completion: open)
-            } else { open() }
+            } else {
+                goldgramResolveNativeMetadata(request) { [weak self] _ in self?.openingMessage = false }
+            }
         }
     }
 
@@ -1288,6 +1840,7 @@ public final class GoldgramArchiveScreen: UITableViewController {
         let child = GoldgramArchiveScreen(category: category, sources: members,
             displayName: entry["displayName"] as? String)
         child.boundAccount = boundAccount
+        self.preserveListOnNextAppearance = true
         navigationController?.pushViewController(child, animated: true)
     }
 }

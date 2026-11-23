@@ -1,8 +1,7 @@
-import SGSimpleSettings
 import Foundation
 import Postbox
 import SwiftSignalKit
-import TelegramApi
+internal import TelegramApi
 
 public enum ServerProvidedSuggestion: Equatable {
     case autoarchivePopular
@@ -22,6 +21,7 @@ public enum ServerProvidedSuggestion: Equatable {
     case setupLoginEmail
     case setupLoginEmailBlocking
     case setupPasskey
+    case walletFirstIncomingTransfer
     case link(id: String, url: String, title: ServerSuggestionInfo.Item.Text, subtitle: ServerSuggestionInfo.Item.Text)
     
     init?(string: String) {
@@ -60,6 +60,8 @@ public enum ServerProvidedSuggestion: Equatable {
             self = .setupLoginEmailBlocking
         case "SETUP_PASSKEY":
             self = .setupPasskey
+        case "WALLET_FIRST_INCOMING_TRANSFER":
+            self = .walletFirstIncomingTransfer
         default:
             return nil
         }
@@ -101,6 +103,8 @@ public enum ServerProvidedSuggestion: Equatable {
             return "SETUP_LOGIN_EMAIL_NOSKIP"
         case .setupPasskey:
             return "SETUP_PASSKEY"
+        case .walletFirstIncomingTransfer:
+            return "WALLET_FIRST_INCOMING_TRANSFER"
         case let .link(id, _, _, _):
             return id
         }
@@ -226,63 +230,3 @@ func _internal_dismissPeerSpecificServerProvidedSuggestion(account: Account, pee
         }
     }
 }
-
-
-// MARK: Swiftgram
-private var dismissedSGSuggestionsPromise = ValuePromise<Set<String>>(Set())
-private var dismissedSGSuggestions: Set<String> = Set() {
-    didSet {
-        dismissedSGSuggestionsPromise.set(dismissedSGSuggestions)
-    }
-}
-
-
-public func dismissSGProvidedSuggestion(suggestionId: String) {
-    dismissedSGSuggestions.insert(suggestionId)
-    SGSimpleSettings.shared.dismissedSGSuggestions.append(suggestionId)
-}
-
-public func getSGProvidedSuggestions(account: Account) -> Signal<Data?, NoError> {
-    let key: PostboxViewKey = .preferences(keys: Set([PreferencesKeys.appConfiguration]))
-
-    return combineLatest(account.postbox.combinedView(keys: [key]), dismissedSGSuggestionsPromise.get())
-    |> map { views, dismissedSuggestionsValue -> Data? in
-        guard let view = views.views[key] as? PreferencesView,
-              let appConfiguration = view.values[PreferencesKeys.appConfiguration]?.get(AppConfiguration.self) else {
-            return nil
-        }
-
-        func parseAnnouncements(from string: String?) -> [[String: Any]] {
-            guard let string = string,
-                  let data = string.data(using: .utf8),
-                  let json = try? JSONSerialization.jsonObject(with: data, options: []),
-                  let array = json as? [[String: Any]] else {
-                return []
-            }
-            return array
-        }
-
-        let ghSuggestions = parseAnnouncements(from: appConfiguration.sgGHSettings.announcementsData)
-        let webSuggestions = parseAnnouncements(from: appConfiguration.sgWebSettings.global.announcementsData)
-
-        let combinedSuggestions = ghSuggestions + webSuggestions
-
-        let filteredSuggestions = combinedSuggestions.filter { suggestion in
-            guard let id = suggestion["id"] as? String else {
-                return true
-            }
-            return !dismissedSuggestionsValue.contains(id) &&
-                   !SGSimpleSettings.shared.dismissedSGSuggestions.contains(id)
-        }
-
-        guard let modifiedData = try? JSONSerialization.data(withJSONObject: filteredSuggestions, options: []) else {
-            return nil
-        }
-
-        return modifiedData
-    }
-    |> distinctUntilChanged
-}
-
-
-

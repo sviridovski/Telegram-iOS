@@ -12,15 +12,19 @@ import ItemListPeerItem
 import DeviceAccess
 import TelegramStringFormatting
 import PeerNameColorItem
+import WalletContext
 
 enum SettingsSection: Int, CaseIterable {
     case edit
     case phone
     case accounts
     case myProfile
+    case wallet
     case proxy
+    // MARK: Swiftgram
     case swiftgram
     case swiftgramPro
+    //
     case apps
     case shortcuts
     case advanced
@@ -29,7 +33,7 @@ enum SettingsSection: Int, CaseIterable {
     case support
 }
 
-func settingsItems(showProfileId: Bool, data: PeerInfoScreenData?, context: AccountContext, presentationData: PresentationData, interaction: PeerInfoInteraction, isExpanded: Bool) -> [(AnyHashable, [PeerInfoScreenItem])] {
+func settingsItems(data: PeerInfoScreenData?, context: AccountContext, presentationData: PresentationData, interaction: PeerInfoInteraction, isExpanded: Bool) -> [(AnyHashable, [PeerInfoScreenItem])] {
     guard let data = data else {
         return []
     }
@@ -81,27 +85,7 @@ func settingsItems(showProfileId: Bool, data: PeerInfoScreenData?, context: Acco
         }))
     }
     
-    // MARK: Swiftgram
-    if showProfileId {
-        var idText = ""
-        
-        if let peer = data.peer {
-            idText = String(peer.id.id._internalGetInt64Value())
-        }
-        
-        items[.edit]!.append(
-            PeerInfoScreenActionItem(
-                id: 100,
-                text: "ID: \(idText)",
-                color: .accent,
-                action: {
-                    UIPasteboard.general.string = idText
-                    
-                    interaction.notifyTextCopied()
-                }
-            )
-        )
-    }
+    items[.edit]!.append(contentsOf: sgPeerInfoSettingsProfileIdItems(data: data, interaction: interaction)) // MARK: Swiftgram
     
     if let settings = data.globalSettings {
         if settings.premiumGracePeriod {
@@ -174,10 +158,33 @@ func settingsItems(showProfileId: Bool, data: PeerInfoScreenData?, context: Acco
         items[.accounts]!.append(PeerInfoScreenActionItem(id: 1000, text: presentationData.strings.Settings_AddAccount, icon: PresentationResourcesItemList.plusIconImage(presentationData.theme), action: {
             interaction.openSettings(.addAccount)
         }))
+        //
         
         items[.myProfile]!.append(PeerInfoScreenDisclosureItem(id: 0, text: presentationData.strings.Settings_MyProfile, icon: PresentationResourcesSettings.myProfile, action: {
             interaction.openSettings(.profile)
         }))
+        
+        if WalletConfiguration.with(appConfiguration: context.currentAppConfiguration.with { $0 }).isAvailable {
+            let balanceText: NSAttributedString
+            if let balance = settings.walletBalance, balance > 10_000_000 {
+                var formattedLabel = formatTonAmountText(balance, dateTimeFormat: presentationData.dateTimeFormat)
+                if let decimalRange = formattedLabel.range(of: presentationData.dateTimeFormat.decimalSeparator) {
+                    let fractionalDigitsCount = formattedLabel[decimalRange.upperBound...].count
+                    formattedLabel += String(repeating: "0", count: max(0, 2 - fractionalDigitsCount))
+                } else {
+                    formattedLabel += presentationData.dateTimeFormat.decimalSeparator + "00"
+                }
+                let smallLabelFont = Font.regular(floor(presentationData.listsFontSize.itemListBaseFontSize / 17.0 * 13.0))
+                let labelFont = Font.regular(presentationData.listsFontSize.itemListBaseFontSize)
+                let labelColor = presentationData.theme.list.itemSecondaryTextColor
+                balanceText = tonAmountAttributedString(formattedLabel, integralFont: labelFont, fractionalFont: smallLabelFont, color: labelColor, decimalSeparator: presentationData.dateTimeFormat.decimalSeparator)
+            } else {
+                balanceText = NSAttributedString()
+            }
+            items[.wallet]!.append(PeerInfoScreenDisclosureItem(id: 0, label: .attributedText(balanceText), additionalBadgeLabel: presentationData.strings.Settings_New, text: presentationData.strings.Settings_Money, icon: PresentationResourcesSettings.money, action: {
+                interaction.openSettings(.wallet)
+            }))
+        }
         
         if !settings.proxySettings.servers.isEmpty {
             let proxyType: String
@@ -185,6 +192,8 @@ func settingsItems(showProfileId: Bool, data: PeerInfoScreenData?, context: Acco
                 switch activeServer.connection {
                 case .mtp:
                     proxyType = presentationData.strings.SocksProxySetup_ProxyTelegram
+                case .web:
+                    proxyType = presentationData.strings.SocksProxySetup_ProxyWeb
                 case .socks5:
                     proxyType = presentationData.strings.SocksProxySetup_ProxySocks5
                 }
@@ -197,38 +206,10 @@ func settingsItems(showProfileId: Bool, data: PeerInfoScreenData?, context: Acco
         }
     }
     
-    // let locale = presentationData.strings.baseLanguageCode
     // MARK: Swiftgram
-    let hasNewSGFeatures = {
-        return false
-    }
-    let swiftgramLabel: PeerInfoScreenDisclosureItem.Label
-    if hasNewSGFeatures() {
-        swiftgramLabel = .titleBadge(presentationData.strings.Settings_New, presentationData.theme.list.itemAccentColor)
-    } else {
-        swiftgramLabel = .none
-    }
-
-    let hasNewSGProFeatures = {
-        return false
-    }
-    let swiftgramProLabel: PeerInfoScreenDisclosureItem.Label
-    if hasNewSGProFeatures() {
-        swiftgramProLabel = .titleBadge(presentationData.strings.Settings_New, presentationData.theme.list.itemAccentColor)
-    } else {
-        swiftgramProLabel = .none
-    }
-    
-    
     let sgWebSettings = context.currentAppConfiguration.with({ $0 }).sgWebSettings
-    if sgWebSettings.global.paymentsEnabled || context.sharedContext.immediateSGStatus.status > 1 {
-        items[.swiftgram]!.append(PeerInfoScreenDisclosureItem(id: 0, label: swiftgramProLabel, text: "Swiftgram Pro", icon: PresentationResourcesSettings.swiftgramPro, action: {
-            interaction.openSettings(.swiftgramPro)
-        }))
-    }
-    items[.swiftgram]!.append(PeerInfoScreenDisclosureItem(id: 1, label: swiftgramLabel, text: "Swiftgram", icon: PresentationResourcesSettings.swiftgram, action: {
-        interaction.openSettings(.swiftgram)
-    }))
+    items[.swiftgram]!.append(contentsOf: sgPeerInfoSettingsItems(context: context, paymentsEnabled: sgWebSettings.global.paymentsEnabled, presentationData: presentationData, interaction: interaction))
+    //
     items[.swiftgram]!.append(PeerInfoScreenDisclosureItem(id: 2, text: "Goldgram", icon: PresentationResourcesSettings.swiftgram, action: {
         interaction.openSettings(.goldgram)
     }))
@@ -266,6 +247,11 @@ func settingsItems(showProfileId: Bool, data: PeerInfoScreenData?, context: Acco
     items[.shortcuts]!.append(PeerInfoScreenDisclosureItem(id: 2, text: presentationData.strings.CallSettings_RecentCalls, icon: PresentationResourcesSettings.recentCalls, action: {
         interaction.openSettings(.recentCalls)
     }))
+    // Contacts live here rather than in the tab bar, which News took; so does its tab's "!" for contacts access.
+    let contactsWarning = data.globalSettings?.contactsWarning ?? false
+    items[.shortcuts]!.append(PeerInfoScreenDisclosureItem(id: 21, label: contactsWarning ? .badge("!", presentationData.theme.list.itemDestructiveColor) : .none, text: presentationData.strings.Contacts_Title, icon: PresentationResourcesSettings.contacts, action: {
+        interaction.openSettings(.contacts)
+    }))
     
     let devicesLabel: String
     if let settings = data.globalSettings, let otherSessionsCount = settings.otherSessionsCount {
@@ -291,7 +277,7 @@ func settingsItems(showProfileId: Bool, data: PeerInfoScreenData?, context: Acco
     } else {
         notificationsWarning = false
     }
-    items[.advanced]!.append(PeerInfoScreenDisclosureItem(id: 0, label: notificationsWarning ? .badge("!", presentationData.theme.list.itemDestructiveColor) : .none, text: presentationData.strings.Settings_NotificationsAndSounds, icon: PresentationResourcesSettings.notifications, action: {
+    items[.advanced]!.append(PeerInfoScreenDisclosureItem(id: 0, label: notificationsWarning ? .badge("!", presentationData.theme.list.itemDestructiveColor) : .none, text: presentationData.strings.Settings_NotificationsAndSounds, icon: PresentationResourcesSettings.notifications, labelAccessibilityText: notificationsWarning ? presentationData.strings.VoiceOver_TabBar_AttentionRequired : nil, action: {
         interaction.openSettings(.notificationsAndSounds)
     }))
     items[.advanced]!.append(PeerInfoScreenDisclosureItem(id: 1, text: presentationData.strings.Settings_PrivacySettings, icon: PresentationResourcesSettings.security, action: {
@@ -349,7 +335,7 @@ func settingsItems(showProfileId: Bool, data: PeerInfoScreenData?, context: Acco
             } else {
                 balanceText = NSAttributedString()
             }
-            items[.payment]!.append(PeerInfoScreenDisclosureItem(id: 103, label: .attributedText(balanceText), text: presentationData.strings.Settings_MyTon, icon: PresentationResourcesSettings.ton, action: {
+            items[.payment]!.append(PeerInfoScreenDisclosureItem(id: 103, label: .attributedText(balanceText), text: presentationData.strings.Settings_MyTon, icon: PresentationResourcesSettings.gramEarnings, action: {
                 interaction.openSettings(.ton)
             }))
         }

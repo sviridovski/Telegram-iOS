@@ -3,10 +3,10 @@
 from pathlib import Path
 
 root = Path(__file__).resolve().parents[2]
-state = (root / "submodules/TelegramCore/Sources/State/AccountStateManagementUtils.swift").read_text()
+state = (root / "submodules/TelegramCore/Sources/State/Sync/ChannelPolling.swift").read_text()
 core = (root / "submodules/TelegramCore/Sources/State/GoldgramNativeHistory.swift").read_text()
 
-poll = state.split("private func pollChannel(", 1)[1]
+poll = state.split("func pollChannel(", 1)[1]
 normal = poll.split("case let .channelDifference(channelDifferenceData):", 1)[1].split(
     "case let .channelDifferenceEmpty(", 1)[0]
 new = normal.split("for apiMessage in newMessages {", 1)[1].split("for update in otherUpdates {", 1)[0]

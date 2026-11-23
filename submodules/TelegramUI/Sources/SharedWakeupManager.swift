@@ -681,7 +681,7 @@ public final class SharedWakeupManager {
                 }
             }
             
-            Task { @MainActor [weak self] in
+            let _ = Task { @MainActor [weak self] in
                 guard let self else {
                     task.updateTitle(task.title, subtitle: presentationData.strings.BackgroundTasks_MediaFinished)
                     task.setTaskCompleted(success: true)
@@ -859,7 +859,7 @@ public final class SharedWakeupManager {
                 }
             }
             
-            Task { @MainActor [weak self] in
+            let _ = Task { @MainActor [weak self] in
                 guard let self else {
                     task.updateTitle(task.title, subtitle: presentationData.strings.BackgroundTasks_StoryFinished)
                     task.setTaskCompleted(success: true)
