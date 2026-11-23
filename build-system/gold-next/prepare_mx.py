@@ -707,7 +707,7 @@ dashboard_methods = r'''
 }
 
 - (void)goldgramBuildDashboard {
-  BOOL russian = [[[NSLocale preferredLanguages firstObject] ?: @"" lowercaseString] hasPrefix:@"ru"];
+  BOOL russian = [[NSLocale preferredLanguages].firstObject hasPrefix:@"ru"];
   UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 320, 1)];
   UIStackView *stack = [UIStackView new];
   stack.translatesAutoresizingMaskIntoConstraints = NO;
