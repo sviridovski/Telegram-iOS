@@ -1304,6 +1304,24 @@ public final class SharedAccountContextImpl: SharedAccountContext {
                 }
                 if hadUpdates {
                     goldgramNativeNavigationContext = self
+                    GoldgramAuthorSearchBridge.bindPrimary(context: primary)
+                    GoldgramAuthorSearchBridge.nativeJump = { [weak self] context, id, archiveNavigation, presenter, snapshot in
+                        guard let self, let current = self.sgPrimaryAccountContextForMigration(),
+                              current.account.id == context.account.id,
+                              archiveNavigation.presentingViewController == nil,
+                              presenter.viewIfLoaded?.window != nil,
+                              presenter.presentedViewController == nil,
+                              let navigation = self.mainWindow?.viewController as? NavigationController else { return false }
+                        let accountId = current.account.peerId.id._internalGetInt64Value()
+                        let back = GoldgramArchiveReturnController(archiveNavigation: archiveNavigation,
+                            presenter: presenter, accountId: accountId, snapshot: snapshot)
+                        let chat = self.makeChatController(context: current, chatLocation: .peer(id: id.peerId),
+                            subject: .message(id: .id(id), highlight: ChatControllerSubject.MessageHighlight(quote: nil), timecode: nil, setupReply: false),
+                            botStart: nil, mode: .standard(.default), params: nil)
+                        navigation.replaceControllersAndPush(controllers: navigation.viewControllers + [back],
+                            controller: chat, animated: true)
+                        return true
+                    }
                     goldgramRegisterNativeNavigation()
                     goldgramPublishSelectedAccount(primary?.account.peerId.id._internalGetInt64Value() ?? 0)
                     self.activeAccountsValue!.accounts.sort(by: { $0.2 < $1.2 })

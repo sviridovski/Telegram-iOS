@@ -1927,3 +1927,105 @@ mx_ui_source = mx_ui_source.replace(author_route_245, '''  if (identifier == 29)
 ''' + author_route_245)
 mx_ui_path.write_text(mx_ui_source)
 print('Goldgram #245: author search on Mx dashboard')
+
+# Goldgram #252: restore the exception footer's actual multiline height, and
+# turn the formerly decorative plus row into a real, explicit user picker.
+# Keep MxGhostExceptions storage, notification, rename and removal unchanged.
+def patch_252(before, after, label):
+    if mx_ui_source.count(before) != 1:
+        raise SystemExit('Goldgram #252: ' + label + ' anchor mismatch')
+    return mx_ui_source.replace(before, after)
+
+mx_ui_source = patch_252(
+    'return self.goldgramSection.integerValue == GHOST_MODE ? 8.0 : CGFLOAT_MIN;',
+    '''if (self.goldgramSection.integerValue == GHOST_EXCEPTIONS)
+    return UITableViewAutomaticDimension;
+  return self.goldgramSection.integerValue == GHOST_MODE ? 8.0 : CGFLOAT_MIN;''',
+    'exception footer height')
+mx_ui_source = patch_252(
+    'self.tableView.estimatedSectionFooterHeight = 0;',
+    '''self.tableView.estimatedSectionFooterHeight =
+        self.goldgramSection.integerValue == GHOST_EXCEPTIONS ? 100.0 : 0;
+    if (self.goldgramSection.integerValue == GHOST_EXCEPTIONS) {
+      self.tableView.rowHeight = UITableViewAutomaticDimension;
+      self.tableView.estimatedRowHeight = 64.0;
+    }''', 'exception self sizing')
+mx_ui_source = patch_252(
+    'return MAX((NSInteger)[MxGhostExceptions all].count, 1);',
+    'return (NSInteger)[MxGhostExceptions all].count + 1;',
+    'always show add row')
+mx_ui_source = patch_252(
+    '''    if (exceptions.count == 0) {
+      cell.textLabel.text = TGLoc(@"GHOST_EXCEPTIONS_EMPTY_TITLE");
+      cell.detailTextLabel.text = TGLoc(@"GHOST_EXCEPTIONS_EMPTY_SUBTITLE");
+      cell.imageView.image = [UIImage systemImageNamed:@"person.badge.plus"];
+      cell.imageView.tintColor = [UIColor lightGrayColor];
+      cell.accessoryType = UITableViewCellAccessoryNone;
+      cell.selectionStyle = UITableViewCellSelectionStyleNone;
+      return cell;
+    }''',
+    '''    if (indexPath.row == (NSInteger)exceptions.count) {
+      BOOL ru = [[NSLocale preferredLanguages].firstObject hasPrefix:@"ru"];
+      cell.textLabel.text = ru ? @"Добавить человека" : @"Add person";
+      cell.detailTextLabel.text = ru ? @"По имени контакта или @username" : @"By contact name or @username";
+      cell.imageView.image = [UIImage systemImageNamed:@"person.badge.plus"];
+      cell.imageView.tintColor = UIColor.systemTealColor;
+      cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+      cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+      return cell;
+    }''', 'selectable add row')
+mx_ui_source = patch_252(
+    '''    if (indexPath.row < (NSInteger)exceptions.count) {
+      [self openProfileForException:exceptions[indexPath.row]];
+    }
+    return;''',
+    '''    if (indexPath.row < (NSInteger)exceptions.count) {
+      [self openProfileForException:exceptions[indexPath.row]];
+    } else if (indexPath.row == (NSInteger)exceptions.count) {
+      [self goldgramAddGhostException];
+    }
+    return;''', 'add row action')
+mx_ui_source = patch_252(
+    '         [MxGhostExceptions all].count > 0;',
+    '         indexPath.row < (NSInteger)[MxGhostExceptions all].count;',
+    'no deletion of add row')
+mx_ui_source = patch_252(
+    '- (void)reloadGhostExceptions;',
+    '- (void)reloadGhostExceptions;\n- (void)goldgramAddGhostException;',
+    'picker declaration')
+mx_ui_source = patch_252(
+    '- (void)reloadGhostExceptions {',
+    r'''- (void)goldgramAddGhostException {
+  Class bridge = NSClassFromString(@"GoldgramAuthorSearchBridge");
+  SEL selector = @selector(presentGhostPickerFromController:completion:);
+  if (![bridge respondsToSelector:selector]) {
+    BOOL ru = [[NSLocale preferredLanguages].firstObject hasPrefix:@"ru"];
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:ru ? @"Поиск недоступен" : @"Search unavailable"
+        message:ru ? @"Откройте настройки Goldgram в активном аккаунте." : @"Open Goldgram in the active account."
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+    return;
+  }
+  __weak Mx *weakSelf = self;
+  typedef void (*OpenPicker)(id, SEL, UIViewController *, void (^)(NSDictionary *));
+  ((OpenPicker)[bridge methodForSelector:selector])(bridge, selector, self, ^(NSDictionary *entry) {
+    NSNumber *peerId = entry[@"id"];
+    if (![peerId isKindOfClass:NSNumber.class] || peerId.longLongValue <= 0) return;
+    [MxGhostExceptions addPeerId:peerId.longLongValue name:entry[@"name"] username:entry[@"username"]];
+    [weakSelf reloadGhostExceptions];
+  });
+}
+
+- (void)reloadGhostExceptions {''', 'picker bridge')
+mx_ui_source = patch_252(
+    '  if (!self.goldgramSection) [self goldgramDashboardLoadCounts];',
+    '''  if (!self.goldgramSection) [self goldgramDashboardLoadCounts];
+  else if (self.goldgramSection.integerValue == GHOST_EXCEPTIONS) {
+    BOOL ru = [[NSLocale preferredLanguages].firstObject hasPrefix:@"ru"];
+    self.title = ru ? @"Исключения" : @"Exceptions";
+    [self.tableView reloadData];
+  }''', 'exception title and refresh')
+mx_ui_path.write_text(mx_ui_source)
+print('Goldgram #252: real exception picker, safe footer height and preserved Mx store')

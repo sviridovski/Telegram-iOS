@@ -11,6 +11,17 @@ import Display
 @objc(GoldgramAuthorSearchBridge)
 public final class GoldgramAuthorSearchBridge: NSObject {
     private static weak var activeContext: AccountContext?
+    private static weak var primaryContext: AccountContext?
+    // The TelegramUI host owns the native navigation stack and account checks.
+    public static var nativeJump: ((AccountContext, EngineMessage.Id, UINavigationController, UIViewController, UIView?) -> Bool)?
+
+    public static func bindPrimary(context: AccountContext?) {
+        self.primaryContext = context
+    }
+
+    fileprivate static func isCurrentAccount(_ context: AccountContext) -> Bool {
+        return primaryContext?.account.id == context.account.id
+    }
 
     public static func bind(context: AccountContext) {
         self.activeContext = context
@@ -18,20 +29,45 @@ public final class GoldgramAuthorSearchBridge: NSObject {
 
     @objc(presentFromController:)
     public static func presentFromController(_ controller: UIViewController) {
-        guard let context = activeContext else { return }
+        guard let context = primaryContext else { return }
         open(from: controller, context: context, chatId: nil)
     }
 
     public static func open(from controller: UIViewController, context: AccountContext, chatId: EnginePeer.Id?) {
         bind(context: context)
         let search = GoldgramAuthorSearchScreen(context: context, chatId: chatId)
-        controller.navigationController?.pushViewController(search, animated: true)
+        // Native Telegram controllers need a Telegram layout host; UIKit
+        // search results need a UIKit host. Use a separate modal for native entry.
+        if let navigation = controller.navigationController, !(navigation is NavigationController) {
+            navigation.pushViewController(search, animated: true)
+        } else {
+            let navigation = UINavigationController(rootViewController: search)
+            search.navigationItem.leftBarButtonItem = UIBarButtonItem(barButtonSystemItem: .close, target: search, action: #selector(GoldgramAuthorSearchScreen.closeModal))
+            controller.present(navigation, animated: true)
+        }
+    }
+
+    @objc(presentGhostPickerFromController:completion:)
+    public static func presentGhostPickerFromController(_ controller: UIViewController, completion: @escaping (NSDictionary) -> Void) {
+        guard let context = primaryContext, let navigation = controller.navigationController,
+              !(navigation is NavigationController) else {
+            let alert = UIAlertController(title: "Не удалось открыть контакты", message: "Откройте настройки Goldgram в активном аккаунте.", preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "OK", style: .default))
+            controller.present(alert, animated: true)
+            return
+        }
+        let picker = GoldgramAuthorSearchScreen(context: context, chatId: nil, selection: completion)
+        navigation.pushViewController(picker, animated: true)
     }
 }
 
 private final class GoldgramAuthorSearchScreen: UITableViewController, UISearchBarDelegate {
     private let context: AccountContext
     private let chatId: EnginePeer.Id?
+    private let selection: ((NSDictionary) -> Void)?
+    private var handingOff = false
+    private var returnOffset: CGPoint?
+    private var needsReload = false
     private let authorInput = UISearchBar()
     private let scopePicker = UISegmentedControl(items: ["В этом чате", "Во всех чатах"])
     private let info = UILabel()
@@ -55,9 +91,10 @@ private final class GoldgramAuthorSearchScreen: UITableViewController, UISearchB
     private let maxDialogCount = 1000
     private let maxPagesPerDialog = 10
 
-    init(context: AccountContext, chatId: EnginePeer.Id?) {
+    init(context: AccountContext, chatId: EnginePeer.Id?, selection: ((NSDictionary) -> Void)? = nil) {
         self.context = context
         self.chatId = chatId
+        self.selection = selection
         super.init(style: .insetGrouped)
     }
 
@@ -73,7 +110,7 @@ private final class GoldgramAuthorSearchScreen: UITableViewController, UISearchB
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = "Поиск по автору"
+        title = selection == nil ? "Поиск по автору" : "Добавить исключение"
         authorInput.placeholder = "Имя контакта или @username"
         authorInput.autocapitalizationType = .none
         authorInput.autocorrectionType = .no
@@ -81,11 +118,11 @@ private final class GoldgramAuthorSearchScreen: UITableViewController, UISearchB
         scopePicker.selectedSegmentIndex = chatId == nil ? 1 : 0
         scopePicker.setEnabled(chatId != nil, forSegmentAt: 0)
         scopePicker.addTarget(self, action: #selector(changeScope), for: .valueChanged)
-        let wrapper = UIView(frame: CGRect(x: 0, y: 0, width: 320, height: 105))
+        let wrapper = UIView(frame: CGRect(x: 0, y: 0, width: 320, height: selection == nil ? 105 : 58))
         authorInput.frame = CGRect(x: 0, y: 0, width: 320, height: 54)
         scopePicker.frame = CGRect(x: 12, y: 60, width: 296, height: 34)
         wrapper.addSubview(authorInput)
-        wrapper.addSubview(scopePicker)
+        if selection == nil { wrapper.addSubview(scopePicker) }
         tableView.tableHeaderView = wrapper
         info.textAlignment = .center
         info.textColor = .secondaryLabel
@@ -96,10 +133,36 @@ private final class GoldgramAuthorSearchScreen: UITableViewController, UISearchB
         info.text = "Введите имя человека, затем выберите его Telegram-профиль."
     }
 
+    @objc fileprivate func closeModal() {
+        dismiss(animated: true)
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        if handingOff {
+            handingOff = false
+            if needsReload {
+                needsReload = false
+                tableView.reloadData()
+            }
+            if let offset = returnOffset {
+                tableView.layoutIfNeeded()
+                tableView.setContentOffset(offset, animated: false)
+            }
+            returnOffset = nil
+        }
+    }
+
+    private func showJumpError() {
+        let alert = UIAlertController(title: "Не удалось открыть сообщение", message: "Проверьте активный аккаунт и доступность чата.", preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
+    }
+
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         // Do not keep searching after the author-search screen is closed.
-        if isMovingFromParent || isBeingDismissed {
+        if !handingOff && (isMovingFromParent || isBeingDismissed) {
             cancelSearch()
         }
     }
@@ -133,7 +196,7 @@ private final class GoldgramAuthorSearchScreen: UITableViewController, UISearchB
     func searchBar(_ searchBar: UISearchBar, textDidChange searchText: String) {
         cancelSearch()
         selectedAuthor = nil
-        title = "Поиск по автору"
+        title = selection == nil ? "Поиск по автору" : "Добавить исключение"
         candidates = []
         tableView.reloadData()
         let original = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -291,7 +354,8 @@ private final class GoldgramAuthorSearchScreen: UITableViewController, UISearchB
                 }
             }
             self.messages.sort { $0.timestamp > $1.timestamp }
-            self.tableView.reloadData()
+            if self.handingOff { self.needsReload = true }
+            else { self.tableView.reloadData() }
             if result.completed {
                 self.complete(peerId, generation: generation)
             } else if page + 1 >= self.maxPagesPerDialog || previous == nextState {
@@ -331,31 +395,53 @@ private final class GoldgramAuthorSearchScreen: UITableViewController, UISearchB
         tableView.deselectRow(at: indexPath, animated: true)
         if selectedAuthor == nil {
             guard candidates.indices.contains(indexPath.row) else { return }
-            selectedAuthor = candidates[indexPath.row]
+            let peer = candidates[indexPath.row]
+            if let selection {
+                guard case .user = peer, GoldgramAuthorSearchBridge.isCurrentAccount(context) else { return }
+                let alert = UIAlertController(title: "Добавить исключение?", message: peer.compactDisplayTitle + "\nЭтот человек сможет видеть ваши отметки о прочтении и набор текста при включённой невидимке.", preferredStyle: .alert)
+                alert.addAction(UIAlertAction(title: "Отмена", style: .cancel))
+                alert.addAction(UIAlertAction(title: "Добавить", style: .default) { [weak self] _ in
+                    guard let self, GoldgramAuthorSearchBridge.isCurrentAccount(self.context) else { return }
+                    selection(["id": NSNumber(value: peer.id.toInt64()), "name": peer.compactDisplayTitle, "username": peer.addressName ?? ""])
+                    self.navigationController?.popViewController(animated: true)
+                })
+                present(alert, animated: true)
+                return
+            }
+            selectedAuthor = peer
             authorInput.text = selectedAuthor?.compactDisplayTitle
             authorInput.resignFirstResponder()
             beginSearch()
         } else {
-            // Mx presents this search in a UIKit UINavigationController, NOT
-            // Telegram's Display.NavigationController. Casting to the latter
-            // silently ignored taps on every matching message.
-            guard messages.indices.contains(indexPath.row),
+            guard !handingOff, messages.indices.contains(indexPath.row),
                   let navigation = navigationController,
-                  navigation.topViewController === self else { return }
-            let message = messages[indexPath.row]
-            // The message's source peerId is authoritative. Some Telegram
-            // search responses omit enginePeers[peerId], so do not require it.
-            let chat = context.sharedContext.makeChatController(
-                context: context,
-                chatLocation: .peer(id: message.id.peerId),
-                subject: .message(id: .id(message.id), highlight: nil,
-                    timecode: nil, setupReply: false),
-                botStart: nil, mode: .standard(.default), params: nil)
-            // Keep the search controller underneath the chat on the SAME
-            // UIKit stack. The normal back button / edge-swipe pops the chat
-            // without losing the author, scope, results or scroll position.
-            navigation.pushViewController(chat, animated: true)
-            navigation.interactivePopGestureRecognizer?.isEnabled = true
+                  navigation.topViewController === self,
+                  let presenter = navigation.presentingViewController,
+                  let jump = GoldgramAuthorSearchBridge.nativeJump,
+                  GoldgramAuthorSearchBridge.isCurrentAccount(context) else {
+                showJumpError()
+                return
+            }
+            let id = messages[indexPath.row].id
+            authorInput.resignFirstResponder()
+            returnOffset = tableView.contentOffset
+            handingOff = true
+            let snapshot = navigation.view.snapshotView(afterScreenUpdates: false)
+            // Dismiss the UIKit sheet; native host pushes a proper Display
+            // chat + return controller. Returning re-presents THIS sheet.
+            presenter.dismiss(animated: true) { [weak self] in
+                guard let self else { return }
+                if !jump(self.context, id, navigation, presenter, snapshot) {
+                    guard presenter.viewIfLoaded?.window != nil,
+                          presenter.presentedViewController == nil else {
+                        self.handingOff = false
+                        return
+                    }
+                    presenter.present(navigation, animated: false) { [weak self] in
+                        self?.showJumpError()
+                    }
+                }
+            }
         }
     }
 }
