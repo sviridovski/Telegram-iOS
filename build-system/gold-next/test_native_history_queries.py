@@ -89,8 +89,15 @@ reader = s.split('let useFastIndex = fastIndexAvailable(db)', 1)[1]
 assert 'if !useFastIndex && !deletedOnly && mode != "totals"' in reader
 assert 'fastMessagesSQL(deletedOnly: deletedOnly)' in reader
 assert 'fastDeletedDialogsSQL' in reader
-assert 'with: editedOnlyPredicate + anchor' in reader
-assert reader.index('with: editedOnlyPredicate + anchor') < reader.index('sqlite3_prepare_v2')
+# #242 retains the original edited-only filter for normal folders and
+# selects a separate read-only view for all edited messages, including ones
+# deleted later. The native reader still filters before SQL pagination.
+assert 'let predicate = editedOnly ? "AND (\\(fastEditPredicate)) " : editedOnlyPredicate' in reader
+assert 'sql = sql.replacingOccurrences(of: anchor, with: predicate + anchor)' in reader
+assert reader.index('sql = sql.replacingOccurrences(of: anchor, with: predicate + anchor)') < reader.index('sqlite3_prepare_v2')
+assert 'if editedOnly && useFastIndex && mode != "totals"' in reader
+assert 'sql = sql.replacingOccurrences(of: "f.deleted=0", with: "f.edited=1")' in reader
+assert 'case 4: kinds = [0, 1, 2, 3]' in s
 
 db = sqlite3.connect(':memory:')
 db.executescript(block('schemaV1'))
@@ -133,3 +140,15 @@ combined = edited_messages.replace('WHERE m.peer_kind = ? AND m.peer_id = ?\n',
 assert {(row[0],row[1],row[2]) for row in db.execute(combined,(3,103,2,102,30,0))} == {
  (3,103,1),(2,102,1)}
 print('Edited/deleted separation: all peer kinds, legacy flags, combined comments, counts and pagination OK')
+
+# #242: all-edits view includes verified edits even if later deleted.
+# The old ordinary Edited folders remain mutually exclusive with Deleted.
+all_edits = block('messagesSQL').replace(
+ 'ORDER BY COALESCE(m.sent_at, m.last_seen_at) DESC',
+ 'AND (' + block('fastEditPredicate') + ') ORDER BY COALESCE(m.sent_at, m.last_seen_at) DESC')
+for kind in range(4):
+ peer = 100 + kind
+ results = db.execute(all_edits, (kind, peer, 30, 0)).fetchall()
+ assert {row[2] for row in results} == {1, 2}, (
+    'all-edits must retain edited-then-deleted records', kind, results)
+print('Goldgram #242: all-edits view and legacy edited/deleted separation OK')
