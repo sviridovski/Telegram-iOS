@@ -5,6 +5,7 @@ import UIKit
 import Postbox
 import TelegramCore
 import SwiftSignalKit
+import LocalizedPeerData
 import AccountContext
 import Display
 
@@ -284,7 +285,7 @@ private final class GoldgramAuthorSearchScreen: UITableViewController, UISearchB
             cell.detailTextLabel?.text = "Telegram ID: \(peer.id.toInt64())"
         } else {
             let message = messages[indexPath.row]
-            let peerTitle = titles[message.id.peerId] ?? message.peers[message.id.peerId]?.compactDisplayTitle ?? "Чат"
+            let peerTitle = titles[message.id.peerId] ?? message.peers[message.id.peerId].map { EnginePeer($0).compactDisplayTitle } ?? "Чат"
             cell.textLabel?.text = peerTitle
             let date = DateFormatter.localizedString(from: Date(timeIntervalSince1970: Double(message.timestamp)),
                 dateStyle: .short, timeStyle: .short)
@@ -306,9 +307,10 @@ private final class GoldgramAuthorSearchScreen: UITableViewController, UISearchB
             guard messages.indices.contains(indexPath.row),
                   let navigation = navigationController as? NavigationController else { return }
             let message = messages[indexPath.row]
+            guard let chatPeer = message.peers[message.id.peerId] else { return }
             context.sharedContext.navigateToChatController(NavigateToChatControllerParams(
                 navigationController: navigation, context: context,
-                chatLocation: .peer(id: message.id.peerId),
+                chatLocation: .peer(EnginePeer(chatPeer)),
                 subject: .message(id: .id(message.id), highlight: nil,
                     timecode: nil, setupReply: false)))
         }
