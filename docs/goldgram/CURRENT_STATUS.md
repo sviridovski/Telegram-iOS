@@ -1,6 +1,6 @@
 # CURRENT_STATUS — verified checkpoint
 
-> **2026-11-24 local user date — #262 retry green and installed; media gallery disappears on cancelled downward swipe. Lifecycle fix published; device acceptance pending.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
+> **2026-11-24 local user date — #263 Native/Mx green and lifecycle test passed; final Build cancelled, targeted retry requested. #262 installed with known swipe defect.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
 
 ## Current code / CI / device state
 
@@ -10,8 +10,8 @@
 | HEAD | `fa1af6457deac9b55763e7bf8cd9fc3bd1fdeecb` (post-#262 lifecycle correction), direct parent #262 |
 | Last green CI | [#262 attempt 2](https://github.com/sviridovski/Telegram-iOS/actions/runs/45416651778), Native/Mx/Build success; IPA artifact 14938885512, not expired at verification |
 | Last installed | #262 — user reports media results load, then disappear after slight downward swipe; video confirms empty grid with unchanged count. Full acceptance not yet reported. |
-| Failed candidate | [#261](https://github.com/sviridovski/Telegram-iOS/actions/runs/45366241671): Mx success, Native failure (GoldgramAuthorSearch.swift:1770 exhaustive switch missing `.community(_)`), Build skipped. Earlier #257 failure retained in history. |
-| Next task | Verify lifecycle correction CI ([run #263](https://github.com/sviridovski/Telegram-iOS/actions/runs/45429887061) in_progress), IPA, cancelled swipe/actual dismissal/reopen, paging and native back; then broader media acceptance. |
+| Failed candidate | #263 attempt 1: Native/Mx success, Build cancelled, logs unavailable; #261 earlier compile error resolved in #262. |
+| Next task | Verify final Build-only retry of [#263](https://github.com/sviridovski/Telegram-iOS/actions/runs/45429887061), combined IPA and device swipe acceptance. |
 | Recovery | #260 latest green and user-confirmed working baseline; #259 fallback with disappearing chat search button; #256 earlier confirmed search baseline. Original port/telegram-13.2 not modified. |
 
 ## #252 corrections retained in #253
@@ -161,3 +161,9 @@
 - User supplied video ScreenRecording_11-24-2026 18-44-42_1.mp4, examined frame sequence: media grid loads, brief sheet drag, grid empty while status still indicates 241 results. Source matches premature clear in viewWillDisappear when navigation dismissal begins even if cancelled; started stays true. No runtime instrumentation proof, but strong matching code path.
 - Published fa1af6457deac9b55763e7bf8cd9fc3bd1fdeecb, direct #262 parent, exactly two files: GoldgramAuthorSearch.swift and test_personal_metadata.py. Remove destructive disappearance hook; retain state through cancelled drag, actual native handoff, cursor and filters. Controller deinit disposes tasks; explicit restart/account invalidation still clears; account mismatch resets started and cancels previews/download. Existing preflight gets source-level lifecycle regression checks (not a UIKit runtime test); source contract checked before publication. Cache recipe/keys unchanged, expect reuse of successful #262 cache. CI [run #263](https://github.com/sviridovski/Telegram-iOS/actions/runs/45429887061) in_progress; full compile/device verification pending. No archive/Ghost/Collector/SQLite changes.
 - Acceptance: after green IPA install over #262, open gallery, wait for results, slight downward swipe repeatedly and cancel, verify rows/count remain; scroll/paginate, change filters, open file and jump to chat/back, intentionally dismiss and reopen, verify current account guards. Do not claim actual gesture fixed until device test.
+
+## #263 Native/Mx successful; final packaging cancelled and retried
+
+- [#263](https://github.com/sviridovski/Telegram-iOS/actions/runs/45429887061), SHA fa1af6457deac9b55763e7bf8cd9fc3bd1fdeecb, attempt 1 overall failure. Native job 138571945608 and Mx job 138571945160 succeeded. Build job 138596601104 cancelled; log endpoint returned 404 BlobNotFound, exact cancellation cause unknown. No verified source/compiler error. Lifecycle regression contract explicitly passed. Native intermediate unsigned Swiftgram.ipa 82M created; staged Native artifact 14940937674 (107145786 bytes) and Mx artifact 14937108863 (21227152 bytes) present and unexpired. Final installable combined IPA absent at check.
+- Native restored #262 cache; 8229 disk cache hits / 10103 processes, elapsed 1609.840s, critical path 1341.46s; saved cache under #263 SHA. Mx exact cache restored. Do not invalidate these caches or modify source merely to address cancellation.
+- Requested re-run of only cancelled final Build job 138596601104; GitHub action returned success, run API status queued, attempt 2 at check. Source SHA unchanged. Verify final packaging, actual IPA and device swipe regression before claiming fixed. #262 remains last green/installed with known gallery defect, #260 known good fallback. No source change or docs-triggered CI.
