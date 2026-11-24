@@ -1,6 +1,6 @@
 # CURRENT_STATUS — verified checkpoint
 
-> **2026-11-24 local user date — #260 published; #259 green and installed, disappearing chat search button reported; #260 CI/device acceptance pending.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
+> **2026-11-24 local user date — #260 green, installed and user-confirmed working; unified media center proposal under discussion.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
 
 ## Current code / CI / device state
 
@@ -8,11 +8,11 @@
 | --- | --- |
 | Feature branch | `gold-next-243-author-search` |
 | HEAD | `3481fad1b63864a45f48dd282ac4867d2d53a248` (#260), direct parent #259 |
-| Last green CI | [#259](https://github.com/sviridovski/Telegram-iOS/actions/runs/45332682368), Native/Mx/Build success; IPA artifact 14893668082, not expired at verification |
-| Last installed | #259 — user confirms installed and tested, broadly positive feedback with the chat-header search button briefly appears and disappears. Individual acceptance cases not confirmed. |
+| Last green CI | [#260](https://github.com/sviridovski/Telegram-iOS/actions/runs/45357908933), Native/Mx/Build success; IPA artifact 14906095386, not expired at verification |
+| Last installed | #260 — user confirms tested and all excellent; individual acceptance cases not independently reported. |
 | Failed candidate | [#257](https://github.com/sviridovski/Telegram-iOS/actions/runs/45321519764), Native failed, Mx passed, Build skipped; Swift catch error shadowing at lines 1389/1407 |
-| Next task | Verify [#260](https://github.com/sviridovski/Telegram-iOS/actions/runs/45357908933) CI and device: dashboard/menu customization and persistent chat search. |
-| Recovery | #259 latest green and broadly device-tested baseline with known disappearing chat search button; #256 confirmed working search fallback, #254 earlier archive/diff fallback. Original port/telegram-13.2 not modified. |
+| Next task | Discuss unified media center design first; no implementation authorized yet. |
+| Recovery | #260 latest green and user-confirmed working baseline; #259 fallback with disappearing chat search button; #256 earlier confirmed search baseline. Original port/telegram-13.2 not modified. |
 
 ## #252 corrections retained in #253
 
@@ -132,3 +132,9 @@
 - Dashboard: default layout retained, permanent customization entry, order/visibility/pin controls and reset. Preserve all 13 stable route IDs, archive counts and original settings. Custom layout uses existing views; pinned above other visible tiles. Settings are installation-local UI preferences only. Four optional Goldgram menu actions reorder/hide, native actions unchanged, bookmark enabled by default. Ordinary cloud/protection guards preserved. Header search now composed with native right buttons using a stable cached item; absent during selection/native search/secret modes. No SQLite, Ghost, capture or Collector changes.
 - Isolated Swift Foundation layout model passed local default/order/normalization/pin/hide/persistence/corruption checks. CI harness extended with the actual model extraction; syntax/Python preflight before large native cache restoration. Same branch/cache keys, #259 Native cache retained; Mx recipe changed, so rebuild Mx with staged save. No new speed claim pending actual logs.
 - Acceptance: after green CI/IPA install over #259, verify all old tiles and routes/counters/settings; reorder, hide, pin, reset, close/reopen and relaunch. Enable/reorder/disable menu actions and test actual invocation on ordinary messages; check native Telegram items/protected-message exclusions unchanged. Open private chat, group, channel, wait for avatar/state refresh, navigate back and repeat; search stays and opens correct scope, avatar still opens profile; native search/selection unchanged. Test account/archive/Ghost/Collector preservation. Do not claim device success before user confirms.
+
+## #260 verified green and user-confirmed; unified media center design discussion
+
+- [#260](https://github.com/sviridovski/Telegram-iOS/actions/runs/45357908933), SHA 3481fad1b63864a45f48dd282ac4867d2d53a248: all three CI jobs success; IPA 14906095386 present and unexpired at check. User confirms installed/tested and all excellent. No individually verified subcases inferred. #260 latest recovery checkpoint.
+- Native restored #259 cache; 8225 disk hits / 10103 processes; Bazel 1313.853s, critical path 1107.61s; saved cache under #260 SHA. Actual layout preference test explicitly reported OK. Preserve existing branch/cache families.
+- User requests detailed design before implementation of unified media center. Proposed independent configurable dashboard tile, retain old Mx Media settings tile; accessible Telegram photo/video/documents/audio/voice/video messages/GIF/links, category filters, explicit search and bounded paging, grid/list, source chat/date, filename/caption, known file size, exact native navigation/back, existing personal bookmark references, local cache status when reliable. Existing #259 TelegramEngine search tags (.webPage, .photoOrVideo, .file, .voiceOrInstantVideo) can be reused; further audio/GIF classifications require native source verification. Respect protected/ephemeral/secret content, account and privacy boundaries. Archive SQLite has no verified media inventory; no fabricated deleted media, no auto-download, no duplicate media DB or separate session. Counts/sorts reflect loaded results unless server supports an accurate total/global ordering. No implementation approved or source changed; design discussion only, no CI triggered.
