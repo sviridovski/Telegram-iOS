@@ -107,7 +107,7 @@ projection = message_sql.split("FROM messages m\n", 1)[0]
 newest = "COALESCE((SELECT MAX(e.observed_at) FROM events e WHERE e.peer_kind=m.peer_kind AND e.peer_id=m.peer_id AND e.message_id=m.message_id), m.last_seen_at)"
 deleted = f"(m.is_deleted=1 OR {delete_pred})"
 
-def search(db, needle="", scope=(), event=0, since=0, author=None, limit=30, offset=0, fast=False, sent_date=False):
+def search(db, needle="", scope=(), event=0, since=0, author=None, limit=30, offset=0, fast=False, sent_date=False, message_id=None):
     db.create_function("goldgram_contains_v1", 2, contains, deterministic=True)
     source = ("goldgram_ui_fast_rows_v1 f JOIN messages m ON m.peer_kind=f.peer_kind AND m.peer_id=f.peer_id AND m.message_id=f.message_id"
               if fast else "messages m")
@@ -117,6 +117,9 @@ def search(db, needle="", scope=(), event=0, since=0, author=None, limit=30, off
     if scope:
         where.append("(" + " OR ".join("(m.peer_kind=? AND m.peer_id=?)" for _ in scope) + ")")
         params += [v for pair in scope for v in pair]
+    if message_id is not None:
+        where.append("m.message_id=?")
+        params.append(message_id)
     if event == 1:
         where.append("f.edited=1" if fast else edit_pred)
     if event == 2:
@@ -204,3 +207,15 @@ assert "message.author?.id == requestedAuthor" in native
 assert "presentGhostPickerFromController" in native and "Добавить исключение?" in native
 assert "goldgram_unified_search_v1" in native and "goldgram_unified_metadata_v1" in native
 print("Goldgram #255 unified search: sent-date and event-date separation, unknown dates, identity and bridge guards OK")
+
+
+# #257: bookmarked exact identity must never resolve another dialog with
+# the same message ID, including basic-group/channel namespace collision.
+for fast in (False, True):
+    assert ids(search(a, scope=((0,10),), message_id=7, fast=fast)) == [(0,10,7)]
+    assert ids(search(a, scope=((2,20),(3,20)), message_id=7, fast=fast)) == [(2,20,7),(3,20,7)]
+    assert search(a, scope=((1,20),), message_id=7, fast=fast) == []
+    assert search(a, scope=((0,10),), message_id=999, fast=fast) == []
+assert 'predicates.append("m.message_id=?")' in src
+assert "scope.allSatisfy" in src
+print("Goldgram #257 exact visible archive lookup: peer namespace, message ID and hidden-row guards OK")

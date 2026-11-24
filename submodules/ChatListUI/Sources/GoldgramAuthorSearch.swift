@@ -49,6 +49,31 @@ public final class GoldgramAuthorSearchBridge: NSObject {
         }
     }
 
+    @objc(presentFavoritesFromController:)
+    public static func presentFavoritesFromController(_ controller: UIViewController) {
+        guard let context = primaryContext, isCurrentAccount(context) else { return }
+        presentPersonal(GoldgramPersonalList(context: context), from: controller)
+    }
+
+    @objc(presentPersonalContactsFromController:)
+    public static func presentPersonalContactsFromController(_ controller: UIViewController) {
+        guard let context = primaryContext, isCurrentAccount(context) else { return }
+        presentPersonal(GoldgramPersonalContacts(context: context), from: controller)
+    }
+
+    private static func presentPersonal(_ screen: UIViewController, from controller: UIViewController) {
+        if let navigation = controller.navigationController, !(navigation is NavigationController) {
+            navigation.pushViewController(screen, animated: true)
+        } else {
+            let navigation = UINavigationController(rootViewController: screen)
+            screen.navigationItem.leftBarButtonItem = UIBarButtonItem(title: "Закрыть", style: .plain, target: nil, action: nil)
+            screen.navigationItem.leftBarButtonItem?.primaryAction = UIAction(title: "Закрыть") { [weak navigation] _ in
+                navigation?.dismiss(animated: true)
+            }
+            controller.present(navigation, animated: true)
+        }
+    }
+
     @objc(presentGhostPickerFromController:completion:)
     public static func presentGhostPickerFromController(_ controller: UIViewController, completion: @escaping (NSDictionary) -> Void) {
         guard let context = primaryContext, let navigation = controller.navigationController,
@@ -598,6 +623,8 @@ private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearch
     private var chosenChat: EnginePeer.Id?
     private var chosenChatName: String?
     private var author: EnginePeer?
+    private var personalAuthorId: EnginePeer.Id?
+    private var personalAuthorName: String?
     private let source = UISegmentedControl(items: ["Telegram", "Архив", "Везде"])
     private let period = UISegmentedControl(items: ["Любая дата", "Сегодня", "7 дней", "30 дней"])
     private let event = UISegmentedControl(items: ["Все", "Изменённые", "Удалённые"])
@@ -638,8 +665,11 @@ private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearch
     private var needsReload = false
     private let maxResults = 5000
 
-    init(context: AccountContext, chatId: EnginePeer.Id?) {
+    init(context: AccountContext, chatId: EnginePeer.Id?, initialAuthorId: EnginePeer.Id? = nil,
+         initialAuthorName: String? = nil) {
         self.context = context
+        self.personalAuthorId = initialAuthorId
+        self.personalAuthorName = initialAuthorName
         self.chosenChat = chatId
         self.chosenChatName = chatId == nil ? nil : "Текущий чат"
         super.init(style: .insetGrouped)
@@ -656,6 +686,13 @@ private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearch
     override func viewDidLoad() {
         super.viewDidLoad()
         title = "Расширенный поиск"
+        let favorites = UIBarButtonItem(image: UIImage(systemName: "bookmark"), style: .plain,
+                                        target: self, action: #selector(openFavorites))
+        favorites.accessibilityLabel = "Личное избранное"
+        let contacts = UIBarButtonItem(image: UIImage(systemName: "person.crop.rectangle"), style: .plain,
+                                       target: self, action: #selector(openPersonalContacts))
+        contacts.accessibilityLabel = "Личные карточки контактов"
+        navigationItem.rightBarButtonItems = [favorites, contacts]
         source.selectedSegmentIndex = 2
         period.selectedSegmentIndex = 0
         event.selectedSegmentIndex = 0
@@ -756,7 +793,7 @@ private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearch
     }
 
     private func updateButtons() {
-        authorButton.setTitle("Автор: " + (author?.compactDisplayTitle ?? "любой"), for: .normal)
+        authorButton.setTitle("Автор: " + (author?.compactDisplayTitle ?? personalAuthorName ?? "любой"), for: .normal)
         dialogButton.setTitle("Диалог: " + (chosenChatName ?? "все диалоги"), for: .normal)
         event.isEnabled = source.selectedSegmentIndex != 0
     }
@@ -768,13 +805,15 @@ private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearch
             guard let self else { return }
             let picker = GoldgramAuthorSearchScreen(context: self.context, chatId: nil, authorSelection: { [weak self = self] peer in
                 guard let self else { return }
-                self.author = peer; self.updateButtons(); self.filterChanged()
+                self.author = peer; self.personalAuthorId = nil; self.personalAuthorName = nil
+                self.updateButtons(); self.filterChanged()
             })
             self.navigationController?.pushViewController(picker, animated: true)
         })
         sheet.addAction(UIAlertAction(title: "Любой автор", style: .default) { [weak self = self] _ in
             guard let self else { return }
-            self.author = nil; self.updateButtons(); self.filterChanged()
+            self.author = nil; self.personalAuthorId = nil; self.personalAuthorName = nil
+            self.updateButtons(); self.filterChanged()
         })
         sheet.addAction(UIAlertAction(title: "Отмена", style: .cancel))
         sheet.popoverPresentationController?.sourceView = authorButton
@@ -793,7 +832,8 @@ private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearch
         navigationController?.pushViewController(picker, animated: true)
     }
     @objc private func resetFilters() {
-        input.text = ""; author = nil; chosenChat = nil; chosenChatName = nil
+        input.text = ""; author = nil; personalAuthorId = nil; personalAuthorName = nil
+        chosenChat = nil; chosenChatName = nil
         source.selectedSegmentIndex = 2; event.selectedSegmentIndex = 0; period.selectedSegmentIndex = 0
         updateButtons(); filterChanged()
     }
@@ -842,7 +882,7 @@ private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearch
         default: start = nil
         }
         since = start.map { Int32(clamping: Int64($0.timeIntervalSince1970)) }
-        requestedAuthor = author?.id; requestedChat = chosenChat; requestedEvent = event.selectedSegmentIndex
+        requestedAuthor = author?.id ?? personalAuthorId; requestedChat = chosenChat; requestedEvent = event.selectedSegmentIndex
         let wantsTelegram = source.selectedSegmentIndex != 1
         let wantsArchive = source.selectedSegmentIndex != 0
         if wantsTelegram && term.isEmpty && requestedAuthor == nil && requestedChat == nil && since == nil {
@@ -1115,14 +1155,59 @@ private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearch
                             point: CGPoint) -> UIContextMenuConfiguration? {
         guard accountOK, order.indices.contains(indexPath.row) else { return nil }
         let id = order[indexPath.row]
-        guard let row = localRows[id] else { return nil }
         return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self = self] _ in
-            UIMenu(children: [UIAction(title: "Сохранённая версия", image: UIImage(systemName: "doc.text")) { [weak self = self] _ in
-                guard let self, self.accountOK, self.localRows[id] != nil else { return }
-                self.showArchive(id, row: row)
-            }])
+            guard let self, self.accountOK else { return UIMenu(children: []) }
+            var actions: [UIMenuElement] = []
+            if self.localRows[id] != nil {
+                actions.append(UIAction(title: "Сохранённая версия", image: UIImage(systemName: "doc.text")) { [weak self = self] _ in
+                    guard let self, self.accountOK, let row = self.localRows[id] else { return }
+                    self.showArchive(id, row: row)
+                })
+            }
+            actions.append(UIAction(title: "В личное избранное", image: UIImage(systemName: "bookmark")) { [weak self = self] _ in
+                self?.bookmark(id)
+            })
+            if self.personalContact(id) != nil {
+                actions.append(UIAction(title: "Личная карточка автора", image: UIImage(systemName: "person.crop.rectangle")) { [weak self = self] _ in
+                    guard let self, self.accountOK, let contact = self.personalContact(id) else { return }
+                    self.navigationController?.pushViewController(GoldgramPersonalCard(context: self.context,
+                        id: contact.0, displayTitle: contact.1), animated: true)
+                })
+            }
+            return UIMenu(children: actions)
         }
     }
+    @objc private func openFavorites() {
+        guard accountOK else { return }
+        navigationController?.pushViewController(GoldgramPersonalList(context: context), animated: true)
+    }
+    @objc private func openPersonalContacts() {
+        guard accountOK else { return }
+        navigationController?.pushViewController(GoldgramPersonalContacts(context: context), animated: true)
+    }
+    private func personalContact(_ id: EngineMessage.Id) -> (Int64, String)? {
+        if let author = remoteRows[id]?.author, case .user = author {
+            return (author.id.id._internalGetInt64Value(), author.compactDisplayTitle)
+        }
+        if let row = localRows[id], (row["senderKind"] as? NSNumber)?.int32Value == 0,
+           let raw = (row["senderId"] as? NSNumber)?.int64Value, raw > 0 {
+            return (raw, row["senderName"] as? String ?? "Автор #\(raw)")
+        }
+        return nil
+    }
+    private func bookmark(_ id: EngineMessage.Id) {
+        guard accountOK, remoteRows[id] != nil || localRows[id] != nil,
+              id.namespace == Namespaces.Message.Cloud,
+              let sources = GoldgramUnifiedIdentity.sources(id.peerId),
+              let scope = sources.first, let kind = (scope["peerKind"] as? NSNumber)?.int32Value,
+              let peer = (scope["peerId"] as? NSNumber)?.int64Value else { return }
+        let date = timestamp(id)
+        let value = GoldgramPersonalBookmark(peerKind: kind, peerId: peer, messageId: id.id,
+            authorId: personalContact(id)?.0, title: String(name(id).prefix(180)),
+            date: date, archive: localRows[id] != nil, folder: "", tags: [], note: "")
+        GoldgramPersonalUI.editBookmark(self, context: context, value: value) {}
+    }
+
     private func showArchive(_ id: EngineMessage.Id, row: [String: Any]) {
         guard accountOK, localRows[id] != nil else { return }
         let original = row["originalText"] as? String
@@ -1170,6 +1255,505 @@ private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearch
                     self?.showError("Не удалось открыть сообщение. Проверьте доступность чата.")
                 }
             }
+        }
+    }
+}
+
+// BEGIN GOLDGRAM_PERSONAL_MODEL_V1
+private struct GoldgramPersonalBookmark: Codable, Equatable {
+    var peerKind: Int32
+    var peerId: Int64
+    var messageId: Int32
+    var authorId: Int64?
+    var title: String
+    var date: Int64
+    var archive: Bool
+    var folder: String
+    var tags: [String]
+    var note: String
+    var key: String { "\(peerKind >= 2 ? 2 : peerKind):\(peerId):\(messageId)" }
+    var valid: Bool {
+        (0...3).contains(peerKind) && peerId > 0 && messageId > 0 &&
+        (authorId == nil || (authorId ?? 0) > 0) && title.count <= 180 &&
+        folder.count <= 80 && tags.count <= 12 && tags.allSatisfy { $0.count <= 40 } &&
+        note.count <= 1000
+    }
+}
+private struct GoldgramPersonalContact: Codable, Equatable {
+    var id: Int64
+    var title: String
+    var alias: String
+    var note: String
+    var valid: Bool { id > 0 && title.count <= 180 && alias.count <= 80 && note.count <= 2000 }
+}
+private struct GoldgramPersonalData: Codable {
+    let version: Int
+    let account: Int64
+    var bookmarks: [GoldgramPersonalBookmark]
+    var contacts: [GoldgramPersonalContact]
+    init(account: Int64) { version = 1; self.account = account; bookmarks = []; contacts = [] }
+    func validate(account: Int64) -> Bool {
+        version == 1 && self.account == account && account > 0 &&
+        bookmarks.count <= 2000 && contacts.count <= 1000 &&
+        bookmarks.allSatisfy { $0.valid } && contacts.allSatisfy { $0.valid } &&
+        Set(bookmarks.map { $0.key }).count == bookmarks.count &&
+        Set(contacts.map { $0.id }).count == contacts.count
+    }
+    mutating func put(_ bookmark: GoldgramPersonalBookmark) -> Bool {
+        guard bookmark.valid else { return false }
+        if let i = bookmarks.firstIndex(where: { $0.key == bookmark.key }) {
+            bookmarks[i] = bookmark
+        } else {
+            guard bookmarks.count < 2000 else { return false }
+            bookmarks.insert(bookmark, at: 0)
+        }
+        return true
+    }
+    mutating func putContact(_ contact: GoldgramPersonalContact) -> Bool {
+        guard contact.valid else { return false }
+        if let i = contacts.firstIndex(where: { $0.id == contact.id }) {
+            contacts[i] = contact
+        } else {
+            guard contacts.count < 1000 else { return false }
+            contacts.append(contact)
+        }
+        return true
+    }
+}
+private enum GoldgramPersonalStore {
+    enum Failure: Error { case invalid, tooLarge }
+    static func read(_ url: URL, account: Int64) throws -> GoldgramPersonalData {
+        do {
+            let values = try url.resourceValues(forKeys: [.fileSizeKey])
+            guard (values.fileSize ?? 0) <= 16 * 1024 * 1024 else { throw Failure.tooLarge }
+            let bytes = try Data(contentsOf: url)
+            let value = try JSONDecoder().decode(GoldgramPersonalData.self, from: bytes)
+            guard value.validate(account: account) else { throw Failure.invalid }
+            return value
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            return GoldgramPersonalData(account: account)
+        } catch let error as CocoaError where error.code == .fileNoSuchFile {
+            return GoldgramPersonalData(account: account)
+        }
+    }
+    static func write(_ value: GoldgramPersonalData, to url: URL, account: Int64) throws {
+        guard value.validate(account: account) else { throw Failure.invalid }
+        let bytes = try JSONEncoder().encode(value)
+        guard bytes.count <= 16 * 1024 * 1024 else { throw Failure.tooLarge }
+        var directory = url.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        #if os(iOS)
+        var attributes = URLResourceValues()
+        attributes.isExcludedFromBackup = true
+        try directory.setResourceValues(attributes)
+        try bytes.write(to: url, options: [.atomic, .completeFileProtection])
+        #else
+        try bytes.write(to: url, options: .atomic)
+        #endif
+    }
+    static func url(account: Int64) throws -> URL {
+        guard account > 0 else { throw Failure.invalid }
+        let base = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                                               appropriateFor: nil, create: false)
+        return base.appendingPathComponent("Goldgram/Accounts/\(account)/Personal", isDirectory: true)
+            .appendingPathComponent("references-v1.json")
+    }
+}
+// END GOLDGRAM_PERSONAL_MODEL_V1
+
+
+private enum GoldgramPersonalUI {
+    static func error(_ owner: UIViewController, _ text: String = "Не удалось сохранить личные данные. Проверьте доступность хранилища.") {
+        let alert = UIAlertController(title: "Goldgram", message: text, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        owner.present(alert, animated: true)
+    }
+    static func account(_ context: AccountContext) -> Int64 { context.account.peerId.id._internalGetInt64Value() }
+    static func read(_ context: AccountContext) throws -> GoldgramPersonalData {
+        guard GoldgramAuthorSearchBridge.isCurrentAccount(context) else { throw GoldgramPersonalStore.Failure.invalid }
+        let account = account(context)
+        return try GoldgramPersonalStore.read(GoldgramPersonalStore.url(account: account), account: account)
+    }
+    static func change(_ context: AccountContext, _ modify: (inout GoldgramPersonalData) -> Bool) throws {
+        guard GoldgramAuthorSearchBridge.isCurrentAccount(context) else { throw GoldgramPersonalStore.Failure.invalid }
+        var data = try read(context)
+        guard modify(&data), GoldgramAuthorSearchBridge.isCurrentAccount(context) else { throw GoldgramPersonalStore.Failure.invalid }
+        let account = account(context)
+        try GoldgramPersonalStore.write(data, to: GoldgramPersonalStore.url(account: account), account: account)
+    }
+    static func editBookmark(_ owner: UIViewController, context: AccountContext, value: GoldgramPersonalBookmark,
+                             completion: @escaping () -> Void) {
+        guard GoldgramAuthorSearchBridge.isCurrentAccount(context) else { return }
+        let saved: GoldgramPersonalBookmark
+        do { saved = try read(context).bookmarks.first(where: { $0.key == value.key }) ?? value }
+        catch { error(owner); return }
+        let alert = UIAlertController(title: "Личная закладка", message: "Только на этом устройстве. Сохраняется ссылка, а не копия сообщения.", preferredStyle: .alert)
+        alert.addTextField { field in field.placeholder = "Папка (например, Работа)"; field.text = saved.folder }
+        alert.addTextField { field in field.placeholder = "Теги через запятую"; field.text = saved.tags.joined(separator: ", ") }
+        alert.addTextField { field in field.placeholder = "Моя заметка"; field.text = saved.note }
+        alert.addAction(UIAlertAction(title: "Сохранить", style: .default) { [weak owner, weak alert] _ in
+            guard let owner, let fields = alert?.textFields, fields.count == 3,
+                  GoldgramAuthorSearchBridge.isCurrentAccount(context) else { return }
+            var updated = saved
+            updated.archive = saved.archive || value.archive
+            updated.authorId = value.authorId ?? saved.authorId
+            updated.folder = String((fields[0].text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).prefix(80))
+            var seen = Set<String>()
+            updated.tags = Array((fields[1].text ?? "").split(separator: ",").map {
+                String($0.trimmingCharacters(in: .whitespacesAndNewlines).prefix(40))
+            }.filter { !$0.isEmpty && seen.insert($0.lowercased()).inserted }.prefix(12))
+            updated.note = String((fields[2].text ?? "").prefix(1000))
+            do { try change(context) { $0.put(updated) }; completion() }
+            catch { error(owner) }
+        })
+        alert.addAction(UIAlertAction(title: "Отмена", style: .cancel))
+        owner.present(alert, animated: true)
+    }
+}
+
+private final class GoldgramPersonalList: UITableViewController, UISearchBarDelegate {
+    private let context: AccountContext
+    private let contactId: Int64?
+    private let search = UISearchBar()
+    private var rows: [GoldgramPersonalBookmark] = []
+    private var folders: [String] = []
+    private var all: [GoldgramPersonalBookmark] = []
+    private var folder: String?
+    private var failure = false
+    private var handingOff = false
+    private var offset: CGPoint?
+    private var operation = 0
+
+    init(context: AccountContext, contactId: Int64? = nil) {
+        self.context = context; self.contactId = contactId
+        super.init(style: .insetGrouped)
+    }
+    required init?(coder: NSCoder) { return nil }
+    private var accountOK: Bool { GoldgramAuthorSearchBridge.isCurrentAccount(context) }
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        title = "Личное избранное"
+        search.placeholder = "Папка, тег, название или заметка"
+        search.delegate = self
+        search.frame = CGRect(x: 0, y: 0, width: tableView.bounds.width, height: 54)
+        search.autoresizingMask = [.flexibleWidth]
+        tableView.tableHeaderView = search
+        navigationItem.rightBarButtonItem = UIBarButtonItem(title: "Папки", style: .plain, target: self, action: #selector(chooseFolder))
+        NotificationCenter.default.addObserver(self, selector: #selector(purge(_:)),
+            name: Notification.Name("GoldgramArchiveChanged"), object: nil)
+    }
+    deinit { NotificationCenter.default.removeObserver(self) }
+    @objc private func purge(_ note: Notification) {
+        guard note.userInfo?["journalPurge"] as? Bool == true,
+              (note.object as? NSNumber)?.int64Value == GoldgramPersonalUI.account(context) else { return }
+        DispatchQueue.main.async { [weak self = self] in
+            guard let self else { return }
+            self.operation += 1
+            if self.presentedViewController is UIAlertController { self.dismiss(animated: false) }
+            self.reload()
+        }
+    }
+    override func viewWillAppear(_ animated: Bool) { super.viewWillAppear(animated); reload() }
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        if handingOff {
+            handingOff = false
+            if accountOK, let offset { tableView.layoutIfNeeded(); tableView.setContentOffset(offset, animated: false) }
+            offset = nil
+        }
+    }
+    private func reload() {
+        do {
+            all = try GoldgramPersonalUI.read(context).bookmarks.filter { contactId == nil || $0.authorId == contactId }
+            folders = Array(Set(all.map { $0.folder }.filter { !$0.isEmpty })).sorted()
+            failure = false
+        } catch { all = []; folders = []; failure = true }
+        applyFilter()
+    }
+    private func applyFilter() {
+        let q = (search.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        rows = all.filter { row in
+            (folder == nil || row.folder == folder) && (q.isEmpty ||
+                ([row.title,row.folder,row.note] + row.tags).joined(separator: " ").range(of: q,
+                    options: [.caseInsensitive,.diacriticInsensitive]) != nil)
+        }
+        tableView.reloadData()
+    }
+    func searchBar(_ searchBar: UISearchBar, textDidChange searchText: String) { applyFilter() }
+    @objc private func chooseFolder() {
+        guard accountOK else { return }
+        let alert = UIAlertController(title: "Папки", message: nil, preferredStyle: .actionSheet)
+        alert.addAction(UIAlertAction(title: "Все папки", style: .default) { [weak self = self] _ in self?.folder = nil; self?.applyFilter() })
+        alert.addAction(UIAlertAction(title: "Без папки", style: .default) { [weak self = self] _ in self?.folder = ""; self?.applyFilter() })
+        for name in folders.prefix(80) {
+            alert.addAction(UIAlertAction(title: name, style: .default) { [weak self = self] _ in self?.folder = name; self?.applyFilter() })
+        }
+        alert.addAction(UIAlertAction(title: "Отмена", style: .cancel))
+        alert.popoverPresentationController?.barButtonItem = navigationItem.rightBarButtonItem
+        present(alert, animated: true)
+    }
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { accountOK ? max(1, rows.count) : 1 }
+    override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
+        guard accountOK, rows.indices.contains(indexPath.row) else {
+            cell.textLabel?.text = !accountOK ? "Аккаунт изменён" : failure ? "Личные данные недоступны" : "Закладок пока нет"
+            cell.selectionStyle = .none; return cell
+        }
+        let row = rows[indexPath.row]
+        cell.textLabel?.text = row.title
+        cell.textLabel?.numberOfLines = 2
+        cell.detailTextLabel?.numberOfLines = 4
+        let time = row.date > 0 ? DateFormatter.localizedString(from: Date(timeIntervalSince1970: Double(row.date) / 1000), dateStyle: .short, timeStyle: .short) : "Дата неизвестна"
+        cell.detailTextLabel?.text = [row.archive ? "Архив · \(time)" : "Telegram · \(time)", row.folder,
+            row.tags.map { "#" + $0 }.joined(separator: " "), row.note].filter { !$0.isEmpty }.joined(separator: "\n")
+        cell.accessoryType = .disclosureIndicator
+        return cell
+    }
+    override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        guard accountOK, rows.indices.contains(indexPath.row) else { return }
+        open(rows[indexPath.row])
+    }
+    override func tableView(_ tableView: UITableView, contextMenuConfigurationForRowAt indexPath: IndexPath,
+                            point: CGPoint) -> UIContextMenuConfiguration? {
+        guard accountOK, rows.indices.contains(indexPath.row) else { return nil }
+        let row = rows[indexPath.row]
+        return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self = self] _ in
+            UIMenu(children: [
+                UIAction(title: "Изменить папку, теги и заметку", image: UIImage(systemName: "pencil")) { [weak self = self] _ in
+                    guard let self, self.accountOK else { return }
+                    GoldgramPersonalUI.editBookmark(self, context: self.context, value: row) { [weak self = self] in self?.reload() }
+                },
+                UIAction(title: "Удалить закладку", image: UIImage(systemName: "trash"), attributes: .destructive) { [weak self = self] _ in
+                    guard let self, self.accountOK else { return }
+                    do { try GoldgramPersonalUI.change(self.context) { data in
+                        data.bookmarks.removeAll { $0.key == row.key }; return true
+                    }; self.reload() } catch { GoldgramPersonalUI.error(self) }
+                }
+            ])
+        }
+    }
+    private func open(_ row: GoldgramPersonalBookmark) {
+        let identity: [String: Any] = ["peerKind": NSNumber(value: row.peerKind), "peerId": NSNumber(value: row.peerId),
+            "messageId": NSNumber(value: row.messageId)]
+        guard let id = GoldgramUnifiedIdentity.message(identity) else { return }
+        operation += 1
+        let token = operation
+        let account = NSNumber(value: GoldgramPersonalUI.account(context))
+        if row.archive {
+            guard let sources = GoldgramUnifiedIdentity.sources(id.peerId) else { return }
+            goldgramUnifiedCall("goldgram_unified_search_v1", ["accountId": account, "needle": "", "event": 0, "since": 0,
+                "offset": 0, "sources": sources, "messageId": NSNumber(value: row.messageId)]) { [weak self = self] answer in
+                guard let self, self.accountOK, self.operation == token, self.viewIfLoaded?.window != nil else { return }
+                guard answer["status"] as? String == "ok", let matches = answer["items"] as? [[String: Any]],
+                      let record = matches.first(where: { GoldgramUnifiedIdentity.message($0) == id }) else {
+                    GoldgramPersonalUI.error(self, "Сохранённая запись недоступна или очищена. Закладка не содержит копии текста."); return
+                }
+                var request = identity
+                request["accountId"] = account
+                request["peerKind"] = record["peerKind"]
+                goldgramUnifiedCall("goldgram_personal_revisions_v1", request as NSDictionary) { [weak self = self] result in
+                    guard let self, self.accountOK, self.operation == token, self.viewIfLoaded?.window != nil else { return }
+                    guard result["status"] as? String == "ok", let current = result["record"] as? [String: Any] else {
+                        GoldgramPersonalUI.error(self, "Архив изменился. Откройте закладку ещё раз."); return
+                    }
+                    self.showSaved(row, id: id, record: current, revisions: result["items"] as? [[String: Any]] ?? [])
+                }
+            }
+        } else {
+            prepareJump(id, record: identity)
+        }
+    }
+    private func showSaved(_ row: GoldgramPersonalBookmark, id: EngineMessage.Id, record: [String: Any], revisions: [[String: Any]]) {
+        guard accountOK else { return }
+        let original = record["originalText"] as? String
+        var lines = [original.map { "Оригинал:\n" + $0 } ?? "Оригинал не получен"]
+        for revision in revisions.prefix(250) {
+            guard let body = revision["text"] as? String, body != "[Содержимое не было получено]" else { continue }
+            let index = (revision["index"] as? NSNumber)?.intValue ?? 0
+            if index == 0 && body == original { continue }
+            lines.append((index == 0 ? "Первая сохранённая версия" : "Редакция \(index)") + ":\n" + body)
+        }
+        if revisions.isEmpty, let latest = record["latestText"] as? String, latest != original { lines.append("Последняя версия:\n" + latest) }
+        let joined = lines.joined(separator: "\n\n")
+        let text = String(joined.prefix(8000)) + (joined.count > 8000 ? "\n\n… Полная история доступна в архиве Goldgram." : "")
+        let alert = UIAlertController(title: row.title, message: text, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Открыть в чате", style: .default) { [weak self = self] _ in self?.prepareJump(id, record: record) })
+        alert.addAction(UIAlertAction(title: "Закрыть", style: .cancel))
+        present(alert, animated: true)
+    }
+    private func prepareJump(_ id: EngineMessage.Id, record: [String: Any]) {
+        guard accountOK, !handingOff else { return }
+        operation += 1
+        let token = operation
+        goldgramUnifiedCall("goldgram_unified_metadata_v1", ["accountId": NSNumber(value: GoldgramPersonalUI.account(context)),
+            "action": "prepare_jump", "items": [record]]) { [weak self = self] result in
+            guard let self, self.accountOK, self.operation == token, self.viewIfLoaded?.window != nil else { return }
+            guard result["status"] as? String == "ok" else { GoldgramPersonalUI.error(self, "Сообщение недоступно в чате."); return }
+            self.jump(id)
+        }
+    }
+    private func jump(_ id: EngineMessage.Id) {
+        guard accountOK, !handingOff, let navigation = navigationController, navigation.topViewController === self,
+              let presenter = navigation.presentingViewController, let jump = GoldgramAuthorSearchBridge.nativeJump else {
+            GoldgramPersonalUI.error(self, "Не удалось открыть точное сообщение."); return
+        }
+        search.resignFirstResponder()
+        offset = tableView.contentOffset; handingOff = true
+        let snapshot = navigation.view.snapshotView(afterScreenUpdates: false)
+        presenter.dismiss(animated: true) { [weak self = self] in
+            guard let self else { return }
+            if !jump(self.context, id, navigation, presenter, snapshot) {
+                guard presenter.viewIfLoaded?.window != nil, presenter.presentedViewController == nil else { self.handingOff = false; return }
+                presenter.present(navigation, animated: false) { [weak self = self] in
+                    if let self { GoldgramPersonalUI.error(self, "Не удалось открыть сообщение.") }
+                }
+            }
+        }
+    }
+}
+
+private final class GoldgramPersonalContacts: UITableViewController {
+    private let context: AccountContext
+    private var rows: [GoldgramPersonalContact] = []
+    init(context: AccountContext) { self.context = context; super.init(style: .insetGrouped) }
+    required init?(coder: NSCoder) { return nil }
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        title = "Личные карточки"
+        navigationItem.rightBarButtonItem = UIBarButtonItem(barButtonSystemItem: .add, target: self, action: #selector(choose))
+    }
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        rows = ((try? GoldgramPersonalUI.read(context).contacts) ?? []).sorted {
+            ($0.alias.isEmpty ? $0.title : $0.alias).localizedCaseInsensitiveCompare($1.alias.isEmpty ? $1.title : $1.alias) == .orderedAscending
+        }
+        tableView.reloadData()
+    }
+    @objc private func choose() {
+        guard GoldgramAuthorSearchBridge.isCurrentAccount(context) else { return }
+        let picker = GoldgramAuthorSearchScreen(context: context, chatId: nil, authorSelection: { [weak self = self] peer in
+            guard let self else { return }
+            // Wait for the picker pop transition before pushing a UIKit card.
+            DispatchQueue.main.async { [weak self = self] in
+                guard let self, GoldgramAuthorSearchBridge.isCurrentAccount(self.context) else { return }
+                let show = { [weak self = self] in
+                    guard let self, GoldgramAuthorSearchBridge.isCurrentAccount(self.context),
+                          self.navigationController?.topViewController === self else { return }
+                    self.open(peer.id.id._internalGetInt64Value(), title: peer.compactDisplayTitle)
+                }
+                if let coordinator = self.navigationController?.transitionCoordinator {
+                    coordinator.animate(alongsideTransition: nil, completion: { _ in show() })
+                } else { show() }
+            }
+        })
+        navigationController?.pushViewController(picker, animated: true)
+    }
+    private func open(_ id: Int64, title: String) {
+        let card = GoldgramPersonalCard(context: context, id: id, displayTitle: title)
+        navigationController?.pushViewController(card, animated: true)
+    }
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        GoldgramAuthorSearchBridge.isCurrentAccount(context) ? max(1, rows.count) : 1
+    }
+    override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
+        guard GoldgramAuthorSearchBridge.isCurrentAccount(context), rows.indices.contains(indexPath.row) else {
+            cell.textLabel?.text = "Выберите контакт через «+»"; cell.selectionStyle = .none; return cell
+        }
+        let row = rows[indexPath.row]
+        cell.textLabel?.text = row.alias.isEmpty ? row.title : row.alias
+        cell.detailTextLabel?.text = row.title
+        cell.accessoryType = .disclosureIndicator
+        return cell
+    }
+    override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        guard GoldgramAuthorSearchBridge.isCurrentAccount(context), rows.indices.contains(indexPath.row) else { return }
+        open(rows[indexPath.row].id, title: rows[indexPath.row].title)
+    }
+}
+
+private final class GoldgramPersonalCard: UITableViewController {
+    private let context: AccountContext
+    private let id: Int64
+    private let displayTitle: String
+    private var value: GoldgramPersonalContact?
+    private var count = 0
+    private var available = false
+    init(context: AccountContext, id: Int64, displayTitle: String) {
+        self.context = context; self.id = id; self.displayTitle = String(displayTitle.prefix(180))
+        super.init(style: .insetGrouped)
+    }
+    required init?(coder: NSCoder) { return nil }
+    private var accountOK: Bool { GoldgramAuthorSearchBridge.isCurrentAccount(context) }
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        title = "Карточка контакта"
+        navigationItem.rightBarButtonItem = UIBarButtonItem(title: "Изменить", style: .plain, target: self, action: #selector(editCard))
+    }
+    override func viewWillAppear(_ animated: Bool) { super.viewWillAppear(animated); reload() }
+    private func reload() {
+        do {
+            let data = try GoldgramPersonalUI.read(context)
+            value = data.contacts.first(where: { $0.id == id }) ??
+                GoldgramPersonalContact(id: id, title: displayTitle, alias: "", note: "")
+            count = data.bookmarks.filter { $0.authorId == id }.count
+            available = true
+        } catch { available = false; value = nil; count = 0 }
+        tableView.reloadData()
+    }
+    @objc private func editCard() {
+        guard accountOK, available, let value else { return }
+        let alert = UIAlertController(title: "Личная карточка", message: "Псевдоним и заметка видны только в Goldgram на этом устройстве.", preferredStyle: .alert)
+        alert.addTextField { $0.placeholder = "Личный псевдоним"; $0.text = value.alias }
+        alert.addTextField { $0.placeholder = "Заметка"; $0.text = value.note }
+        alert.addAction(UIAlertAction(title: "Сохранить", style: .default) { [weak self = self, weak alert] _ in
+            guard let self, self.accountOK, let fields = alert?.textFields, fields.count == 2 else { return }
+            var updated = value
+            updated.alias = String((fields[0].text ?? "").prefix(80))
+            updated.note = String((fields[1].text ?? "").prefix(2000))
+            do { try GoldgramPersonalUI.change(self.context) { $0.putContact(updated) }; self.reload() }
+            catch { GoldgramPersonalUI.error(self) }
+        })
+        alert.addAction(UIAlertAction(title: "Отмена", style: .cancel))
+        present(alert, animated: true)
+    }
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { accountOK && available ? 5 : 1 }
+    override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
+        guard accountOK, available, let value else { cell.textLabel?.text = "Карточка недоступна"; cell.selectionStyle = .none; return cell }
+        cell.detailTextLabel?.numberOfLines = 0
+        switch indexPath.row {
+        case 0: cell.textLabel?.text = value.alias.isEmpty ? value.title : value.alias; cell.detailTextLabel?.text = "Telegram: \(value.title)"
+        case 1: cell.textLabel?.text = "Личная заметка"; cell.detailTextLabel?.text = value.note.isEmpty ? "Не заполнена" : value.note
+        case 2: cell.textLabel?.text = "Поиск сообщений автора"; cell.accessoryType = .disclosureIndicator
+        case 3: cell.textLabel?.text = "Мои закладки (\(count))"; cell.accessoryType = .disclosureIndicator
+        default: cell.textLabel?.text = "Удалить личную карточку"; cell.textLabel?.textColor = .systemRed
+        }
+        return cell
+    }
+    override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        guard accountOK, available, let value else { return }
+        switch indexPath.row {
+        case 0, 1: editCard()
+        case 2:
+            let peer = EnginePeer.Id(namespace: Namespaces.Peer.CloudUser, id: ._internalFromInt64Value(id))
+            let search = GoldgramUnifiedSearchScreen(context: context, chatId: nil, initialAuthorId: peer, initialAuthorName: value.title)
+            navigationController?.pushViewController(search, animated: true)
+        case 3: navigationController?.pushViewController(GoldgramPersonalList(context: context, contactId: id), animated: true)
+        default:
+            let alert = UIAlertController(title: "Удалить личную карточку?", message: "Закладки и сообщения не изменятся.", preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "Удалить", style: .destructive) { [weak self = self] _ in
+                guard let self, self.accountOK else { return }
+                do { try GoldgramPersonalUI.change(self.context) { data in
+                    data.contacts.removeAll { $0.id == self.id }; return true
+                }; self.navigationController?.popViewController(animated: true) }
+                catch { GoldgramPersonalUI.error(self) }
+            })
+            alert.addAction(UIAlertAction(title: "Отмена", style: .cancel))
+            present(alert, animated: true)
         }
     }
 }

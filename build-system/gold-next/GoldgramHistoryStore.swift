@@ -1765,13 +1765,14 @@ public final class GoldgramArchiveReader: NSObject {
         let event: Int
         let since: Int64
         let sentDateFilter: Bool
+        let messageId: Int32?
         let authorKind: Int32?
         let authorId: Int64?
     }
 
     static func searchLocal(accountId: Int64, needle: String, sources: [[String: Any]]?,
                             event: Int, since: Int64, authorKind: Int32?, authorId: Int64?,
-                            offset: Int, sentDateFilter: Bool = false,
+                            offset: Int, sentDateFilter: Bool = false, messageId: Int32? = nil,
                             completion: @escaping (NSDictionary) -> Void) {
         let needle = needle.trimmingCharacters(in: .whitespacesAndNewlines)
         guard isSelected(accountId), needle.count <= 200, (0...2).contains(event),
@@ -1795,8 +1796,16 @@ public final class GoldgramArchiveReader: NSObject {
                 scope.append((kind, id))
             }
         }
+        if let messageId {
+            guard messageId > 0, offset == 0, let first = scope.first,
+                  scope.allSatisfy({ $0.id == first.id &&
+                      ($0.kind == first.kind || ($0.kind >= 2 && first.kind >= 2)) }) else {
+                completion(["status": "invalid_request", "items": []]); return
+            }
+        }
         let request = LocalSearch(needle: needle, sources: scope, event: event, since: since,
-                                  sentDateFilter: sentDateFilter, authorKind: authorKind, authorId: authorId)
+                                  sentDateFilter: sentDateFilter, messageId: messageId,
+                                  authorKind: authorKind, authorId: authorId)
         archiveReadQueue.async {
             guard isSelected(accountId) else {
                 DispatchQueue.main.async { completion(["status": "account_changed", "items": []]) }
@@ -1856,6 +1865,9 @@ public final class GoldgramArchiveReader: NSObject {
         if !search.sources.isEmpty {
             predicates.append("(" + search.sources.map { _ in "(m.peer_kind=? AND m.peer_id=?)" }.joined(separator: " OR ") + ")")
             parameters += search.sources.flatMap { [Int64($0.kind), $0.id] }
+        }
+        if let messageId = search.messageId {
+            predicates.append("m.message_id=?"); parameters.append(Int64(messageId))
         }
         if search.event == 1 { predicates.append(edited) }
         if search.event == 2 { predicates.append(deleted) }
@@ -4836,7 +4848,70 @@ public func goldgramUnifiedSearchV1(
        (request["authorId"] != nil && authorId == nil) {
         finish(["status": "invalid_request", "items": []]); return
     }
-    GoldgramArchiveReader.searchLocal(accountId: account, needle: needle, sources: sources,
-        event: event, since: since, authorKind: authorKind, authorId: authorId,
-        offset: offset, sentDateFilter: true, completion: finish)
+    if let value = request["messageId"] {
+        guard let number = value as? NSNumber, let messageId = Int32(exactly: number.int64Value),
+              messageId > 0 else { finish(["status": "invalid_request", "items": []]); return }
+        GoldgramArchiveReader.searchLocal(accountId: account, needle: needle, sources: sources,
+            event: event, since: since, authorKind: authorKind, authorId: authorId,
+            offset: offset, sentDateFilter: true, messageId: messageId, completion: finish)
+    } else {
+        GoldgramArchiveReader.searchLocal(accountId: account, needle: needle, sources: sources,
+            event: event, since: since, authorKind: authorKind, authorId: authorId,
+            offset: offset, sentDateFilter: true, completion: finish)
+    }
+}
+
+
+// #257: read saved revision history only after a visible exact archive lookup.
+// Return no body when the record is purged/hidden, or account changes.
+@_cdecl("goldgram_personal_revisions_v1")
+public func goldgramPersonalRevisionsV1(
+    _ raw: UnsafeRawPointer?, _ opaque: UnsafeMutableRawPointer?,
+    _ callback: (@convention(c) (UnsafeMutableRawPointer?, UnsafeRawPointer?) -> Void)?
+) {
+    guard let callback else { return }
+    func finish(_ answer: NSDictionary) {
+        callback(opaque, UnsafeRawPointer(Unmanaged.passUnretained(answer).toOpaque()))
+    }
+    guard let raw, Thread.isMainThread else {
+        finish(["status": "invalid_request", "items": []]); return
+    }
+    let request = Unmanaged<NSDictionary>.fromOpaque(raw).takeUnretainedValue()
+    guard let account = (request["accountId"] as? NSNumber)?.int64Value,
+          GoldgramArchiveReader.activeAccountId()?.int64Value == account,
+          let kind = (request["peerKind"] as? NSNumber).flatMap({ Int32(exactly: $0.int64Value) }),
+          (0...3).contains(kind),
+          let peer = (request["peerId"] as? NSNumber)?.int64Value, peer > 0,
+          let message = (request["messageId"] as? NSNumber).flatMap({ Int32(exactly: $0.int64Value) }),
+          message > 0 else { finish(["status": "invalid_request", "items": []]); return }
+    GoldgramArchiveReader.searchLocal(accountId: account, needle: "",
+        sources: [["peerKind": NSNumber(value: kind), "peerId": NSNumber(value: peer)]],
+        event: 0, since: 0, authorKind: nil, authorId: nil, offset: 0, messageId: message) { result in
+        guard result["status"] as? String == "ok",
+              let rows = result["items"] as? [[String: Any]], let row = rows.first,
+              GoldgramArchiveReader.activeAccountId()?.int64Value == account else {
+            finish(["status": "unavailable", "items": []]); return
+        }
+        GoldgramHistoryStore.readPhone8RevisionHistory(accountId: account, peerKind: kind,
+            peerId: peer, messageId: message) { revisions in
+                guard GoldgramArchiveReader.activeAccountId()?.int64Value == account else {
+                    finish(["status": "account_changed", "items": []]); return
+                }
+                // Return only the still-visible record, not a cached snapshot.
+                GoldgramArchiveReader.searchLocal(accountId: account, needle: "",
+                    sources: [["peerKind": NSNumber(value: kind), "peerId": NSNumber(value: peer)]],
+                    event: 0, since: 0, authorKind: nil, authorId: nil, offset: 0, messageId: message) { current in
+                        guard current["status"] as? String == "ok",
+                              let currentRows = current["items"] as? [[String: Any]],
+                              let currentRow = currentRows.first,
+                              GoldgramArchiveReader.activeAccountId()?.int64Value == account,
+                              (row["revisionCount"] as? NSNumber) == (currentRow["revisionCount"] as? NSNumber),
+                              (row["originalText"] as? String) == (currentRow["originalText"] as? String),
+                              (row["latestText"] as? String) == (currentRow["latestText"] as? String) else {
+                            finish(["status": "unavailable", "items": []]); return
+                        }
+                        finish(["status": "ok", "items": revisions, "record": currentRow])
+                    }
+            }
+    }
 }

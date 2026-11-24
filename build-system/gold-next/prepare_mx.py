@@ -1910,6 +1910,13 @@ mx_ui_source = mx_ui_source.replace(author_anchor_245, '''  [stack addArrangedSu
     subtitle:russian ? @"Telegram и локальный архив" : @"Telegram and local archive"
     symbol:@"person.crop.circle.badge.magnifyingglass"
     tint:UIColor.systemBlueColor identifier:29 compact:NO]];
+  [stack addArrangedSubview:[self goldgramDashboardPair:
+    [self goldgramDashboardTile:russian ? @"Личное избранное" : @"Personal favorites"
+      subtitle:russian ? @"Закладки и теги" : @"Bookmarks and tags"
+      symbol:@"bookmark.fill" tint:UIColor.systemOrangeColor identifier:30 compact:YES]
+    second:[self goldgramDashboardTile:russian ? @"Карточки контактов" : @"Contact cards"
+      subtitle:russian ? @"Личные заметки" : @"Private notes"
+      symbol:@"person.crop.rectangle" tint:UIColor.systemPurpleColor identifier:31 compact:YES]]];
 ''' + author_anchor_245)
 author_route_245 = '''  Mx *folder = [Mx new];
   if (identifier == 26) {'''
@@ -1921,6 +1928,16 @@ mx_ui_source = mx_ui_source.replace(author_route_245, '''  if (identifier == 29)
     if ([search respondsToSelector:action]) {
       typedef void (*OpenSearch)(id, SEL, UIViewController *);
       ((OpenSearch)[search methodForSelector:action])(search, action, self);
+    }
+    return;
+  }
+  if (identifier == 30 || identifier == 31) {
+    Class bridge = NSClassFromString(@"GoldgramAuthorSearchBridge");
+    SEL action = identifier == 30 ? NSSelectorFromString(@"presentFavoritesFromController:") :
+                                     NSSelectorFromString(@"presentPersonalContactsFromController:");
+    if ([bridge respondsToSelector:action]) {
+      typedef void (*OpenPersonal)(id, SEL, UIViewController *);
+      ((OpenPersonal)[bridge methodForSelector:action])(bridge, action, self);
     }
     return;
   }
