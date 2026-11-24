@@ -313,6 +313,7 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
     private weak var expandedProfile: ViewController?
     var leftNavigationButton: ChatNavigationButton?
     var rightNavigationButton: ChatNavigationButton?
+    private var goldgramSearchNavigationItem: UIBarButtonItem?
     var secondaryRightNavigationButton: ChatNavigationButton?
     var chatInfoNavigationButton: ChatNavigationButton?
     
@@ -8058,16 +8059,19 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
         GoldgramAuthorSearchBridge.open(from: self, context: self.context, chatId: self.chatLocation.peerId)
     }
 
+    // Stable identity lets the native navigation updater compare button arrays.
+    func goldgramSearchButtonForNavigation() -> UIBarButtonItem {
+        if let item = self.goldgramSearchNavigationItem { return item }
+        let item = UIBarButtonItem(image: UIImage(systemName: "person.crop.circle.badge.magnifyingglass"),
+            style: .plain, target: self, action: #selector(goldgramOpenAuthorSearch))
+        item.accessibilityIdentifier = "GoldgramAuthorSearch"
+        item.accessibilityLabel = "Расширенный поиск Goldgram в этом чате"
+        self.goldgramSearchNavigationItem = item
+        return item
+    }
+
     override public func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        if let peerId = self.chatLocation.peerId, peerId.namespace != Namespaces.Peer.SecretChat,
-           !(self.navigationItem.rightBarButtonItems ?? []).contains(where: { $0.accessibilityIdentifier == "GoldgramAuthorSearch" }) {
-            let searchButton = UIBarButtonItem(image: UIImage(systemName: "person.crop.circle.badge.magnifyingglass"),
-                style: .plain, target: self, action: #selector(goldgramOpenAuthorSearch))
-            searchButton.accessibilityIdentifier = "GoldgramAuthorSearch"
-            searchButton.accessibilityLabel = "Расширенный поиск Goldgram в этом чате"
-            self.navigationItem.rightBarButtonItems = (self.navigationItem.rightBarButtonItems ?? []) + [searchButton]
-        }
         self.forwardSideListAppearance(.didAppear, animated: animated)
         
         self.didAppear = true

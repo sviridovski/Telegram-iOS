@@ -50,11 +50,20 @@ extension ChatControllerImpl {
         }
 
         // The sidebar button stays outermost, with Saved Messages' search before it.
-        let rightBarButtons: [UIBarButtonItem]
+        var rightBarButtons: [UIBarButtonItem]
         if self.rightNavigationButton?.action == .toggleSideList {
             rightBarButtons = [self.secondaryRightNavigationButton, self.rightNavigationButton].compactMap { $0?.buttonItem }
         } else {
             rightBarButtons = [self.rightNavigationButton, self.secondaryRightNavigationButton].compactMap { $0?.buttonItem }
+        }
+        // Goldgram must participate in every native state update, not just viewDidAppear.
+        // Preserve profile/side-list buttons and never add the shortcut in selection/search/secret modes.
+        if case .standard(.default) = presentationInterfaceState.mode,
+           presentationInterfaceState.interfaceState.selectionState == nil,
+           presentationInterfaceState.search == nil,
+           let peerId = self.chatLocation.peerId,
+           peerId.namespace == Namespaces.Peer.CloudUser || peerId.namespace == Namespaces.Peer.CloudGroup || peerId.namespace == Namespaces.Peer.CloudChannel {
+            rightBarButtons.append(self.goldgramSearchButtonForNavigation())
         }
         var rightBarButtonsUpdated = false
         let currentRightBarButtons = self.navigationItem.rightBarButtonItems ?? []

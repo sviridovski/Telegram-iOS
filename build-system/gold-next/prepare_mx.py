@@ -2046,3 +2046,154 @@ mx_ui_source = patch_252(
   }''', 'exception title and refresh')
 mx_ui_path.write_text(mx_ui_source)
 print('Goldgram #252: real exception picker, safe footer height and preserved Mx store')
+
+
+# Goldgram #260: customize the existing root dashboard; default layout stays identical.
+# Only layout preferences cross the runtime boundary. Settings and totals stay accessible.
+def patch_260(before, after, label):
+    global mx_ui_source
+    if mx_ui_source.count(before) != 1:
+        raise SystemExit('Goldgram #260: ' + label + ' anchor mismatch')
+    mx_ui_source = mx_ui_source.replace(before, after, 1)
+
+patch_260('@property(nonatomic, strong) UIView *goldgramDashboardHeader;',
+    '@property(nonatomic, strong) UIView *goldgramDashboardHeader;\n@property(nonatomic, copy) NSDictionary *goldgramAppliedLayout;', 'layout state')
+
+layout_260 = r'''
+- (NSDictionary *)goldgramCurrentLayout {
+  Class bridge = NSClassFromString(@"GoldgramAuthorSearchBridge");
+  SEL action = NSSelectorFromString(@"dashboardLayout");
+  if (![bridge respondsToSelector:action]) return nil;
+  typedef NSDictionary *(*ReadLayout)(id, SEL);
+  id value = ((ReadLayout)[bridge methodForSelector:action])(bridge, action);
+  return [value isKindOfClass:NSDictionary.class] ? value : nil;
+}
+
+- (void)goldgramAppendLayoutTiles:(NSArray<NSNumber *> *)ids
+                           views:(NSDictionary<NSNumber *, UIButton *> *)tiles
+                           stack:(UIStackView *)stack {
+  UIButton *pending = nil;
+  for (NSNumber *identifier in ids) {
+    UIButton *tile = tiles[identifier];
+    if (!tile) continue;
+    BOOL wide = [@[@29, @0, @25] containsObject:identifier];
+    if (wide) {
+      if (pending) { [stack addArrangedSubview:pending]; pending = nil; }
+      [stack addArrangedSubview:tile];
+    } else if (pending) {
+      [stack addArrangedSubview:[self goldgramDashboardPair:pending second:tile]];
+      pending = nil;
+    } else {
+      pending = tile;
+    }
+  }
+  if (pending) [stack addArrangedSubview:pending];
+}
+
+- (void)goldgramApplyLayout:(NSDictionary *)layout stack:(UIStackView *)stack russian:(BOOL)ru {
+  if (!layout) return;
+  NSArray *order = layout[@"order"];
+  NSArray *pinned = layout[@"pinned"];
+  if (![order isKindOfClass:NSArray.class] || ![pinned isKindOfClass:NSArray.class]) return;
+  NSArray *known = @[@29,@30,@31,@0,@20,@24,@27,@28,@25,@21,@22,@4,@23];
+  if (order.count > known.count || pinned.count > known.count) return;
+  NSMutableSet *seen = [NSMutableSet set];
+  for (id identifier in order) {
+    if (![known containsObject:identifier] || [seen containsObject:identifier]) return;
+    [seen addObject:identifier];
+  }
+  for (id identifier in pinned) {
+    if (![seen containsObject:identifier]) return;
+  }
+  NSMutableDictionary<NSNumber *, UIButton *> *tiles = [NSMutableDictionary dictionary];
+  UIView *totals = nil;
+  UILabel *settingsHeading = nil;
+  UIStackView *settings = nil;
+  NSArray<UIView *> *rows = [stack.arrangedSubviews copy];
+  for (UIView *row in rows) {
+    if ([row isKindOfClass:UIButton.class] && [known containsObject:@(row.tag)]) {
+      tiles[@(row.tag)] = (UIButton *)row;
+    } else if ([row isKindOfClass:UILabel.class]) {
+      settingsHeading = (UILabel *)row;
+    } else if ([row viewWithTag:3099]) {
+      totals = row;
+    } else if ([row isKindOfClass:UIStackView.class]) {
+      UIStackView *group = (UIStackView *)row;
+      if (group.axis == UILayoutConstraintAxisHorizontal) {
+        for (UIView *tile in group.arrangedSubviews) {
+          if ([tile isKindOfClass:UIButton.class] && [known containsObject:@(tile.tag)]) {
+            tiles[@(tile.tag)] = (UIButton *)tile;
+          }
+        }
+      } else {
+        settings = group;
+      }
+    }
+  }
+  // Fail open to the unchanged dashboard if an upstream tile changes.
+  if (tiles.count != known.count || !totals || !settingsHeading || !settings) return;
+  for (UIView *row in rows) {
+    if ([row isKindOfClass:UIStackView.class] && row != settings) {
+      UIStackView *pair = (UIStackView *)row;
+      for (UIView *tile in [pair.arrangedSubviews copy]) {
+        [pair removeArrangedSubview:tile];
+        [tile removeFromSuperview];
+      }
+    }
+    [stack removeArrangedSubview:row];
+    [row removeFromSuperview];
+  }
+  NSMutableArray<NSNumber *> *top = [NSMutableArray array];
+  NSMutableArray<NSNumber *> *rest = [NSMutableArray array];
+  for (NSNumber *identifier in order) {
+    if ([pinned containsObject:identifier]) [top addObject:identifier];
+    else [rest addObject:identifier];
+  }
+  if (top.count) {
+    [stack addArrangedSubview:[self goldgramDashboardHeading:ru ? @"ЗАКРЕПЛЁННОЕ" : @"PINNED"]];
+    [self goldgramAppendLayoutTiles:top views:tiles stack:stack];
+  }
+  if (rest.count) {
+    [stack addArrangedSubview:[self goldgramDashboardHeading:ru ? @"МОЯ ПАНЕЛЬ" : @"MY DASHBOARD"]];
+    [self goldgramAppendLayoutTiles:rest views:tiles stack:stack];
+  }
+  [stack addArrangedSubview:[self goldgramDashboardHeading:ru ? @"АРХИВ GOLDGRAM" : @"GOLDGRAM ARCHIVE"]];
+  [stack addArrangedSubview:totals];
+  [stack addArrangedSubview:settingsHeading];
+  [stack addArrangedSubview:settings];
+}
+
+'''
+patch_260('- (void)goldgramBuildDashboard {',
+    layout_260 + '- (void)goldgramBuildDashboard {', 'dashboard factory')
+patch_260('  self.goldgramDashboardHeader = header;', r'''  self.goldgramAppliedLayout = [self goldgramCurrentLayout];
+  [self goldgramApplyLayout:self.goldgramAppliedLayout stack:stack russian:russian];
+  [stack insertArrangedSubview:[self goldgramDashboardLink:
+      russian ? @"Настроить панель и меню" : @"Customize dashboard and menu"
+      symbol:@"slider.horizontal.3" identifier:32] atIndex:0];
+  self.goldgramDashboardHeader = header;''', 'customize entry')
+
+patch_260('  NSInteger identifier = button.tag;\n  if (identifier == 20 || identifier == 24',
+    r'''  NSInteger identifier = button.tag;
+  if (identifier == 32) {
+    Class bridge = NSClassFromString(@"GoldgramAuthorSearchBridge");
+    SEL action = NSSelectorFromString(@"presentLayoutFromController:");
+    if ([bridge respondsToSelector:action]) {
+      typedef void (*OpenLayout)(id, SEL, UIViewController *);
+      ((OpenLayout)[bridge methodForSelector:action])(bridge, action, self);
+    }
+    return;
+  }
+  if (identifier == 20 || identifier == 24''', 'customize route')
+
+patch_260('  if (!self.goldgramSection) [self goldgramDashboardLoadCounts];',
+    r'''  if (!self.goldgramSection) {
+    NSDictionary *layout = [self goldgramCurrentLayout];
+    if (self.goldgramAppliedLayout != layout && ![self.goldgramAppliedLayout isEqual:layout]) {
+      [self goldgramBuildDashboard];
+      [self goldgramFitDashboard];
+    }
+    [self goldgramDashboardLoadCounts];
+  }''', 'refresh only changed layout')
+mx_ui_path.write_text(mx_ui_source)
+print('Goldgram #260: configurable dashboard, preserved tile IDs and menu settings')

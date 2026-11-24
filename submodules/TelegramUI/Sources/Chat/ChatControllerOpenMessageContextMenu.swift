@@ -79,15 +79,34 @@ extension ChatControllerImpl {
                         !topMessage.media.contains(where: { $0 is TelegramMediaAction || $0 is TelegramMediaExpiredContent }) &&
                         GoldgramAuthorSearchBridge.canBookmark(context: self.context, message: message) {
                         var list = itemList
-                        list.append(.action(ContextMenuActionItem(text: "В личное избранное", icon: { theme in
-                            return UIImage(systemName: "bookmark")?.withTintColor(theme.actionSheet.primaryTextColor, renderingMode: .alwaysOriginal)
-                        }, action: { [weak self = self] _, f in
-                            f(.dismissWithoutContent)
-                            Queue.mainQueue().after(0.35, { [weak self = self] in
-                                guard let self else { return }
-                                GoldgramAuthorSearchBridge.addBookmark(from: self, context: self.context, message: message)
-                            })
-                        })))
+                        for actionId in GoldgramAuthorSearchBridge.menuActionIDs() {
+                            let title: String
+                            let symbol: String
+                            switch actionId {
+                            case 100: title = "В личное избранное"; symbol = "bookmark"
+                            case 101: title = "Расширенный поиск в чате"; symbol = "magnifyingglass"
+                            case 102: title = "Личное избранное"; symbol = "bookmark.fill"
+                            case 103: title = "Карточки контактов"; symbol = "person.crop.rectangle"
+                            default: continue
+                            }
+                            list.append(.action(ContextMenuActionItem(text: title, icon: { theme in
+                                return UIImage(systemName: symbol)?.withTintColor(theme.actionSheet.primaryTextColor, renderingMode: .alwaysOriginal)
+                            }, action: { [weak self = self] _, f in
+                                f(.dismissWithoutContent)
+                                Queue.mainQueue().after(0.35, { [weak self = self] in
+                                    guard let self, self.viewIfLoaded?.window != nil,
+                                          self.presentedViewController == nil,
+                                          GoldgramAuthorSearchBridge.canBookmark(context: self.context, message: message) else { return }
+                                    switch actionId {
+                                    case 100: GoldgramAuthorSearchBridge.addBookmark(from: self, context: self.context, message: message)
+                                    case 101: GoldgramAuthorSearchBridge.open(from: self, context: self.context, chatId: message.id.peerId)
+                                    case 102: GoldgramAuthorSearchBridge.presentFavoritesFromController(self)
+                                    case 103: GoldgramAuthorSearchBridge.presentPersonalContactsFromController(self)
+                                    default: break
+                                    }
+                                })
+                            })))
+                        }
                         actions.content = .list(list)
                     }
                 case .custom, .twoLists:

@@ -50,3 +50,38 @@ with tempfile.TemporaryDirectory() as tmp:
     binary = Path(tmp) / "test"
     subprocess.run(["swiftc", str(source), "-o", str(binary)], check=True)
     subprocess.run([str(binary)], check=True)
+
+# Compile the actual layout normalization/persistence model, independent of UIKit.
+layout_model = native.split("// BEGIN GOLDGRAM_LAYOUT_MODEL_V1\n", 1)[1].split("// END GOLDGRAM_LAYOUT_MODEL_V1", 1)[0]
+layout_checks = r'''
+private func runLayoutChecks() {
+let suite = "GoldgramLayoutTest-" + UUID().uuidString
+let defaults = UserDefaults(suiteName: suite)!
+defer { defaults.removePersistentDomain(forName: suite) }
+var layout = GoldgramLayoutPreferences.load(defaults)
+precondition(!layout.customDashboard && layout.visibleDashboard.count == 13 && layout.visibleMenu == [100])
+layout.dashboardOrder = [31, 31, 999, 29]
+layout.dashboardHidden = [20, 999, 20]
+layout.dashboardPinned = [31, 20, 999]
+layout.menuOrder = [103, 100, 100, 888]
+layout.menuHidden = [101, 102]
+layout.save(defaults)
+let loaded = GoldgramLayoutPreferences.load(defaults)
+precondition(loaded.dashboardOrder.count == 13 && loaded.dashboardOrder.prefix(2).elementsEqual([31,29]))
+precondition(loaded.dashboardHidden == [20] && loaded.dashboardPinned == [31])
+precondition(!loaded.visibleDashboard.contains(20) && loaded.visibleMenu == [103,100])
+precondition(loaded.customDashboard)
+GoldgramLayoutPreferences().save(defaults)
+precondition(!GoldgramLayoutPreferences.load(defaults).customDashboard)
+defaults.set(Data("broken".utf8), forKey: GoldgramLayoutPreferences.key)
+precondition(GoldgramLayoutPreferences.load(defaults).visibleDashboard.count == 13)
+print("Goldgram #260 dashboard and menu preferences: defaults, ordering, hide/pin, roundtrip, corruption fallback OK")
+}
+runLayoutChecks()
+'''
+with tempfile.TemporaryDirectory() as tmp:
+    source = Path(tmp) / "main.swift"
+    source.write_text("import Foundation\n" + layout_model + layout_checks)
+    binary = Path(tmp) / "test"
+    subprocess.run(["swiftc", str(source), "-o", str(binary)], check=True)
+    subprocess.run([str(binary)], check=True)

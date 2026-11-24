@@ -9,6 +9,177 @@ import LocalizedPeerData
 import AccountContext
 import Display
 
+
+// BEGIN GOLDGRAM_LAYOUT_MODEL_V1
+private struct GoldgramLayoutPreferences: Codable, Equatable {
+    static let dashboardIDs = [29, 30, 31, 0, 20, 24, 27, 28, 25, 21, 22, 4, 23]
+    static let menuIDs = [100, 101, 102, 103]
+    static let key = "Goldgram.LayoutPreferences.v1"
+    var dashboardOrder = Self.dashboardIDs
+    var dashboardHidden: [Int] = []
+    var dashboardPinned: [Int] = []
+    var menuOrder = Self.menuIDs
+    var menuHidden = [101, 102, 103]
+
+    static func order(_ input: [Int], known: [Int]) -> [Int] {
+        var seen = Set<Int>()
+        return (input + known).filter { known.contains($0) && seen.insert($0).inserted }
+    }
+
+    mutating func normalize() {
+        dashboardOrder = Self.order(dashboardOrder, known: Self.dashboardIDs)
+        dashboardHidden = dashboardOrder.filter { dashboardHidden.contains($0) }
+        dashboardPinned = dashboardOrder.filter { dashboardPinned.contains($0) && !dashboardHidden.contains($0) }
+        menuOrder = Self.order(menuOrder, known: Self.menuIDs)
+        menuHidden = menuOrder.filter { menuHidden.contains($0) }
+    }
+
+    var visibleDashboard: [Int] {
+        return dashboardOrder.filter { !dashboardHidden.contains($0) }
+    }
+    var visibleMenu: [Int] {
+        return menuOrder.filter { !menuHidden.contains($0) }
+    }
+    var customDashboard: Bool {
+        return dashboardOrder != Self.dashboardIDs || !dashboardHidden.isEmpty || !dashboardPinned.isEmpty
+    }
+
+    static func load(_ defaults: UserDefaults = .standard) -> Self {
+        guard let bytes = defaults.data(forKey: key), bytes.count <= 16384,
+              var value = try? JSONDecoder().decode(Self.self, from: bytes) else { return Self() }
+        value.normalize()
+        return value
+    }
+
+    func save(_ defaults: UserDefaults = .standard) {
+        var value = self
+        value.normalize()
+        if let bytes = try? JSONEncoder().encode(value) { defaults.set(bytes, forKey: Self.key) }
+    }
+}
+// END GOLDGRAM_LAYOUT_MODEL_V1
+
+
+private final class GoldgramLayoutScreen: UITableViewController {
+    private var preferences: GoldgramLayoutPreferences
+
+    private static let names: [Int: String] = [
+        29: "Расширенный поиск", 30: "Личное избранное", 31: "Карточки контактов",
+        0: "Режим невидимки", 20: "Изменённые", 24: "Удалённые",
+        27: "Личные сообщения", 28: "Группы и чаты", 25: "Каналы и комментарии",
+        21: "Приватность", 22: "Медиа", 4: "Геопозиция", 23: "Другие функции",
+        100: "В личное избранное", 101: "Расширенный поиск в чате",
+        102: "Открыть личное избранное", 103: "Карточки контактов"
+    ]
+
+    init(preferences: GoldgramLayoutPreferences) {
+        self.preferences = preferences
+        super.init(style: .insetGrouped)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        title = "Панель и меню"
+        tableView.allowsSelectionDuringEditing = true
+        tableView.setEditing(true, animated: false)
+        navigationItem.rightBarButtonItem = UIBarButtonItem(title: "Сброс", style: .plain, target: self, action: #selector(resetLayout))
+    }
+
+    override func numberOfSections(in tableView: UITableView) -> Int { 2 }
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        return section == 0 ? preferences.dashboardOrder.count : preferences.menuOrder.count
+    }
+    override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
+        return section == 0 ? "Плитки Goldgram" : "Дополнительные действия меню сообщения"
+    }
+    override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
+        return section == 0
+            ? "Перетаскивайте строки для изменения порядка. Нажмите на плитку, чтобы скрыть, показать или закрепить её вверху. Счётчики архива и системные настройки остаются доступны."
+            : "Перетаскивайте действия и нажимайте для включения или отключения. Обычные пункты Telegram и ограничения защищённых сообщений не изменяются."
+    }
+    override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let dashboard = indexPath.section == 0
+        let id = dashboard ? preferences.dashboardOrder[indexPath.row] : preferences.menuOrder[indexPath.row]
+        let hidden = dashboard ? preferences.dashboardHidden.contains(id) : preferences.menuHidden.contains(id)
+        let pinned = dashboard && preferences.dashboardPinned.contains(id)
+        let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
+        cell.textLabel?.text = Self.names[id] ?? String(id)
+        cell.textLabel?.numberOfLines = 0
+        cell.detailTextLabel?.text = hidden ? "Скрыто" : (pinned ? "Закреплено" : "Показано")
+        cell.detailTextLabel?.textColor = hidden ? .secondaryLabel : .systemTeal
+        cell.imageView?.image = UIImage(systemName: hidden ? "eye.slash" : (pinned ? "pin.fill" : "checkmark.circle"))
+        cell.imageView?.tintColor = hidden ? .secondaryLabel : .systemTeal
+        cell.showsReorderControl = true
+        return cell
+    }
+    override func tableView(_ tableView: UITableView, canMoveRowAt indexPath: IndexPath) -> Bool { true }
+    override func tableView(_ tableView: UITableView, editingStyleForRowAt indexPath: IndexPath) -> UITableViewCell.EditingStyle { .none }
+    override func tableView(_ tableView: UITableView, shouldIndentWhileEditingRowAt indexPath: IndexPath) -> Bool { false }
+    override func tableView(_ tableView: UITableView, targetIndexPathForMoveFromRowAt sourceIndexPath: IndexPath, toProposedIndexPath proposedDestinationIndexPath: IndexPath) -> IndexPath {
+        return sourceIndexPath.section == proposedDestinationIndexPath.section ? proposedDestinationIndexPath : sourceIndexPath
+    }
+    override func tableView(_ tableView: UITableView, moveRowAt sourceIndexPath: IndexPath, to destinationIndexPath: IndexPath) {
+        guard sourceIndexPath.section == destinationIndexPath.section else { return }
+        if sourceIndexPath.section == 0 {
+            let id = preferences.dashboardOrder.remove(at: sourceIndexPath.row)
+            preferences.dashboardOrder.insert(id, at: destinationIndexPath.row)
+        } else {
+            let id = preferences.menuOrder.remove(at: sourceIndexPath.row)
+            preferences.menuOrder.insert(id, at: destinationIndexPath.row)
+        }
+        preferences.save()
+    }
+
+    private func change(_ f: (inout GoldgramLayoutPreferences) -> Void) {
+        f(&preferences)
+        preferences.normalize()
+        preferences.save()
+        tableView.reloadData()
+    }
+
+    override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        let dashboard = indexPath.section == 0
+        let id = dashboard ? preferences.dashboardOrder[indexPath.row] : preferences.menuOrder[indexPath.row]
+        let hidden = dashboard ? preferences.dashboardHidden.contains(id) : preferences.menuHidden.contains(id)
+        if !dashboard {
+            change { value in
+                if hidden { value.menuHidden.removeAll { $0 == id } }
+                else { value.menuHidden.append(id) }
+            }
+            return
+        }
+        let pinned = preferences.dashboardPinned.contains(id)
+        let alert = UIAlertController(title: Self.names[id], message: nil, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: hidden ? "Показать" : "Скрыть", style: .default) { [weak self] _ in
+            self?.change { value in
+                if hidden { value.dashboardHidden.removeAll { $0 == id } }
+                else { value.dashboardHidden.append(id); value.dashboardPinned.removeAll { $0 == id } }
+            }
+        })
+        if !hidden {
+            alert.addAction(UIAlertAction(title: pinned ? "Открепить" : "Закрепить вверху", style: .default) { [weak self] _ in
+                self?.change { value in
+                    if pinned { value.dashboardPinned.removeAll { $0 == id } }
+                    else { value.dashboardPinned.append(id) }
+                }
+            })
+        }
+        alert.addAction(UIAlertAction(title: "Отмена", style: .cancel))
+        present(alert, animated: true)
+    }
+
+    @objc private func resetLayout() {
+        let alert = UIAlertController(title: "Восстановить исходный вид?", message: "Настройки расположения плиток и дополнительных действий будут сброшены. Архив и избранное не затрагиваются.", preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Сбросить", style: .destructive) { [weak self] _ in
+            self?.change { $0 = GoldgramLayoutPreferences() }
+        })
+        alert.addAction(UIAlertAction(title: "Отмена", style: .cancel))
+        present(alert, animated: true)
+    }
+}
+
 @objc(GoldgramAuthorSearchBridge)
 public final class GoldgramAuthorSearchBridge: NSObject {
     private static weak var activeContext: AccountContext?
@@ -26,6 +197,24 @@ public final class GoldgramAuthorSearchBridge: NSObject {
 
     public static func bind(context: AccountContext) {
         self.activeContext = context
+    }
+
+    // Layout preferences are installation-local UI choices, never account content.
+    @objc(dashboardLayout)
+    public static func dashboardLayout() -> NSDictionary? {
+        let value = GoldgramLayoutPreferences.load()
+        guard value.customDashboard else { return nil }
+        return ["order": value.visibleDashboard.map { NSNumber(value: $0) },
+                "pinned": value.dashboardPinned.map { NSNumber(value: $0) }] as NSDictionary
+    }
+
+    @objc(presentLayoutFromController:)
+    public static func presentLayoutFromController(_ controller: UIViewController) {
+        presentPersonal(GoldgramLayoutScreen(preferences: .load()), from: controller)
+    }
+
+    public static func menuActionIDs() -> [Int] {
+        return GoldgramLayoutPreferences.load().visibleMenu
     }
 
     @objc(presentFromController:)

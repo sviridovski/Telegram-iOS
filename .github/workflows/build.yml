@@ -212,6 +212,9 @@ jobs:
           python3 build-system/gold-next/test_sqlite_reader.py
           swiftc -frontend -parse submodules/ChatListUI/Sources/GoldgramAuthorSearch.swift
           swiftc -frontend -parse submodules/TelegramUI/Sources/Chat/ChatControllerOpenMessageContextMenu.swift
+          swiftc -frontend -parse submodules/TelegramUI/Sources/ChatController.swift
+          swiftc -frontend -parse submodules/TelegramUI/Sources/Chat/UpdateChatPresentationInterfaceState.swift
+          python3 -m py_compile build-system/gold-next/prepare_mx.py
           swiftc -frontend -parse build-system/gold-next/GoldgramHistoryStore.swift
           python3 build-system/gold-next/test_personal_metadata.py
           python3 build-system/gold-next/test_sqlite_browser.py
