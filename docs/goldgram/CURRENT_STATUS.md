@@ -1,6 +1,6 @@
 # CURRENT_STATUS — verified checkpoint
 
-> **2026-11-24 local user date — #261 Native failed on exhaustive EnginePeer switch; #262 targeted fix published and queued; #260 verified green and user-tested.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
+> **2026-11-24 local user date — #262 first attempt failed with cancelled Native/Mx and unavailable logs; same-run retry queued; #260 verified green and user-tested.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
 
 ## Current code / CI / device state
 
@@ -11,7 +11,7 @@
 | Last green CI | [#260](https://github.com/sviridovski/Telegram-iOS/actions/runs/45357908933), Native/Mx/Build success; IPA artifact 14906095386, not expired at verification |
 | Last installed | #260 — user confirms tested and all excellent; individual acceptance cases not independently reported. |
 | Failed candidate | [#261](https://github.com/sviridovski/Telegram-iOS/actions/runs/45366241671): Mx success, Native failure (GoldgramAuthorSearch.swift:1770 exhaustive switch missing `.community(_)`), Build skipped. Earlier #257 failure retained in history. |
-| Next task | Verify [#262](https://github.com/sviridovski/Telegram-iOS/actions/runs/45416651778) CI, artifact and device acceptance of unified media center 1.0. |
+| Next task | Verify same-run retry of [#262](https://github.com/sviridovski/Telegram-iOS/actions/runs/45416651778); diagnose fresh logs if failure recurs; then artifact and device acceptance. |
 | Recovery | #260 latest green and user-confirmed working baseline; #259 fallback with disappearing chat search button; #256 earlier confirmed search baseline. Original port/telegram-13.2 not modified. |
 
 ## #252 corrections retained in #253
@@ -150,3 +150,7 @@
 
 - #261 Native job 138348574427 failed at GoldgramAuthorSearch.swift:1770, missing EnginePeer.community case. Mx job 138348574011 succeeded; Build job 138355385254 skipped. Media model test reported OK. #260 Native cache restored; failed Bazel compile elapsed 240.061s, critical path 74.11s, 8059 disk hits / 9830 processes; not comparable to full successful build. #261 Mx cache saved. No successful #261 IPA.
 - Published one-file fix 7d1b137dbbde22ec6cffbcaac142735e9ba7ccfa, head verified; [#262](https://github.com/sviridovski/Telegram-iOS/actions/runs/45416651778) queued at API check. Verified all five EnginePeer cases against source. Reject community/secretChat and unknown future peer types; ordinary peer protection checks unchanged. No SQLite/Ghost/Collector changes, no cache invalidation requested. Mx recipe unchanged from #261; expect cache reuse, not confirmed until #262 logs. #260 remains recovery baseline. Full CI and device acceptance pending; prior #261 acceptance checklist applies to #262.
+
+## #262 retry — cancelled jobs, no source change
+
+- Run #262 first attempt: workflow conclusion failure, Native and Mx cancelled, Build skipped. Both job-log endpoints returned 404 BlobNotFound; check-run annotations exist but connector denies annotation endpoint. Cause unknown, no new compiler error verified. Re-run failed jobs requested successfully on exact same run/commit, API status queued; no source change, #260 last green/device-tested.

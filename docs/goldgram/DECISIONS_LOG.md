@@ -187,3 +187,8 @@ The public [macOS runner availability issue #15291](https://github.com/actions/r
 
 - [#261](https://github.com/sviridovski/Telegram-iOS/actions/runs/45366241671) Mx success, Native failure, Build skipped. Exact compiler error at GoldgramAuthorSearch.swift:1770: switch must be exhaustive; add missing case .community(_). Confirmed against EnginePeer declaration. Foundation media rule tests passed. #260 Native cache restored; failed compile 240.061s, 8059/9830 disk hits. #261 Mx cache saved.
 - [#262 source 7d1b137dbbde22ec6cffbcaac142735e9ba7ccfa](https://github.com/sviridovski/Telegram-iOS/commit/7d1b137dbbde22ec6cffbcaac142735e9ba7ccfa) only changes acceptsPeer in GoldgramAuthorSearch.swift to reject unsupported community and secretChat and unknown cases. Branch publication verified; [CI #262](https://github.com/sviridovski/Telegram-iOS/actions/runs/45416651778) queued. No production changes elsewhere; cache keys retained, no docs CI. #260 last green/user-tested. Full compilation/device test pending.
+
+## 2026-11-24 — #262 first attempt and retry
+
+- Run #262 first attempt: workflow conclusion failure, Native and Mx cancelled, Build skipped. Both job-log endpoints returned 404 BlobNotFound; check-run annotations exist but connector denies annotation endpoint. Cause unknown, no new compiler error verified. Re-run failed jobs requested successfully on exact same run/commit, API status queued; no source change, #260 last green/device-tested.
+- Native job 138524582105 and Mx job 138524582961 cancelled, Build 138534629905 skipped. Run 45416651778, source 7d1b137dbbde22ec6cffbcaac142735e9ba7ccfa. Cache settings unchanged; no docs-triggered build.
