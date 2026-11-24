@@ -164,3 +164,7 @@ The public [macOS runner availability issue #15291](https://github.com/actions/r
 
 - [#259](https://github.com/sviridovski/Telegram-iOS/actions/runs/45332682368) SHA faaae4908f5606f94d20405206f8bab7f1463832: Native, Mx, Build completed success; IPA artifact 14893668082 present and not expired. Branch HEAD checked. Last installed #258; #256 remains user-confirmed recovery checkpoint. #259 context-menu bookmarks/search 2.0 device acceptance pending; no on-device behavior inferred.
 - Native restored #258 Bazel cache, 8225/10103 disk hits, elapsed 1405.056s, critical path 1159.96s; Native cache saved under #259 SHA. Foundation personal metadata test explicitly reported OK. Mx exact miss expected after source change; staged compiled Mx saved under new key. Preserve cache families. No architecture or production code change and no new build requested for documentation checkpoint.
+
+## 2026-11-24 local — #259 device feedback
+
+- User reports #259 installed and tested; broadly satisfied except one unspecified defect, details to follow. No exact defect or subcase acceptance inferred. #259 latest broadly device-tested green checkpoint; retain #256 fallback. User requested a multifunction Goldgram feature list only; proposed roadmap recorded in CURRENT_STATUS. No implementation approved, no source change, no CI triggered for docs.
