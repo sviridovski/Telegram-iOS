@@ -1,17 +1,17 @@
 # CURRENT_STATUS — verified checkpoint
 
-> **2026-11-24 local user date — #261 unified media center 1.0 published; #260 verified green and user-tested; #261 CI/device acceptance pending.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
+> **2026-11-24 local user date — #261 Native failed on exhaustive EnginePeer switch; #262 targeted fix published and queued; #260 verified green and user-tested.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
 
 ## Current code / CI / device state
 
 | Item | Latest confirmed status |
 | --- | --- |
 | Feature branch | `gold-next-243-author-search` |
-| HEAD | `67b1649a27ffe37cb1dac80b4f31d8be4e7e8734` (#261), direct parent #260 |
+| HEAD | `7d1b137dbbde22ec6cffbcaac142735e9ba7ccfa` (#262), direct parent #261 |
 | Last green CI | [#260](https://github.com/sviridovski/Telegram-iOS/actions/runs/45357908933), Native/Mx/Build success; IPA artifact 14906095386, not expired at verification |
 | Last installed | #260 — user confirms tested and all excellent; individual acceptance cases not independently reported. |
-| Failed candidate | [#257](https://github.com/sviridovski/Telegram-iOS/actions/runs/45321519764), Native failed, Mx passed, Build skipped; Swift catch error shadowing at lines 1389/1407 |
-| Next task | Verify [#261](https://github.com/sviridovski/Telegram-iOS/actions/runs/45366241671) CI, artifact and device acceptance of unified media center 1.0. |
+| Failed candidate | [#261](https://github.com/sviridovski/Telegram-iOS/actions/runs/45366241671): Mx success, Native failure (GoldgramAuthorSearch.swift:1770 exhaustive switch missing `.community(_)`), Build skipped. Earlier #257 failure retained in history. |
+| Next task | Verify [#262](https://github.com/sviridovski/Telegram-iOS/actions/runs/45416651778) CI, artifact and device acceptance of unified media center 1.0. |
 | Recovery | #260 latest green and user-confirmed working baseline; #259 fallback with disappearing chat search button; #256 earlier confirmed search baseline. Original port/telegram-13.2 not modified. |
 
 ## #252 corrections retained in #253
@@ -145,3 +145,8 @@
 - Separate configurable tile, eight categories (photo/video/documents/music/voice/circle/links/GIF), grid/list, accessible current-account cloud root/archive or selected chat, author/type/date/known-size and text filters, loaded-result date/size/name sort, bounded initial pages and load more. Actual thumbnail metadata only; unknown sizes remain unknown, one result per message; global author and server text results may be partial. Details, exact native jump/back, reference bookmark. For ordinary accessible media, revalidate local current message/peer before preview/download/bookmark; check existing cache, explicit user download to Telegram cache, Quick Look if supported and native source-message fallback. No automatic downloads/links, protected/ephemeral/spoiler/secret or restricted content excluded; no archive media recovery, duplicate storage, Ghost, capture or Collector changes.
 - Same branch and cache family, retain #260 Native cache and staged Mx save; Mx recipe changed so rebuild expected. Existing isolated Foundation harness extended for old layout migration, eight category mapping, literal name/caption matching, unknown size and safe extension. CI preflight runs before large Bazel restore; tests not yet verified. No claim of local iOS compilation.
 - Acceptance after all jobs green and IPA present: install over #260; confirm original Media settings and all original tiles plus ID 33, preserve custom order/hide/pin and reset. Open all eight categories with ordinary own test media; check previews, list/grid, filename/caption/date/size filters, known chat, author, load more/cancel/stale timeout and empty results; link opens source only; exact jump/back and bookmark. Check protected/ephemeral/spoiler/secret exclusion, account isolation, no background/full automatic download; explicit download/cache preview/fallback/cancel. Recheck #260 search header, Ghost, archive and Collector. Full device result pending.
+
+## #262 compile fix after #261 failure
+
+- #261 Native job 138348574427 failed at GoldgramAuthorSearch.swift:1770, missing EnginePeer.community case. Mx job 138348574011 succeeded; Build job 138355385254 skipped. Media model test reported OK. #260 Native cache restored; failed Bazel compile elapsed 240.061s, critical path 74.11s, 8059 disk hits / 9830 processes; not comparable to full successful build. #261 Mx cache saved. No successful #261 IPA.
+- Published one-file fix 7d1b137dbbde22ec6cffbcaac142735e9ba7ccfa, head verified; [#262](https://github.com/sviridovski/Telegram-iOS/actions/runs/45416651778) queued at API check. Verified all five EnginePeer cases against source. Reject community/secretChat and unknown future peer types; ordinary peer protection checks unchanged. No SQLite/Ghost/Collector changes, no cache invalidation requested. Mx recipe unchanged from #261; expect cache reuse, not confirmed until #262 logs. #260 remains recovery baseline. Full CI and device acceptance pending; prior #261 acceptance checklist applies to #262.
