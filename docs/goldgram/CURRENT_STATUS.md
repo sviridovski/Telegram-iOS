@@ -1,6 +1,6 @@
 # CURRENT_STATUS — verified checkpoint
 
-> **2026-11-24 local user date — #263 Native/Mx green and lifecycle test passed; final Build cancelled, targeted retry requested. #262 installed with known swipe defect.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
+> **2026-11-24 local user date — #263 retry green and installed; user confirms swipe fix. New media dialog ambiguity and stale/missing results reported.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
 
 ## Current code / CI / device state
 
@@ -8,11 +8,11 @@
 | --- | --- |
 | Feature branch | `gold-next-243-author-search` |
 | HEAD | `fa1af6457deac9b55763e7bf8cd9fc3bd1fdeecb` (post-#262 lifecycle correction), direct parent #262 |
-| Last green CI | [#262 attempt 2](https://github.com/sviridovski/Telegram-iOS/actions/runs/45416651778), Native/Mx/Build success; IPA artifact 14938885512, not expired at verification |
-| Last installed | #262 — user reports media results load, then disappear after slight downward swipe; video confirms empty grid with unchanged count. Full acceptance not yet reported. |
+| Last green CI | [#263 attempt 2](https://github.com/sviridovski/Telegram-iOS/actions/runs/45429887061), all three jobs success, final IPA 14955093279 present and unexpired at verification |
+| Last installed | #263 — user confirms slight downward swipe no longer clears media. New issue: two same-title group picker rows, one empty, other shows older media while active chat has recent photos. |
 | Failed candidate | #263 attempt 1: Native/Mx success, Build cancelled, logs unavailable; #261 earlier compile error resolved in #262. |
-| Next task | Verify final Build-only retry of [#263](https://github.com/sviridovski/Telegram-iOS/actions/runs/45429887061), combined IPA and device swipe acceptance. |
-| Recovery | #260 latest green and user-confirmed working baseline; #259 fallback with disappearing chat search button; #256 earlier confirmed search baseline. Original port/telegram-13.2 not modified. |
+| Next task | Discuss media picker disambiguation, verified migration mapping and recent-history/search fallback correction before implementation. |
+| Recovery | #263 green and swipe confirmed, media completeness issue open. #260 earlier broadly user-confirmed baseline; original port/telegram-13.2 unchanged. |
 
 ## #252 corrections retained in #253
 
@@ -167,3 +167,9 @@
 - [#263](https://github.com/sviridovski/Telegram-iOS/actions/runs/45429887061), SHA fa1af6457deac9b55763e7bf8cd9fc3bd1fdeecb, attempt 1 overall failure. Native job 138571945608 and Mx job 138571945160 succeeded. Build job 138596601104 cancelled; log endpoint returned 404 BlobNotFound, exact cancellation cause unknown. No verified source/compiler error. Lifecycle regression contract explicitly passed. Native intermediate unsigned Swiftgram.ipa 82M created; staged Native artifact 14940937674 (107145786 bytes) and Mx artifact 14937108863 (21227152 bytes) present and unexpired. Final installable combined IPA absent at check.
 - Native restored #262 cache; 8229 disk cache hits / 10103 processes, elapsed 1609.840s, critical path 1341.46s; saved cache under #263 SHA. Mx exact cache restored. Do not invalidate these caches or modify source merely to address cancellation.
 - Requested re-run of only cancelled final Build job 138596601104; GitHub action returned success, run API status queued, attempt 2 at check. Source SHA unchanged. Verify final packaging, actual IPA and device swipe regression before claiming fixed. #262 remains last green/installed with known gallery defect, #260 known good fallback. No source change or docs-triggered CI.
+
+## #263 verified on device; media search freshness and duplicate title investigation
+
+- #263 attempt 2 all jobs green, final IPA artifact 14955093279. User installed and explicitly confirms small swipe no longer removes results. New screenshots show two picker rows with identical group title; one returns no results, other shows 139 loaded results, top visible dates July 19 2025, while current group has images today. Actual peer IDs/migration metadata not available from screenshots; do not assert migration or server failure proved.
+- Source #263 GoldgramUnifiedDialogPicker deduplicates by full EnginePeer.Id, displays only compactDisplayTitle, and does not normalize verified legacyGroup.migrationReference. Media restart allow-list for selected chat includes only chat.id. TelegramCore SearchMessages.swift can merge migrated predecessor history into channel search, but current media allow-list discards different peer IDs; network errors converted to nil and empty completed result. TelegramEngineMessages.swift searchMessages automatically calls forceLocal when totalCount is zero, without exposing source to caller. These are confirmed code paths; exact on-device cause unverified.
+- Proposed next change: disambiguate same-name peers with type, username/ID and latest activity where reliable; collapse only explicitly verified migration mapping, use active current peer and preserve exact original scoped message identities. Prefer recent accessible native history for selected-chat media, distinguish server/local/incomplete results and avoid false empty/completeness claim. Preserve guards, no extra database, no archive/Collector/Ghost changes. User asked why, not yet explicit source change approval. No code commit or CI triggered for this investigation.
