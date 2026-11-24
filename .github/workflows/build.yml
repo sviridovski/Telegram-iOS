@@ -201,15 +201,6 @@ jobs:
       # #107: reuse immutable compiler actions across ephemeral macOS runners.
       # Do not archive the full output_user_root, app IPA, or signing data.
 
-      - name: Restore bounded Bazel disk cache
-        id: bazel_restore
-        uses: actions/cache/restore@v4
-        with:
-          path: /private/var/tmp/goldgram-bazel-action-cache
-          key: gold-next-bazel-xcode27-${{ hashFiles('versions.json', '.bazelrc', 'MODULE.bazel.lock') }}-${{ github.sha }}
-          restore-keys: |
-            gold-next-bazel-xcode27-${{ hashFiles('versions.json', '.bazelrc', 'MODULE.bazel.lock') }}-
-
       - name: Validate Goldgram SQLite v1 to v2 migration
         shell: bash
         run: |
@@ -220,6 +211,8 @@ jobs:
           python3 build-system/gold-next/test_sqlite_edits.py
           python3 build-system/gold-next/test_sqlite_reader.py
           swiftc -frontend -parse submodules/ChatListUI/Sources/GoldgramAuthorSearch.swift
+          swiftc -frontend -parse submodules/TelegramUI/Sources/Chat/ChatControllerOpenMessageContextMenu.swift
+          swiftc -frontend -parse build-system/gold-next/GoldgramHistoryStore.swift
           python3 build-system/gold-next/test_personal_metadata.py
           python3 build-system/gold-next/test_sqlite_browser.py
           python3 build-system/gold-next/test_sqlite_public_capture.py
@@ -252,6 +245,15 @@ jobs:
           swiftc submodules/TelegramCore/Sources/State/GoldgramEventPolicy.swift build-system/gold-next/test_native_event_policy.swift -o "$RUNNER_TEMP/goldgram-event-policy-test"
           "$RUNNER_TEMP/goldgram-event-policy-test"
           xcrun swiftc -typecheck -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -target arm64-apple-ios15.0 build-system/gold-next/GoldgramHistoryStore.swift
+
+      - name: Restore bounded Bazel disk cache
+        id: bazel_restore
+        uses: actions/cache/restore@v4
+        with:
+          path: /private/var/tmp/goldgram-bazel-action-cache
+          key: gold-next-bazel-xcode27-${{ hashFiles('versions.json', '.bazelrc', 'MODULE.bazel.lock') }}-${{ github.sha }}
+          restore-keys: |
+            gold-next-bazel-xcode27-${{ hashFiles('versions.json', '.bazelrc', 'MODULE.bazel.lock') }}-
 
       - name: Build clean Swiftgram
         shell: bash

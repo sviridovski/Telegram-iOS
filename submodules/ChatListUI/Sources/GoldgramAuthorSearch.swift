@@ -49,6 +49,38 @@ public final class GoldgramAuthorSearchBridge: NSObject {
         }
     }
 
+    public static func canBookmark(context: AccountContext, message: EngineMessage) -> Bool {
+        return isCurrentAccount(context) && message.id.namespace == Namespaces.Message.Cloud &&
+            message.id.id > 0 && GoldgramUnifiedIdentity.sources(message.id.peerId) != nil
+    }
+
+    public static func addBookmark(from controller: UIViewController, context: AccountContext, message: EngineMessage) {
+        guard canBookmark(context: context, message: message),
+              let scope = GoldgramUnifiedIdentity.sources(message.id.peerId)?.first,
+              let kind = (scope["peerKind"] as? NSNumber)?.int32Value,
+              let peer = (scope["peerId"] as? NSNumber)?.int64Value,
+              controller.viewIfLoaded?.window != nil, controller.presentedViewController == nil else { return }
+        let authorId: Int64?
+        if let author = message.author, case .user = author { authorId = author.id.id._internalGetInt64Value() }
+        else { authorId = nil }
+        let name = message.enginePeers[message.id.peerId]?.compactDisplayTitle ?? "Диалог #\(peer)"
+        let value = GoldgramPersonalBookmark(peerKind: kind, peerId: peer, messageId: message.id.id,
+            authorId: authorId, title: String(name.prefix(180)), date: Int64(message.timestamp) * 1000,
+            archive: false, folder: "", tags: [], note: "")
+        guard let sources = GoldgramUnifiedIdentity.sources(message.id.peerId) else { return }
+        goldgramUnifiedCall("goldgram_unified_search_v1", ["accountId": NSNumber(value: context.account.peerId.id._internalGetInt64Value()),
+            "needle": "", "event": 0, "since": 0, "offset": 0, "sources": sources,
+            "messageId": NSNumber(value: message.id.id)]) { [weak controller] answer in
+            guard let controller, isCurrentAccount(context), controller.viewIfLoaded?.window != nil,
+                  controller.presentedViewController == nil else { return }
+            var bookmark = value
+            if answer["status"] as? String == "ok",
+               let rows = answer["items"] as? [[String: Any]],
+               rows.contains(where: { GoldgramUnifiedIdentity.message($0) == message.id }) { bookmark.archive = true }
+            GoldgramPersonalUI.editBookmark(controller, context: context, value: bookmark) {}
+        }
+    }
+
     @objc(presentFavoritesFromController:)
     public static func presentFavoritesFromController(_ controller: UIViewController) {
         guard let context = primaryContext, isCurrentAccount(context) else { return }
@@ -627,6 +659,17 @@ private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearch
     private var personalAuthorName: String?
     private let source = UISegmentedControl(items: ["Telegram", "Архив", "Везде"])
     private let period = UISegmentedControl(items: ["Любая дата", "Сегодня", "7 дней", "30 дней"])
+    private let dateButton = UIButton(type: .system)
+    private let mediaButton = UIButton(type: .system)
+    private let presetsButton = UIButton(type: .system)
+    private let sort = UISegmentedControl(items: ["Сначала новые", "Сначала старые"])
+    private var customFrom: Int32?
+    private var customThrough: Int32?
+    private var until: Int32?
+    private var mediaMode = 0
+    private var requestedMedia = 0
+    private var requestedOldest = false
+    private let mediaTitles = ["Все сообщения", "Ссылки", "Фото", "Видео", "Документы", "Голосовые"]
     private let event = UISegmentedControl(items: ["Все", "Изменённые", "Удалённые"])
     private let input = UISearchBar()
     private let authorButton = UIButton(type: .system)
@@ -685,7 +728,7 @@ private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearch
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = "Расширенный поиск"
+        title = "Расширенный поиск 2.0"
         let favorites = UIBarButtonItem(image: UIImage(systemName: "bookmark"), style: .plain,
                                         target: self, action: #selector(openFavorites))
         favorites.accessibilityLabel = "Личное избранное"
@@ -710,7 +753,13 @@ private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearch
         reset.setTitle("Сбросить фильтры", for: .normal)
         reset.addTarget(self, action: #selector(resetFilters), for: .touchUpInside)
         source.addTarget(self, action: #selector(sourceChanged), for: .valueChanged)
-        period.addTarget(self, action: #selector(filterChanged), for: .valueChanged)
+        period.addTarget(self, action: #selector(periodChanged), for: .valueChanged)
+        dateButton.addTarget(self, action: #selector(chooseDates), for: .touchUpInside)
+        mediaButton.addTarget(self, action: #selector(chooseMedia), for: .touchUpInside)
+        presetsButton.setTitle("Сохранённые фильтры", for: .normal)
+        presetsButton.addTarget(self, action: #selector(choosePreset), for: .touchUpInside)
+        sort.selectedSegmentIndex = 0
+        sort.addTarget(self, action: #selector(filterChanged), for: .valueChanged)
         event.addTarget(self, action: #selector(eventChanged), for: .valueChanged)
         let actions = UIStackView(arrangedSubviews: [find, reset])
         actions.distribution = .fillEqually
@@ -718,18 +767,19 @@ private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearch
         note.font = .preferredFont(forTextStyle: .footnote)
         note.textColor = .secondaryLabel
         note.numberOfLines = 0
-        note.text = "Дата — время отправки. Тип события применяется к архиву. Поиск в Telegram зависит от сервера."
+        note.text = "Дата — время отправки. Тип вложений — только Telegram: архив не хранит надёжную классификацию медиа. Сортировка применяется к загруженным результатам."
         info.numberOfLines = 0
         info.textColor = .secondaryLabel
         info.font = .preferredFont(forTextStyle: .footnote)
         info.text = "Введите текст или выберите автора, диалог либо период."
-        let stack = UIStackView(arrangedSubviews: [source, input, authorButton, dialogButton, period, event, actions, note, info])
+        let stack = UIStackView(arrangedSubviews: [source, input, authorButton, dialogButton, period,
+            dateButton, mediaButton, event, sort, presetsButton, actions, note, info])
         stack.axis = .vertical
         stack.spacing = 7
         stack.translatesAutoresizingMaskIntoConstraints = false
-        for control in [source, period, event] { control.heightAnchor.constraint(equalToConstant: 32).isActive = true }
+        for control in [source, period, event, sort] { control.heightAnchor.constraint(equalToConstant: 32).isActive = true }
         input.heightAnchor.constraint(equalToConstant: 50).isActive = true
-        for button in [authorButton, dialogButton, find, reset] {
+        for button in [authorButton, dialogButton, dateButton, mediaButton, presetsButton, find, reset] {
             button.heightAnchor.constraint(greaterThanOrEqualToConstant: 36).isActive = true
             button.titleLabel?.lineBreakMode = .byTruncatingTail
         }
@@ -796,6 +846,12 @@ private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearch
         authorButton.setTitle("Автор: " + (author?.compactDisplayTitle ?? personalAuthorName ?? "любой"), for: .normal)
         dialogButton.setTitle("Диалог: " + (chosenChatName ?? "все диалоги"), for: .normal)
         event.isEnabled = source.selectedSegmentIndex != 0
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        if let from = customFrom, let through = customThrough {
+            dateButton.setTitle("Период: \(formatter.string(from: Date(timeIntervalSince1970: Double(from)))) – \(formatter.string(from: Date(timeIntervalSince1970: Double(through))))", for: .normal)
+        } else { dateButton.setTitle("Выбрать даты…", for: .normal) }
+        mediaButton.setTitle("Тип: " + mediaTitles[mediaMode], for: .normal)
     }
     @objc private func selectAuthor() {
         guard accountOK else { return }
@@ -835,18 +891,152 @@ private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearch
         input.text = ""; author = nil; personalAuthorId = nil; personalAuthorName = nil
         chosenChat = nil; chosenChatName = nil
         source.selectedSegmentIndex = 2; event.selectedSegmentIndex = 0; period.selectedSegmentIndex = 0
+        customFrom = nil; customThrough = nil; mediaMode = 0; sort.selectedSegmentIndex = 0
         updateButtons(); filterChanged()
     }
     @objc private func sourceChanged() {
         if source.selectedSegmentIndex != 1 { event.selectedSegmentIndex = 0 }
+        if source.selectedSegmentIndex != 0 { mediaMode = 0 }
         updateButtons(); filterChanged()
     }
     @objc private func eventChanged() {
         // Telegram cannot report historical edit/deletion events. Selecting
         // one of these filters intentionally switches to the archive source.
-        if event.selectedSegmentIndex != 0 { source.selectedSegmentIndex = 1 }
+        if event.selectedSegmentIndex != 0 { source.selectedSegmentIndex = 1; mediaMode = 0 }
         updateButtons(); filterChanged()
     }
+    @objc private func periodChanged() {
+        customFrom = nil; customThrough = nil
+        updateButtons(); filterChanged()
+    }
+
+    @objc private func chooseDates() {
+        guard accountOK else { return }
+        input.resignFirstResponder()
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.isLenient = false
+        let alert = UIAlertController(title: "Период отправки", message: "Введите даты в формате ГГГГ-ММ-ДД. Обе даты включительно.", preferredStyle: .alert)
+        alert.addTextField { field in
+            field.placeholder = "С 2026-01-01"
+            if let from = self.customFrom { field.text = formatter.string(from: Date(timeIntervalSince1970: Double(from))) }
+        }
+        alert.addTextField { field in
+            field.placeholder = "По 2026-11-24"
+            field.text = formatter.string(from: self.customThrough.map { Date(timeIntervalSince1970: Double($0)) } ?? Date())
+        }
+        alert.addAction(UIAlertAction(title: "Применить", style: .default) { [weak self = self, weak alert] _ in
+            guard let self, self.accountOK, let fields = alert?.textFields, fields.count == 2 else { return }
+            let a = fields[0].text ?? "", b = fields[1].text ?? ""
+            guard let start = formatter.date(from: a), let last = formatter.date(from: b),
+                  formatter.string(from: start) == a, formatter.string(from: last) == b,
+                  let end = formatter.calendar.date(byAdding: .day, value: 1, to: last),
+                  let first = Int32(exactly: Int64(start.timeIntervalSince1970)),
+                  let through = Int32(exactly: Int64(end.timeIntervalSince1970) - 1),
+                  first > 0, first <= through else {
+                self.showError("Проверьте даты и их порядок. Допустимый формат: ГГГГ-ММ-ДД."); return
+            }
+            self.customFrom = first; self.customThrough = through
+            self.period.selectedSegmentIndex = 0
+            self.updateButtons(); self.filterChanged()
+        })
+        alert.addAction(UIAlertAction(title: "Убрать период", style: .default) { [weak self = self] _ in self?.period.selectedSegmentIndex = 0; self?.periodChanged() })
+        alert.addAction(UIAlertAction(title: "Отмена", style: .cancel))
+        present(alert, animated: true)
+    }
+
+    @objc private func chooseMedia() {
+        guard accountOK else { return }
+        let sheet = UIAlertController(title: "Тип сообщения", message: "Фильтры вложений применяются к Telegram.", preferredStyle: .actionSheet)
+        for (index, title) in mediaTitles.enumerated() {
+            sheet.addAction(UIAlertAction(title: title, style: .default) { [weak self = self] _ in
+                guard let self, self.accountOK else { return }
+                self.mediaMode = index
+                if index != 0 { self.source.selectedSegmentIndex = 0; self.event.selectedSegmentIndex = 0 }
+                self.updateButtons(); self.filterChanged()
+            })
+        }
+        sheet.addAction(UIAlertAction(title: "Отмена", style: .cancel))
+        sheet.popoverPresentationController?.sourceView = mediaButton
+        sheet.popoverPresentationController?.sourceRect = mediaButton.bounds
+        present(sheet, animated: true)
+    }
+
+    private func presetValue(_ name: String) -> GoldgramSearchPreset {
+        let peer = chosenChat.flatMap { GoldgramUnifiedIdentity.sources($0)?.first }
+        return GoldgramSearchPreset(name: name, text: String((input.text ?? "").prefix(200)),
+            source: source.selectedSegmentIndex, period: period.selectedSegmentIndex, event: event.selectedSegmentIndex,
+            media: mediaMode, oldest: sort.selectedSegmentIndex == 1, from: customFrom, through: customThrough,
+            authorId: (author?.id ?? personalAuthorId)?.id._internalGetInt64Value(),
+            authorName: (author?.compactDisplayTitle ?? personalAuthorName).map { String($0.prefix(180)) },
+            peerKind: (peer?["peerKind"] as? NSNumber)?.int32Value,
+            peerId: (peer?["peerId"] as? NSNumber)?.int64Value, peerName: chosenChatName.map { String($0.prefix(180)) })
+    }
+    private func applyPreset(_ value: GoldgramSearchPreset) {
+        guard accountOK, value.valid else { return }
+        input.text = value.text
+        source.selectedSegmentIndex = value.source; period.selectedSegmentIndex = value.period
+        event.selectedSegmentIndex = value.event; mediaMode = value.media; sort.selectedSegmentIndex = value.oldest ? 1 : 0
+        customFrom = value.from; customThrough = value.through
+        author = nil
+        personalAuthorId = value.authorId.map { EnginePeer.Id(namespace: Namespaces.Peer.CloudUser, id: ._internalFromInt64Value($0)) }
+        personalAuthorName = value.authorName ?? (value.authorId.map { "Автор #\($0)" })
+        chosenChat = nil; chosenChatName = nil
+        if let kind = value.peerKind, let raw = value.peerId,
+           let id = GoldgramUnifiedIdentity.message(["peerKind": NSNumber(value: kind), "peerId": NSNumber(value: raw), "messageId": NSNumber(value: 1)]) {
+            chosenChat = id.peerId; chosenChatName = value.peerName ?? "Диалог #\(raw)"
+        }
+        updateButtons(); filterChanged()
+    }
+    @objc private func choosePreset() {
+        guard accountOK else { return }
+        let values: [GoldgramSearchPreset]
+        do { values = try GoldgramPersonalUI.read(context).presets ?? [] }
+        catch { showError("Сохранённые фильтры недоступны."); return }
+        let sheet = UIAlertController(title: "Сохранённые фильтры", message: "Выбор загружает фильтры без запуска поиска.", preferredStyle: .actionSheet)
+        sheet.addAction(UIAlertAction(title: "Сохранить текущие фильтры…", style: .default) { [weak self = self] _ in
+            guard let self, self.accountOK else { return }
+            let alert = UIAlertController(title: "Название набора", message: nil, preferredStyle: .alert)
+            alert.addTextField { $0.placeholder = "Например, Работа" }
+            alert.addAction(UIAlertAction(title: "Сохранить", style: .default) { [weak self = self, weak alert] _ in
+                guard let self, self.accountOK else { return }
+                let name = String((alert?.textFields?.first?.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).prefix(50))
+                let value = self.presetValue(name)
+                do { try GoldgramPersonalUI.change(self.context) { $0.putPreset(value) } }
+                catch { self.showError("Не удалось сохранить набор. Введите название; доступно до 20 наборов.") }
+            })
+            alert.addAction(UIAlertAction(title: "Отмена", style: .cancel))
+            self.present(alert, animated: true)
+        })
+        for value in values {
+            sheet.addAction(UIAlertAction(title: value.name, style: .default) { [weak self = self] _ in self?.applyPreset(value) })
+        }
+        if !values.isEmpty {
+            sheet.addAction(UIAlertAction(title: "Удалить набор…", style: .destructive) { [weak self = self] _ in
+                guard let self, self.accountOK else { return }
+                let remove = UIAlertController(title: "Удалить набор", message: nil, preferredStyle: .actionSheet)
+                for value in values {
+                    remove.addAction(UIAlertAction(title: value.name, style: .destructive) { [weak self = self] _ in
+                        guard let self, self.accountOK else { return }
+                        do { try GoldgramPersonalUI.change(self.context) { data in
+                            data.presets?.removeAll { $0.name == value.name }; return true
+                        } } catch { self.showError("Не удалось удалить набор.") }
+                    })
+                }
+                remove.addAction(UIAlertAction(title: "Отмена", style: .cancel))
+                remove.popoverPresentationController?.sourceView = self.presetsButton
+                remove.popoverPresentationController?.sourceRect = self.presetsButton.bounds
+                self.present(remove, animated: true)
+            })
+        }
+        sheet.addAction(UIAlertAction(title: "Отмена", style: .cancel))
+        sheet.popoverPresentationController?.sourceView = presetsButton
+        sheet.popoverPresentationController?.sourceRect = presetsButton.bounds
+        present(sheet, animated: true)
+    }
+
     @objc private func filterChanged() { invalidate("Фильтры изменены. Нажмите «Найти».") }
     func searchBar(_ searchBar: UISearchBar, textDidChange searchText: String) { filterChanged() }
     func searchBarSearchButtonClicked(_ searchBar: UISearchBar) { submit() }
@@ -881,11 +1071,14 @@ private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearch
         case 3: start = Calendar.current.date(byAdding: .day, value: -30, to: now)
         default: start = nil
         }
-        since = start.map { Int32(clamping: Int64($0.timeIntervalSince1970)) }
+        since = customFrom ?? start.map { Int32(clamping: Int64($0.timeIntervalSince1970)) }
+        until = customThrough
+        requestedMedia = mediaMode
+        requestedOldest = sort.selectedSegmentIndex == 1
         requestedAuthor = author?.id ?? personalAuthorId; requestedChat = chosenChat; requestedEvent = event.selectedSegmentIndex
         let wantsTelegram = source.selectedSegmentIndex != 1
         let wantsArchive = source.selectedSegmentIndex != 0
-        if wantsTelegram && term.isEmpty && requestedAuthor == nil && requestedChat == nil && since == nil {
+        if wantsTelegram && term.isEmpty && requestedAuthor == nil && requestedChat == nil && since == nil && requestedMedia == 0 {
             invalidate("Для Telegram задайте текст, автора, диалог или период. Для всех записей выберите «Архив»."); return
         }
         localOffset = 0; checked = 0; total = 0; partial = false
@@ -926,7 +1119,7 @@ private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearch
                 self.titles[id] = peer.compactDisplayTitle
             }
             self.total = self.pending.count
-            if self.requestedAuthor == nil && !self.term.isEmpty {
+            if self.requestedAuthor == nil && (!self.term.isEmpty || self.requestedMedia != 0) {
                 self.pending.removeAll()
                 self.scanGlobal(page: 0, state: nil, token: token)
             } else { self.pump(token) }
@@ -937,12 +1130,34 @@ private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearch
         for message in raw {
             guard message.id.namespace == Namespaces.Message.Cloud, allowed.contains(message.id.peerId),
                   requestedAuthor == nil || message.author?.id == requestedAuthor,
-                  since == nil || message.timestamp >= (since ?? 0) else { continue }
+                  since == nil || message.timestamp >= (since ?? 0),
+                  until == nil || message.timestamp <= (until ?? Int32.max),
+                  matchesMedia(message) else { continue }
             if remoteRows.count >= maxResults && remoteRows[message.id] == nil { partial = true; break }
             remoteRows[message.id] = message
         }
         rebuild()
     }
+    private var mediaTags: EngineMessage.Tags? {
+        switch requestedMedia {
+        case 1: return .webPage
+        case 2, 3: return .photoOrVideo
+        case 4: return .file
+        case 5: return .voiceOrInstantVideo
+        default: return nil
+        }
+    }
+    private func matchesMedia(_ message: EngineMessage) -> Bool {
+        switch requestedMedia {
+        case 1: return message.tags.contains(.webPage)
+        case 2: return message.tags.contains(.photo) || message.media.contains { $0 is TelegramMediaImage }
+        case 3: return message.tags.contains(.video) || message.media.contains { ($0 as? TelegramMediaFile)?.isVideo == true }
+        case 4: return message.tags.contains(.file)
+        case 5: return message.media.contains { ($0 as? TelegramMediaFile)?.isVoice == true }
+        default: return true
+        }
+    }
+
     private func scanGlobal(page: Int, state: SearchMessagesState?, token: Int) {
         guard generation == token, accountOK else { return }
         globalPage = page
@@ -954,8 +1169,8 @@ private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearch
             self.remoteStatus = "Telegram: \(self.remoteRows.count) совпадений · тайм-аут"
             self.rebuild(); self.updateStatus()
         }
-        let location: SearchMessagesLocation = .general(scope: .everywhere, groupId: nil, tags: nil,
-            minDate: since, maxDate: nil, folderId: nil, communityId: nil)
+        let location: SearchMessagesLocation = .general(scope: .everywhere, groupId: nil, tags: mediaTags,
+            minDate: since, maxDate: until, folderId: nil, communityId: nil)
         let signal = context.engine.messages.searchMessages(location: location, query: term, state: state, limit: 100)
             |> take(1) |> deliverOnMainQueue
         global.set(signal.start(next: { [weak self = self] result, nextState in
@@ -1002,8 +1217,8 @@ private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearch
             self.partial = true
             self.checked += 1; self.pump(token)
         }
-        let location: SearchMessagesLocation = .peer(peerId: peer, fromId: requestedAuthor, tags: nil,
-            reactions: nil, threadId: nil, minDate: since, maxDate: nil)
+        let location: SearchMessagesLocation = .peer(peerId: peer, fromId: requestedAuthor, tags: mediaTags,
+            reactions: nil, threadId: nil, minDate: since, maxDate: until)
         let signal = context.engine.messages.searchMessages(location: location, query: term, state: state, limit: 100)
             |> take(1) |> deliverOnMainQueue
         disposable.set(signal.start(next: { [weak self = self] result, nextState in
@@ -1027,7 +1242,8 @@ private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearch
         localBusy = true; localStatus = "Архив: поиск…"
         var request: [String: Any] = ["accountId": NSNumber(value: accountId), "needle": term,
             "event": NSNumber(value: requestedEvent), "since": NSNumber(value: Int64(since ?? 0) * 1000),
-            "offset": NSNumber(value: localOffset)]
+            "offset": NSNumber(value: localOffset), "until": NSNumber(value: Int64(until ?? 0) * 1000 + (until == nil ? 0 : 999)),
+            "sortMode": NSNumber(value: requestedOldest ? 2 : 1)]
         if let peer = requestedChat {
             guard let sources = GoldgramUnifiedIdentity.sources(peer) else {
                 localBusy = false; localMore = false; localStatus = "Архив: диалог недоступен"; updateStatus(); return
@@ -1086,7 +1302,9 @@ private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearch
         order = Array(Set(remoteRows.keys).union(localRows.keys))
         order.sort { a, b in
             let x = timestamp(a), y = timestamp(b)
-            if x != y { return x > y }
+            if x == 0 && y != 0 { return false }
+            if y == 0 && x != 0 { return true }
+            if x != y { return requestedOldest ? x < y : x > y }
             if a.peerId.toInt64() != b.peerId.toInt64() { return a.peerId.toInt64() < b.peerId.toInt64() }
             return a.id > b.id
         }
@@ -1130,7 +1348,21 @@ private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearch
                 if (local["deleted"] as? NSNumber)?.boolValue == true { details.append("Удалено") }
                 else if (local["edited"] as? NSNumber)?.boolValue == true { details.append("Изменено") }
             }
-            cell.detailTextLabel?.text = details.joined(separator: "\n")
+            let body = details.joined(separator: "\n")
+            let attributed = NSMutableAttributedString(string: body, attributes: [.foregroundColor: UIColor.secondaryLabel])
+            if !term.isEmpty {
+                let value = body as NSString
+                var remaining = NSRange(location: 0, length: value.length)
+                while remaining.length > 0 {
+                    let found = value.range(of: term, options: [.caseInsensitive, .diacriticInsensitive], range: remaining)
+                    if found.location == NSNotFound || found.length == 0 { break }
+                    attributed.addAttributes([.backgroundColor: UIColor.systemYellow.withAlphaComponent(0.4),
+                        .foregroundColor: UIColor.label], range: found)
+                    let end = NSMaxRange(found)
+                    remaining = NSRange(location: end, length: value.length - end)
+                }
+            }
+            cell.detailTextLabel?.attributedText = attributed
             cell.accessoryType = .disclosureIndicator
         } else if localMore {
             cell.textLabel?.text = localBusy ? "Загрузка архива…" : "Загрузить ещё из архива"
@@ -1286,18 +1518,50 @@ private struct GoldgramPersonalContact: Codable, Equatable {
     var note: String
     var valid: Bool { id > 0 && title.count <= 180 && alias.count <= 80 && note.count <= 2000 }
 }
+private struct GoldgramSearchPreset: Codable, Equatable {
+    var name: String
+    var text: String
+    var source: Int
+    var period: Int
+    var event: Int
+    var media: Int
+    var oldest: Bool
+    var from: Int32?
+    var through: Int32?
+    var authorId: Int64?
+    var authorName: String?
+    var peerKind: Int32?
+    var peerId: Int64?
+    var peerName: String?
+    var valid: Bool {
+        !name.isEmpty && name.count <= 50 && text.count <= 200 &&
+        (0...2).contains(source) && (0...3).contains(period) &&
+        (0...2).contains(event) && (0...5).contains(media) &&
+        (media == 0 || (source == 0 && event == 0)) &&
+        (event == 0 || source == 1) &&
+        ((from == nil && through == nil) || (period == 0 && (from ?? 0) > 0 && (through ?? 0) >= (from ?? 0))) &&
+        (authorId == nil || (authorId ?? 0) > 0) &&
+        (peerKind == nil) == (peerId == nil) &&
+        (peerKind.map { (0...3).contains($0) } ?? true) &&
+        (peerId == nil || (peerId ?? 0) > 0) &&
+        (authorName?.count ?? 0) <= 180 && (peerName?.count ?? 0) <= 180
+    }
+}
 private struct GoldgramPersonalData: Codable {
     let version: Int
     let account: Int64
     var bookmarks: [GoldgramPersonalBookmark]
     var contacts: [GoldgramPersonalContact]
+    var presets: [GoldgramSearchPreset]? = nil
     init(account: Int64) { version = 1; self.account = account; bookmarks = []; contacts = [] }
     func validate(account: Int64) -> Bool {
         version == 1 && self.account == account && account > 0 &&
         bookmarks.count <= 2000 && contacts.count <= 1000 &&
         bookmarks.allSatisfy { $0.valid } && contacts.allSatisfy { $0.valid } &&
         Set(bookmarks.map { $0.key }).count == bookmarks.count &&
-        Set(contacts.map { $0.id }).count == contacts.count
+        Set(contacts.map { $0.id }).count == contacts.count &&
+        (presets?.count ?? 0) <= 20 && (presets?.allSatisfy { $0.valid } ?? true) &&
+        Set((presets ?? []).map { $0.name }).count == (presets?.count ?? 0)
     }
     mutating func put(_ bookmark: GoldgramPersonalBookmark) -> Bool {
         guard bookmark.valid else { return false }
@@ -1307,6 +1571,14 @@ private struct GoldgramPersonalData: Codable {
             guard bookmarks.count < 2000 else { return false }
             bookmarks.insert(bookmark, at: 0)
         }
+        return true
+    }
+    mutating func putPreset(_ preset: GoldgramSearchPreset) -> Bool {
+        guard preset.valid else { return false }
+        var values = presets ?? []
+        if let index = values.firstIndex(where: { $0.name == preset.name }) { values[index] = preset }
+        else { guard values.count < 20 else { return false }; values.append(preset) }
+        presets = values
         return true
     }
     mutating func putContact(_ contact: GoldgramPersonalContact) -> Bool {

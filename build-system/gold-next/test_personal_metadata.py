@@ -22,9 +22,19 @@ private func run() throws {
     var invalid = a; invalid.peerId = 0
     precondition(!data.put(invalid))
     precondition(data.putContact(GoldgramPersonalContact(id: 9, title: "Пользователь", alias: "Имя", note: "Тест")))
+    // Read legacy JSON without presets; append and replace a named set.
+    let legacy = try JSONEncoder().encode(data)
+    let old = try JSONDecoder().decode(GoldgramPersonalData.self, from: legacy)
+    precondition(old.presets == nil)
+    var preset = GoldgramSearchPreset(name: "Работа", text: "тест", source: 2, period: 0, event: 0,
+        media: 0, oldest: true, from: 100, through: 200, authorId: 9, authorName: "Автор",
+        peerKind: 2, peerId: 123, peerName: "Канал")
+    precondition(data.putPreset(preset))
+    preset.text = "новый"; precondition(data.putPreset(preset) && data.presets?.count == 1)
+    preset.from = 300; precondition(!data.putPreset(preset))
     try GoldgramPersonalStore.write(data, to: url, account: 42)
     let loaded = try GoldgramPersonalStore.read(url, account: 42)
-    precondition(loaded.bookmarks == data.bookmarks && loaded.contacts == data.contacts)
+    precondition(loaded.bookmarks == data.bookmarks && loaded.contacts == data.contacts && loaded.presets == data.presets)
     do { _ = try GoldgramPersonalStore.read(url, account: 43); fatalError("cross account") } catch {}
     try Data("broken".utf8).write(to: url)
     do { _ = try GoldgramPersonalStore.read(url, account: 42); fatalError("corrupt accepted") } catch {}

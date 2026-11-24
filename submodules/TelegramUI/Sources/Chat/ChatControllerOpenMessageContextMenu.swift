@@ -18,6 +18,7 @@ import TopMessageReactions
 import TelegramNotices
 import PresentationDataUtils
 import ChatPresentationInterfaceState
+import ChatListUI
 
 extension ChatControllerImpl {
     func openMessageContextMenu(message: EngineMessage, selectAll: Bool, node: ASDisplayNode, frame: CGRect, anyRecognizer: UIGestureRecognizer?, location: CGPoint?) -> Void {
@@ -67,6 +68,27 @@ extension ChatControllerImpl {
                 case let .list(itemList):
                     if itemList.isEmpty {
                         return
+                    }
+                    // Goldgram: only ordinary, non-protected cloud messages.
+                    // Keep the existing native menu and exact tapped identity.
+                    if !self.presentationInterfaceState.copyProtectionEnabled &&
+                        !self.presentationInterfaceState.myCopyProtectionEnabled &&
+                        !topMessage.isCopyProtected() && !topMessage.containsSecretMedia &&
+                        !topMessage.flags.isSending && !topMessage.flags.contains(.Failed) &&
+                        topMessage.activeEphemeralReplacementMessage == nil && message.adAttribute == nil &&
+                        !topMessage.media.contains(where: { $0 is TelegramMediaAction || $0 is TelegramMediaExpiredContent }) &&
+                        GoldgramAuthorSearchBridge.canBookmark(context: self.context, message: message) {
+                        var list = itemList
+                        list.append(.action(ContextMenuActionItem(text: "В личное избранное", icon: { theme in
+                            return UIImage(systemName: "bookmark")?.withTintColor(theme.actionSheet.primaryTextColor, renderingMode: .alwaysOriginal)
+                        }, action: { [weak self = self] _, f in
+                            f(.dismissWithoutContent)
+                            Queue.mainQueue().after(0.35, { [weak self = self] in
+                                guard let self else { return }
+                                GoldgramAuthorSearchBridge.addBookmark(from: self, context: self.context, message: message)
+                            })
+                        })))
+                        actions.content = .list(list)
                     }
                 case .custom, .twoLists:
                     break

@@ -1765,6 +1765,8 @@ public final class GoldgramArchiveReader: NSObject {
         let event: Int
         let since: Int64
         let sentDateFilter: Bool
+        let until: Int64
+        let sortMode: Int
         let messageId: Int32?
         let authorKind: Int32?
         let authorId: Int64?
@@ -1773,10 +1775,11 @@ public final class GoldgramArchiveReader: NSObject {
     static func searchLocal(accountId: Int64, needle: String, sources: [[String: Any]]?,
                             event: Int, since: Int64, authorKind: Int32?, authorId: Int64?,
                             offset: Int, sentDateFilter: Bool = false, messageId: Int32? = nil,
+                            until: Int64 = 0, sortMode: Int = 0,
                             completion: @escaping (NSDictionary) -> Void) {
         let needle = needle.trimmingCharacters(in: .whitespacesAndNewlines)
         guard isSelected(accountId), needle.count <= 200, (0...2).contains(event),
-              since >= 0, (0...5000).contains(offset),
+              since >= 0, until >= 0, (until == 0 || until >= since), (0...2).contains(sortMode), (0...5000).contains(offset),
               (authorKind == nil) == (authorId == nil),
               authorKind.map({ (0...3).contains($0) }) ?? true,
               authorId.map({ $0 > 0 }) ?? true else {
@@ -1804,7 +1807,7 @@ public final class GoldgramArchiveReader: NSObject {
             }
         }
         let request = LocalSearch(needle: needle, sources: scope, event: event, since: since,
-                                  sentDateFilter: sentDateFilter, messageId: messageId,
+                                  sentDateFilter: sentDateFilter, until: until, sortMode: sortMode, messageId: messageId,
                                   authorKind: authorKind, authorId: authorId)
         archiveReadQueue.async {
             guard isSelected(accountId) else {
@@ -1875,10 +1878,18 @@ public final class GoldgramArchiveReader: NSObject {
             predicates.append(search.sentDateFilter ? "m.sent_at>=?" : "\(newest)>=?")
             parameters.append(search.since)
         }
+        if search.until > 0 {
+            predicates.append(search.sentDateFilter ? "m.sent_at<=?" : "\(newest)<=?")
+            parameters.append(search.until)
+        }
         if let kind = search.authorKind, let id = search.authorId {
             predicates.append("m.sender_kind=? AND m.sender_id=?")
             parameters += [Int64(kind), id]
         }
+        let ordering: String
+        if search.sortMode == 1 || search.sortMode == 2 {
+            ordering = "(m.sent_at IS NULL OR m.sent_at<=0) ASC, m.sent_at " + (search.sortMode == 2 ? "ASC" : "DESC")
+        } else { ordering = "\(newest) DESC" }
         let sql = """
         WITH terms(needle) AS (VALUES (?))
         \(projection[0]),
@@ -1888,7 +1899,7 @@ public final class GoldgramArchiveReader: NSObject {
                    ORDER BY sr.version_index DESC LIMIT 1) END AS matched_text
         FROM \(source) CROSS JOIN terms
         WHERE \(predicates.joined(separator: " AND "))
-        ORDER BY \(newest) DESC, m.message_id DESC, m.peer_kind ASC, m.peer_id ASC
+        ORDER BY \(ordering), m.message_id DESC, m.peer_kind ASC, m.peer_id ASC
         LIMIT ? OFFSET ?;
         """
         var ptr: OpaquePointer?
@@ -4848,6 +4859,12 @@ public func goldgramUnifiedSearchV1(
        (request["authorId"] != nil && authorId == nil) {
         finish(["status": "invalid_request", "items": []]); return
     }
+    let until = (request["until"] as? NSNumber)?.int64Value ?? 0
+    let sortMode = (request["sortMode"] as? NSNumber)?.intValue ?? 0
+    if (request["until"] != nil && !(request["until"] is NSNumber)) ||
+        (request["sortMode"] != nil && !(request["sortMode"] is NSNumber)) {
+        finish(["status": "invalid_request", "items": []]); return
+    }
     if let value = request["messageId"] {
         guard let number = value as? NSNumber, let messageId = Int32(exactly: number.int64Value),
               messageId > 0 else { finish(["status": "invalid_request", "items": []]); return }
@@ -4855,9 +4872,15 @@ public func goldgramUnifiedSearchV1(
             event: event, since: since, authorKind: authorKind, authorId: authorId,
             offset: offset, sentDateFilter: true, messageId: messageId, completion: finish)
     } else {
-        GoldgramArchiveReader.searchLocal(accountId: account, needle: needle, sources: sources,
-            event: event, since: since, authorKind: authorKind, authorId: authorId,
-            offset: offset, sentDateFilter: true, completion: finish)
+        if until == 0 && sortMode == 0 {
+            GoldgramArchiveReader.searchLocal(accountId: account, needle: needle, sources: sources,
+                event: event, since: since, authorKind: authorKind, authorId: authorId,
+                offset: offset, sentDateFilter: true, completion: finish)
+        } else {
+            GoldgramArchiveReader.searchLocal(accountId: account, needle: needle, sources: sources,
+                event: event, since: since, authorKind: authorKind, authorId: authorId,
+                offset: offset, sentDateFilter: true, until: until, sortMode: sortMode, completion: finish)
+        }
     }
 }
 

@@ -107,7 +107,7 @@ projection = message_sql.split("FROM messages m\n", 1)[0]
 newest = "COALESCE((SELECT MAX(e.observed_at) FROM events e WHERE e.peer_kind=m.peer_kind AND e.peer_id=m.peer_id AND e.message_id=m.message_id), m.last_seen_at)"
 deleted = f"(m.is_deleted=1 OR {delete_pred})"
 
-def search(db, needle="", scope=(), event=0, since=0, author=None, limit=30, offset=0, fast=False, sent_date=False, message_id=None):
+def search(db, needle="", scope=(), event=0, since=0, author=None, limit=30, offset=0, fast=False, sent_date=False, message_id=None, until=0, sort_mode=0):
     db.create_function("goldgram_contains_v1", 2, contains, deterministic=True)
     source = ("goldgram_ui_fast_rows_v1 f JOIN messages m ON m.peer_kind=f.peer_kind AND m.peer_id=f.peer_id AND m.message_id=f.message_id"
               if fast else "messages m")
@@ -128,14 +128,18 @@ def search(db, needle="", scope=(), event=0, since=0, author=None, limit=30, off
     if since:
         where.append(("m.sent_at" if sent_date else date) + ">=?")
         params.append(since)
+    if until:
+        where.append(("m.sent_at" if sent_date else date) + "<=?")
+        params.append(until)
     if author:
         where.append("m.sender_kind=? AND m.sender_id=?")
         params += list(author)
+    ordering = ("(m.sent_at IS NULL OR m.sent_at<=0) ASC, m.sent_at " + ("ASC" if sort_mode == 2 else "DESC")) if sort_mode in (1, 2) else date + " DESC"
     query = template
     for key, value in {
         r"\(projection[0])": projection, r"\(originalMatch)": original_match,
         r"\(revisionMatch)": revision_match, r"\(source)": source,
-        r'\(predicates.joined(separator: " AND "))': " AND ".join(where), r"\(newest)": date
+        r'\(predicates.joined(separator: " AND "))': " AND ".join(where), r"\(ordering)": ordering
     }.items():
         assert key in query, key
         query = query.replace(key, value)
@@ -219,3 +223,13 @@ for fast in (False, True):
 assert 'predicates.append("m.message_id=?")' in src
 assert "scope.allSatisfy" in src
 print("Goldgram #257 exact visible archive lookup: peer namespace, message ID and hidden-row guards OK")
+
+
+# #259: inclusive sent-time upper bound; unknown dates excluded on bounds
+# and sorted after known dates. Existing event-time ordering is unchanged.
+for fast in (False, True):
+    assert ids(search(a, since=150, until=150, sent_date=True, sort_mode=1, fast=fast)) == [(0,10,7)]
+    assert ids(search(a, since=151, until=450, sent_date=True, sort_mode=2, fast=fast)) == [(2,20,7)]
+    assert ids(search(a, sort_mode=2, fast=fast)) == [(0,10,7),(2,20,7),(3,20,7)]
+    assert ids(search(a, sort_mode=1, fast=fast)) == [(2,20,7),(0,10,7),(3,20,7)]
+print("Goldgram #259 date range and ordered archive pages OK")
