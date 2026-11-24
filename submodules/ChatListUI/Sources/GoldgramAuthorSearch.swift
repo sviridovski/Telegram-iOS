@@ -1771,7 +1771,10 @@ private struct GoldgramMediaEntry {
         case let .channel(channel): return !channel.flags.contains(.copyProtectionEnabled)
         case let .legacyGroup(group): return !group.flags.contains(.copyProtectionEnabled)
         case .user: return true
-        case .secretChat: return false
+        // Community peers have no supported identity in GoldgramUnifiedIdentity.
+        // Fail closed until their access and media protection model is verified.
+        case .secretChat, .community: return false
+        @unknown default: return false
         }
     }
 
