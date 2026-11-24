@@ -1,18 +1,18 @@
 # CURRENT_STATUS — verified checkpoint
 
-> **2026-11-24 local user date — #259 green and installed; broadly positive user feedback, one unspecified defect remains; #256 confirmed fallback.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
+> **2026-11-24 local user date — #260 published; #259 green and installed, disappearing chat search button reported; #260 CI/device acceptance pending.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
 
 ## Current code / CI / device state
 
 | Item | Latest confirmed status |
 | --- | --- |
 | Feature branch | `gold-next-243-author-search` |
-| HEAD | `faaae4908f5606f94d20405206f8bab7f1463832` (#259), direct parent #258 |
+| HEAD | `3481fad1b63864a45f48dd282ac4867d2d53a248` (#260), direct parent #259 |
 | Last green CI | [#259](https://github.com/sviridovski/Telegram-iOS/actions/runs/45332682368), Native/Mx/Build success; IPA artifact 14893668082, not expired at verification |
-| Last installed | #259 — user confirms installed and tested, broadly positive feedback with one unspecified defect to report later. Individual acceptance cases not confirmed. |
+| Last installed | #259 — user confirms installed and tested, broadly positive feedback with the chat-header search button briefly appears and disappears. Individual acceptance cases not confirmed. |
 | Failed candidate | [#257](https://github.com/sviridovski/Telegram-iOS/actions/runs/45321519764), Native failed, Mx passed, Build skipped; Swift catch error shadowing at lines 1389/1407 |
-| Next task | Await exact #259 defect description; roadmap discussion only, no additional implementation approved. |
-| Recovery | #259 latest green and broadly device-tested baseline with one unspecified defect; #256 confirmed working search fallback, #254 earlier archive/diff fallback. Original port/telegram-13.2 not modified. |
+| Next task | Verify [#260](https://github.com/sviridovski/Telegram-iOS/actions/runs/45357908933) CI and device: dashboard/menu customization and persistent chat search. |
+| Recovery | #259 latest green and broadly device-tested baseline with known disappearing chat search button; #256 confirmed working search fallback, #254 earlier archive/diff fallback. Original port/telegram-13.2 not modified. |
 
 ## #252 corrections retained in #253
 
@@ -124,3 +124,11 @@
 
 - User confirms #259 installed and tested, broadly satisfied except one unspecified defect that will be described later. Do not invent its cause, severity or reproduction steps; no individually verified acceptance tests inferred. #259 latest broadly device-tested checkpoint; #256 established fallback.
 - User asks for feature ideas, not implementation. Proposed: configurable dashboard/context menu, unified media/link center (respect protected/ephemeral content), local tasks/reminders and reply templates, smart folders, favorites/contact cards 2.0, calendar, search 3.0 over accessible history and own metadata, aggregate own-message analytics, notification rules within iOS limits, explicit user-selected AI and voice transcription (local preferred; explicit consent for external processing), Face ID protection, encrypted backup/non-destructive restore, storage management, Live status dashboard and power profiles. No automatic profiling, disclosure, new database, capture expansion or cloud transfer. Check existing native functionality before implementing, preserve account scoping/Ghost/Collector and original evidence. Roadmap proposals only. No new source commit or CI.
+
+## #260 dashboard/menu customization and chat navigation fix
+
+- User approved roadmap items 15 and 16 in one commit and supplied three dashboard screenshots plus a video of the chat header search button disappearing. Preserve every existing tile and route. Root cause confirmed in source: viewDidAppear appended a UIBarButtonItem independently, while updateRightNavigationButtons regenerated the entire array without it.
+- Published [source 3481fad](https://github.com/sviridovski/Telegram-iOS/commit/3481fad1b63864a45f48dd282ac4867d2d53a248), direct #259 parent; exact seven-file publication verified. [CI #260](https://github.com/sviridovski/Telegram-iOS/actions/runs/45357908933) in_progress at check. #259 last green/installed.
+- Dashboard: default layout retained, permanent customization entry, order/visibility/pin controls and reset. Preserve all 13 stable route IDs, archive counts and original settings. Custom layout uses existing views; pinned above other visible tiles. Settings are installation-local UI preferences only. Four optional Goldgram menu actions reorder/hide, native actions unchanged, bookmark enabled by default. Ordinary cloud/protection guards preserved. Header search now composed with native right buttons using a stable cached item; absent during selection/native search/secret modes. No SQLite, Ghost, capture or Collector changes.
+- Isolated Swift Foundation layout model passed local default/order/normalization/pin/hide/persistence/corruption checks. CI harness extended with the actual model extraction; syntax/Python preflight before large native cache restoration. Same branch/cache keys, #259 Native cache retained; Mx recipe changed, so rebuild Mx with staged save. No new speed claim pending actual logs.
+- Acceptance: after green CI/IPA install over #259, verify all old tiles and routes/counters/settings; reorder, hide, pin, reset, close/reopen and relaunch. Enable/reorder/disable menu actions and test actual invocation on ordinary messages; check native Telegram items/protected-message exclusions unchanged. Open private chat, group, channel, wait for avatar/state refresh, navigate back and repeat; search stays and opens correct scope, avatar still opens profile; native search/selection unchanged. Test account/archive/Ghost/Collector preservation. Do not claim device success before user confirms.

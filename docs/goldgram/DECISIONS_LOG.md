@@ -168,3 +168,8 @@ The public [macOS runner availability issue #15291](https://github.com/actions/r
 ## 2026-11-24 local — #259 device feedback
 
 - User reports #259 installed and tested; broadly satisfied except one unspecified defect, details to follow. No exact defect or subcase acceptance inferred. #259 latest broadly device-tested green checkpoint; retain #256 fallback. User requested a multifunction Goldgram feature list only; proposed roadmap recorded in CURRENT_STATUS. No implementation approved, no source change, no CI triggered for docs.
+
+## 2026-11-24 local — #260 candidate: dashboard/menu customization and chat search persistence
+
+- User authorized combined roadmap items 15/16, required all current tiles remain, and provided video of #259 chat search disappearing. Source analysis identified the native right navigation array replacing the independently appended viewDidAppear item. #260 integrates cached button into normal state recomposition with ordinary cloud chat/selection/search guards.
+- [Commit 3481fad1b63864a45f48dd282ac4867d2d53a248](https://github.com/sviridovski/Telegram-iOS/commit/3481fad1b63864a45f48dd282ac4867d2d53a248) directly follows #259; seven files, branch publication confirmed. [CI #260](https://github.com/sviridovski/Telegram-iOS/actions/runs/45357908933) in progress at verification. Default 13 tile dashboard retained; opt-in pin/hide/reorder/reset, four configurable additional menu actions and protection guards. No archive/SQLite/Ghost/Collector or capture changes. Local isolated Foundation layout test passed; full CI and device pending. Preflight extended before large cache restore, cache families unchanged, Mx rebuild required for recipe change. #259 remains fallback. Docs-only branch does not trigger build.
