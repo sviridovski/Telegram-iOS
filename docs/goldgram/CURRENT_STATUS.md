@@ -1,17 +1,17 @@
 # CURRENT_STATUS — verified checkpoint
 
-> **2026-11-24 local user date — #257 personal bookmarks and cards published; #256 green/user-confirmed recovery checkpoint.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
+> **2026-11-24 local user date — #258 compiler hotfix published; #257 Native failed, Mx passed; #256 green/user-confirmed recovery checkpoint.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
 
 ## Current code / CI / device state
 
 | Item | Latest confirmed status |
 | --- | --- |
 | Feature branch | `gold-next-243-author-search` |
-| HEAD | `80c974795d9bb1d029a8329817517404a1125a55` (#257), direct parent #256 |
+| HEAD | `ca01fa7f128c5704557073af071719e430d2e53d` (#258), direct parent #257 |
 | Last green CI | [#256](https://github.com/sviridovski/Telegram-iOS/actions/runs/45317928698), all three jobs success; IPA artifact 14887166379, not expired at verification |
 | Last installed and tested | #256 — user confirmed search works and reports satisfaction; individual subcases not separately reported |
-| Failed candidate | [#255](https://github.com/sviridovski/Telegram-iOS/actions/runs/45311895241), Native success, Mx failed, Build skipped; NSDictionary conversion fixed in #256 |
-| Next candidate | [#257](https://github.com/sviridovski/Telegram-iOS/actions/runs/45321519764), in_progress at API check; bookmarks and contact cards; full CI/device acceptance pending |
+| Failed candidate | [#257](https://github.com/sviridovski/Telegram-iOS/actions/runs/45321519764), Native failed, Mx passed, Build skipped; Swift catch error shadowing at lines 1389/1407 |
+| Next candidate | [#258](https://github.com/sviridovski/Telegram-iOS/actions/runs/45325944910), queued at API check; #257 personal features + two-line compile fix; CI/device acceptance pending |
 | Recovery | #256 latest green/user-tested search baseline; #254 previous green/device-tested archive-search and revision-diff baseline. Original port/telegram-13.2 not modified. |
 
 ## #252 corrections retained in #253
@@ -92,3 +92,9 @@
 1. Green CI and IPA. Dashboard and unified search shortcut opens both new screens; save ordinary and archive search hits, same message twice, tags/folders/notes, edit and delete bookmark only. Reopen app and check persistence; switch accounts and verify isolation. Test archive lookup with colliding raw IDs/peer types, deleted or purged reference, preview and exact jump/back.
 2. Select a known contact by name/username, edit local alias/note, restart app, open card, search preselected author, view own linked bookmarks, remove card without deleting bookmarks. Existing Ghost exception picker remains unchanged. Test iPad layout and corrupted/unavailable storage error; confirm no cloud changes.
 3. Recheck #256 unified search and #254 archive comparison, existing Ghost and Collector behavior. Latest verified recovery #256. Remaining roadmap proposals not approved.
+
+## #258 targeted Native compiler fix
+
+- [#257](https://github.com/sviridovski/Telegram-iOS/actions/runs/45321519764): Native job 138200953868 failed while compiling ChatListUI, Mx job 138200954169 succeeded, assembly skipped. Both new CI tests explicitly passed: exact visible archive lookup (peer namespace, message ID, hidden row guards) and personal metadata (atomic roundtrip, canonical dedup, account/corruption guards). Compiler errors GoldgramAuthorSearch.swift:1389:17 and 1407:21: cannot call value of non-function type 'any Error'. Implicit catch error shadows GoldgramPersonalUI.error helper.
+- [Fix ca01fa7](https://github.com/sviridovski/Telegram-iOS/commit/ca01fa7f128c5704557073af071719e430d2e53d), direct #257 parent, verified exact diff only two lines in GoldgramAuthorSearch.swift: qualify helper as GoldgramPersonalUI.error(owner). No other feature, schema, capture, Ghost, Collector or Bridge changes. [#258](https://github.com/sviridovski/Telegram-iOS/actions/runs/45325944910) queued at API check; full compile/device acceptance pending. #256 recovery baseline.
+- #257 restored #256 Native cache, Bazel 246.132s before failure, 8059 disk hits / 9830 processes, critical path 78.45s. Independent Mx succeeded and saved verified exact key mx-arm64-v2-413635127ecfe4c10648a1879de39e27a295412cc03fe14dd693a5201af35472-dde5ca0568191ee796ec3802ceda7e90d21015fb91ea0a677ad43b290908f703. #258 leaves Mx inputs and cache keys unchanged; expect exact Mx hit if available and reuse #256 Native cache. No cache reset. Existing #257 acceptance remains pending.
