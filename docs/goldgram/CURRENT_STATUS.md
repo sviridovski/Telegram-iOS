@@ -1,17 +1,17 @@
 # CURRENT_STATUS — verified checkpoint
 
-> **2026-11-24 local user date — #258 green and installed; personal features awaiting device acceptance; #256 user-confirmed recovery checkpoint.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
+> **2026-11-24 local user date — #259 native chat bookmarks and search 2.0 published; #258 green/installed, #256 user-confirmed recovery checkpoint.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
 
 ## Current code / CI / device state
 
 | Item | Latest confirmed status |
 | --- | --- |
 | Feature branch | `gold-next-243-author-search` |
-| HEAD | `ca01fa7f128c5704557073af071719e430d2e53d` (#258), direct parent #257 |
+| HEAD | `faaae4908f5606f94d20405206f8bab7f1463832` (#259), direct parent #258 |
 | Last green CI | [#258](https://github.com/sviridovski/Telegram-iOS/actions/runs/45325944910), all three jobs success; IPA artifact 14890978439, not expired at verification |
 | Last installed | #258 — user confirms installation; requests how to use personal favorites; feature acceptance not yet reported. #256 last user-confirmed working search. |
 | Failed candidate | [#257](https://github.com/sviridovski/Telegram-iOS/actions/runs/45321519764), Native failed, Mx passed, Build skipped; Swift catch error shadowing at lines 1389/1407 |
-| Next candidate | None; #258 device acceptance pending. |
+| Next candidate | [#259](https://github.com/sviridovski/Telegram-iOS/actions/runs/45332682368), in_progress at API check; native bookmark action and search 2.0; full CI and device acceptance pending. |
 | Recovery | #256 latest green/user-tested search baseline; #254 previous green/device-tested archive-search and revision-diff baseline. Original port/telegram-13.2 not modified. |
 
 ## #252 corrections retained in #253
@@ -103,3 +103,14 @@
 
 - CI #258 Native/Mx/Build all success, IPA artifact 14890978439 verified. User reports installed #258 and asks how to use favorites. No device acceptance of bookmarks/cards inferred yet. #256 remains confirmed recovery baseline.
 - Usage: Goldgram → Expanded search → find message → long press result → «В личное избранное» → optional folder/tags/note → save. Open dashboard «Личное избранное» or bookmark toolbar in expanded search. Search own metadata, choose folder, long press bookmark to edit/remove; tap to open exact message or available archived revisions. Current version adds bookmarks from unified search results, not directly from regular chat context menu. No new source/build requested.
+
+## #259 native bookmarks + search 2.0 candidate
+
+- User explicitly approved both features in one commit, after installing #258. [Source faaae49](https://github.com/sviridovski/Telegram-iOS/commit/faaae4908f5606f94d20405206f8bab7f1463832), direct #258 parent, verified published branch and six changed files. [#259](https://github.com/sviridovski/Telegram-iOS/actions/runs/45332682368), in_progress at API check. No claim of new feature/device acceptance yet.
+- Native ordinary cloud-message context menu (.list), exact tapped message ID including album item, explicit «В личное избранное». Exclude protected, ephemeral, service, expired, sponsored, sending/failed and unsupported namespaces. Existing dialog persists only user-created metadata/reference. Explicit exact read-only archive lookup determines whether currently visible saved revisions exist; no new capture, forwarding, receipt or cloud write. Existing unified-search bookmark path preserved. No change to Ghost, Collector, Bridge or SQLite schema.
+- Unified search 2.0: custom inclusive send-date range (strict YYYY-MM-DD, local calendar day, supported Int32 timestamp), existing quick dates, native min/max date plus local verification, SQLite bound milliseconds with upper inclusive limit, send-date sort for unified archive pages (unknown last) while standalone event-time and exact reference behavior retained. UI sort of loaded union, remote limits/partial behavior still apply; not exhaustive globally. Highlight literal case/diacritic-insensitive matches in displayed snippets. Native tags from SyncCore_Namespaces.swift: webPage, photoOrVideo, file, voiceOrInstantVideo plus actual photo/video/voice checks. Media filter switches to Telegram explicitly; archive lacks reliable media classification. Up to 20 named filter presets in existing protected account-local JSON optional field, backward compatible decode; restore without automatic search; remove/replace by name. No additional DB, no cloud metadata sync.
+- Regression preflight extends real SQL extraction for inclusive date bounds, unknown dates and sort fast/fallback; existing Foundation model test now checks old JSON decode, named preset upsert, invalid date and round-trip. Swift syntax checks for changed menu and reader added. Actual CI/test results pending. Validation moved ahead of large Bazel cache restore to avoid downloading on preflight failure; unchanged Native and Mx cache key families, #258 cache retained. #258 Native 8227/10103 disk hits, Bazel 1612.495s, saved cache; Mx exact #257 cache hit. Mx source changed in #259, rebuild expected. No unsupported performance claim.
+
+### Acceptance pending
+1. Verify CI/artifact. In private/group/channel and media group, long press exact ordinary message, add folder/tag/note, reopen favorite and exact jump/back; duplicate and existing archive history, protected/ephemeral exclusion. Test account switch and no ghost regressions. Check old #258 bookmarks and contact cards retained.
+2. Custom one-day and multi-day boundaries, invalid/reversed dates, quick date reset, text+author+chat, each media type in Telegram, explicit source reset, sort new/old and unknown dates last; archive pages and partial labels. Test highlighted literal Cyrillic match and saved preset restore/remove/overwrite across restart, old metadata compatibility. Existing #256 search and archive standalone event dates unchanged.

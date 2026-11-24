@@ -153,3 +153,9 @@ The public [macOS runner availability issue #15291](https://github.com/actions/r
 ## 2026-11-24 local — #258 green and installed
 
 - [#258](https://github.com/sviridovski/Telegram-iOS/actions/runs/45325944910) all three jobs successful, IPA 14890978439 present. User confirms installation, asks for favorites usage. Explained unified search long-press, optional folder/tags/note, dashboard/toolbar entry, edit/remove, exact reference behavior. No device acceptance beyond installation inferred; #256 confirmed recovery baseline. No source changes.
+
+## 2026-11-24 local — #259 context-menu bookmarks and search 2.0
+
+- User approved both in one commit. [Source faaae4908f5606f94d20405206f8bab7f1463832](https://github.com/sviridovski/Telegram-iOS/commit/faaae4908f5606f94d20405206f8bab7f1463832), parent #258; exact six-file publication verified. [#259](https://github.com/sviridovski/Telegram-iOS/actions/runs/45332682368), in_progress at API check. Full CI/device acceptance pending.
+- Native ordinary cloud context menu explicit reference save; no protected/ephemeral/service/expired/ad/sending/failed or unsupported identities; current archive availability checked read-only. Unified date bounds/sort, highlighted text, Telegram-only media filters, locally persisted optional saved-filter presets. Preserve #258 metadata, no DB schema changes, capture/Ghost/Collector untouched. Remote sorting only loaded results, no invented archived media types.
+- Extended actual SQL and Foundation tests and syntax preflight, not yet CI-confirmed. #258 restored Mx from #257, Native 8227/10103 hits, 1612.495s, saved cache. #259 preserves key families and stages validation before large Bazel restore to avoid wasted download on regression failures; Mx rebuilt for reader change. Docs-only update does not create build.
