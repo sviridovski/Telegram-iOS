@@ -1,17 +1,17 @@
 # CURRENT_STATUS — verified checkpoint
 
-> **2026-11-24 local user date — #263 retry green and installed; user confirms swipe fix. New media dialog ambiguity and stale/missing results reported.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
+> **2026-11-24 local user date — #264 Media Center 1.1 published and queued; #263 green/device swipe fix confirmed; media freshness acceptance pending.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
 
 ## Current code / CI / device state
 
 | Item | Latest confirmed status |
 | --- | --- |
 | Feature branch | `gold-next-243-author-search` |
-| HEAD | `fa1af6457deac9b55763e7bf8cd9fc3bd1fdeecb` (post-#262 lifecycle correction), direct parent #262 |
+| HEAD | `745b2813e648d746cbbd90e60bc1c72c5bf8cc88` (#264), direct parent #263 |
 | Last green CI | [#263 attempt 2](https://github.com/sviridovski/Telegram-iOS/actions/runs/45429887061), all three jobs success, final IPA 14955093279 present and unexpired at verification |
 | Last installed | #263 — user confirms slight downward swipe no longer clears media. New issue: two same-title group picker rows, one empty, other shows older media while active chat has recent photos. |
 | Failed candidate | #263 attempt 1: Native/Mx success, Build cancelled, logs unavailable; #261 earlier compile error resolved in #262. |
-| Next task | Discuss media picker disambiguation, verified migration mapping and recent-history/search fallback correction before implementation. |
+| Next task | Verify [#264](https://github.com/sviridovski/Telegram-iOS/actions/runs/45475478578) CI/IPA, then test active/legacy groups, fresh media, source labels, refresh and swipe. |
 | Recovery | #263 green and swipe confirmed, media completeness issue open. #260 earlier broadly user-confirmed baseline; original port/telegram-13.2 unchanged. |
 
 ## #252 corrections retained in #253
@@ -173,3 +173,10 @@
 - #263 attempt 2 all jobs green, final IPA artifact 14955093279. User installed and explicitly confirms small swipe no longer removes results. New screenshots show two picker rows with identical group title; one returns no results, other shows 139 loaded results, top visible dates July 19 2025, while current group has images today. Actual peer IDs/migration metadata not available from screenshots; do not assert migration or server failure proved.
 - Source #263 GoldgramUnifiedDialogPicker deduplicates by full EnginePeer.Id, displays only compactDisplayTitle, and does not normalize verified legacyGroup.migrationReference. Media restart allow-list for selected chat includes only chat.id. TelegramCore SearchMessages.swift can merge migrated predecessor history into channel search, but current media allow-list discards different peer IDs; network errors converted to nil and empty completed result. TelegramEngineMessages.swift searchMessages automatically calls forceLocal when totalCount is zero, without exposing source to caller. These are confirmed code paths; exact on-device cause unverified.
 - Proposed next change: disambiguate same-name peers with type, username/ID and latest activity where reliable; collapse only explicitly verified migration mapping, use active current peer and preserve exact original scoped message identities. Prefer recent accessible native history for selected-chat media, distinguish server/local/incomplete results and avoid false empty/completeness claim. Preserve guards, no extra database, no archive/Collector/Ghost changes. User asked why, not yet explicit source change approval. No code commit or CI triggered for this investigation.
+
+## #264 Media Center 1.1 candidate
+
+- User approved proposed changes after #263 device swipe fix and same-name/stale-media report. Published [source 745b2813e648d746cbbd90e60bc1c72c5bf8cc88](https://github.com/sviridovski/Telegram-iOS/commit/745b2813e648d746cbbd90e60bc1c72c5bf8cc88), direct #263 parent; four changed files verified: GoldgramAuthorSearch.swift, SearchMessages.swift, TelegramEngineMessages.swift, test_personal_metadata.py. [CI #264](https://github.com/sviridovski/Telegram-iOS/actions/runs/45475478578) queued at check.
+- Confirmed ordinary Swiftgram forceLocal path compares whole message.tags to requested tags, potentially omitting multi-tag media; it also silently switches from remote zero results. New media-only engine path avoids that fallback, uses native unfiltered recent history before tags for selected peer, explicitly marks primary remote unavailability; bounded cached selected-peer read on initial history error/empty/timeout. Current account and ordinary accessible cloud-media guards retained. No claim all secondary migration RPC failures can be distinguished, or exhaustive global search. Old/active picker merge only explicit native migration with available supergroup target, otherwise distinct ID/type/activity labels; tiny avatar only if available. Local cached items/source counts labelled; explicit refresh; no swipe regression by source contract. Exact peer/message IDs preserved.
+- 19 source-contract conditions checked before publication; existing CI preflight extended for source isolation, verified migration and lifecycle guards. No local full Swift/iOS typecheck, CI pending. #263 cache family preserved and Mx recipe unchanged; TelegramCore public API changes may increase native rebuild scope, no new performance claim. #263 last green/installed, #260 previous broad fallback. No SQLite/Ghost/Collector/capture changes.
+- Device acceptance: open selected active group and compare newest visible ordinary photos/videos to actual history; verify title duplicates distinguished, verified legacy conversion collapsed only when metadata available, separate same-name groups stay distinct; choose photo/video and dates/author/size, refresh, test remote unavailable and local source markers, load more, exact jump/back, cancelled swipe, protected/ephemeral exclusions. Verify all jobs green and final IPA before installation.
