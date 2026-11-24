@@ -59,7 +59,11 @@ let suite = "GoldgramLayoutTest-" + UUID().uuidString
 let defaults = UserDefaults(suiteName: suite)!
 defer { defaults.removePersistentDomain(forName: suite) }
 var layout = GoldgramLayoutPreferences.load(defaults)
-precondition(!layout.customDashboard && layout.visibleDashboard.count == 13 && layout.visibleMenu == [100])
+precondition(!layout.customDashboard && layout.visibleDashboard.count == 14 && layout.visibleMenu == [100])
+var oldLayout = layout
+oldLayout.dashboardOrder.removeAll { $0 == 33 }
+oldLayout.normalize()
+precondition(!oldLayout.customDashboard && oldLayout.dashboardOrder[3] == 33)
 layout.dashboardOrder = [31, 31, 999, 29]
 layout.dashboardHidden = [20, 999, 20]
 layout.dashboardPinned = [31, 20, 999]
@@ -67,14 +71,14 @@ layout.menuOrder = [103, 100, 100, 888]
 layout.menuHidden = [101, 102]
 layout.save(defaults)
 let loaded = GoldgramLayoutPreferences.load(defaults)
-precondition(loaded.dashboardOrder.count == 13 && loaded.dashboardOrder.prefix(2).elementsEqual([31,29]))
+precondition(loaded.dashboardOrder.count == 14 && loaded.dashboardOrder.prefix(2).elementsEqual([31,29]))
 precondition(loaded.dashboardHidden == [20] && loaded.dashboardPinned == [31])
 precondition(!loaded.visibleDashboard.contains(20) && loaded.visibleMenu == [103,100])
 precondition(loaded.customDashboard)
 GoldgramLayoutPreferences().save(defaults)
 precondition(!GoldgramLayoutPreferences.load(defaults).customDashboard)
 defaults.set(Data("broken".utf8), forKey: GoldgramLayoutPreferences.key)
-precondition(GoldgramLayoutPreferences.load(defaults).visibleDashboard.count == 13)
+precondition(GoldgramLayoutPreferences.load(defaults).visibleDashboard.count == 14)
 print("Goldgram #260 dashboard and menu preferences: defaults, ordering, hide/pin, roundtrip, corruption fallback OK")
 }
 runLayoutChecks()
@@ -82,6 +86,28 @@ runLayoutChecks()
 with tempfile.TemporaryDirectory() as tmp:
     source = Path(tmp) / "main.swift"
     source.write_text("import Foundation\n" + layout_model + layout_checks)
+    binary = Path(tmp) / "test"
+    subprocess.run(["swiftc", str(source), "-o", str(binary)], check=True)
+    subprocess.run([str(binary)], check=True)
+
+media_model = native.split("// BEGIN GOLDGRAM_MEDIA_MODEL_V1\n", 1)[1].split("// END GOLDGRAM_MEDIA_MODEL_V1", 1)[0]
+media_checks = r'''
+precondition(GoldgramMediaCategory.allCases.count == 8)
+precondition(GoldgramMediaRules.families(nil) == [0,1,2,3,4,5])
+precondition(GoldgramMediaRules.families(.circle) == [3] && GoldgramMediaRules.families(.gif) == [5])
+precondition(GoldgramMediaRules.acceptsSize(nil, minimum: 0))
+precondition(!GoldgramMediaRules.acceptsSize(nil, minimum: 1))
+precondition(GoldgramMediaRules.acceptsSize(10, minimum: 10))
+precondition(GoldgramMediaRules.matches("ДОК", name: "документ.pdf", caption: ""))
+precondition(GoldgramMediaRules.matches("тест", name: "a", caption: "Тест"))
+precondition(!GoldgramMediaRules.matches("abc", name: "def", caption: ""))
+precondition(GoldgramMediaRules.extensionFor("a.PDF", fallback: "bin") == "pdf")
+precondition(GoldgramMediaRules.extensionFor("a.bad/unsafe", fallback: "bin") == "bin")
+print("Goldgram #261 media category, size, matching and extension rules OK")
+'''
+with tempfile.TemporaryDirectory() as tmp:
+    source = Path(tmp) / "main.swift"
+    source.write_text("import Foundation\n" + media_model + media_checks)
     binary = Path(tmp) / "test"
     subprocess.run(["swiftc", str(source), "-o", str(binary)], check=True)
     subprocess.run([str(binary)], check=True)

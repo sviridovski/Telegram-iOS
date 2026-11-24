@@ -2076,7 +2076,7 @@ layout_260 = r'''
   for (NSNumber *identifier in ids) {
     UIButton *tile = tiles[identifier];
     if (!tile) continue;
-    BOOL wide = [@[@29, @0, @25] containsObject:identifier];
+    BOOL wide = [@[@29, @33, @0, @25] containsObject:identifier];
     if (wide) {
       if (pending) { [stack addArrangedSubview:pending]; pending = nil; }
       [stack addArrangedSubview:tile];
@@ -2095,7 +2095,7 @@ layout_260 = r'''
   NSArray *order = layout[@"order"];
   NSArray *pinned = layout[@"pinned"];
   if (![order isKindOfClass:NSArray.class] || ![pinned isKindOfClass:NSArray.class]) return;
-  NSArray *known = @[@29,@30,@31,@0,@20,@24,@27,@28,@25,@21,@22,@4,@23];
+  NSArray *known = @[@29,@30,@31,@33,@0,@20,@24,@27,@28,@25,@21,@22,@4,@23];
   if (order.count > known.count || pinned.count > known.count) return;
   NSMutableSet *seen = [NSMutableSet set];
   for (id identifier in order) {
@@ -2197,3 +2197,24 @@ patch_260('  if (!self.goldgramSection) [self goldgramDashboardLoadCounts];',
   }''', 'refresh only changed layout')
 mx_ui_path.write_text(mx_ui_source)
 print('Goldgram #260: configurable dashboard, preserved tile IDs and menu settings')
+
+# Goldgram #261: distinct configurable media library, preserve the old Mx Media settings tile.
+media_tile_anchor_261 = '''  [stack addArrangedSubview:[self goldgramDashboardTile:
+    russian ? @"Режим невидимки" : @"Ghost mode"'''
+patch_260(media_tile_anchor_261, '''  [stack addArrangedSubview:[self goldgramDashboardTile:
+    russian ? @"Единый медиацентр" : @"Unified media center"
+    subtitle:russian ? @"Фото, видео, файлы, аудио и ссылки" : @"Photos, videos, files, audio and links"
+    symbol:@"photo.on.rectangle" tint:UIColor.systemTealColor identifier:33 compact:NO]];
+''' + media_tile_anchor_261, 'media center tile')
+patch_260('  if (identifier == 32) {', '''  if (identifier == 33) {
+    Class bridge = NSClassFromString(@"GoldgramAuthorSearchBridge");
+    SEL action = NSSelectorFromString(@"presentMediaCenterFromController:");
+    if ([bridge respondsToSelector:action]) {
+      typedef void (*OpenMedia)(id, SEL, UIViewController *);
+      ((OpenMedia)[bridge methodForSelector:action])(bridge, action, self);
+    }
+    return;
+  }
+  if (identifier == 32) {''', 'media center route')
+mx_ui_path.write_text(mx_ui_source)
+print('Goldgram #261: unified media center tile, existing Media settings retained')

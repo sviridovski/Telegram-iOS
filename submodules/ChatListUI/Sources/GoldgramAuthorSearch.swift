@@ -8,11 +8,13 @@ import SwiftSignalKit
 import LocalizedPeerData
 import AccountContext
 import Display
+import TinyThumbnail
+import QuickLook
 
 
 // BEGIN GOLDGRAM_LAYOUT_MODEL_V1
 private struct GoldgramLayoutPreferences: Codable, Equatable {
-    static let dashboardIDs = [29, 30, 31, 0, 20, 24, 27, 28, 25, 21, 22, 4, 23]
+    static let dashboardIDs = [29, 30, 31, 33, 0, 20, 24, 27, 28, 25, 21, 22, 4, 23]
     static let menuIDs = [100, 101, 102, 103]
     static let key = "Goldgram.LayoutPreferences.v1"
     var dashboardOrder = Self.dashboardIDs
@@ -27,6 +29,8 @@ private struct GoldgramLayoutPreferences: Codable, Equatable {
     }
 
     mutating func normalize() {
+        let oldDefault = Self.dashboardIDs.filter { $0 != 33 }
+        if dashboardOrder == oldDefault { dashboardOrder = Self.dashboardIDs }
         dashboardOrder = Self.order(dashboardOrder, known: Self.dashboardIDs)
         dashboardHidden = dashboardOrder.filter { dashboardHidden.contains($0) }
         dashboardPinned = dashboardOrder.filter { dashboardPinned.contains($0) && !dashboardHidden.contains($0) }
@@ -64,7 +68,7 @@ private final class GoldgramLayoutScreen: UITableViewController {
     private var preferences: GoldgramLayoutPreferences
 
     private static let names: [Int: String] = [
-        29: "Расширенный поиск", 30: "Личное избранное", 31: "Карточки контактов",
+        29: "Расширенный поиск", 30: "Личное избранное", 31: "Карточки контактов", 33: "Единый медиацентр",
         0: "Режим невидимки", 20: "Изменённые", 24: "Удалённые",
         27: "Личные сообщения", 28: "Группы и чаты", 25: "Каналы и комментарии",
         21: "Приватность", 22: "Медиа", 4: "Геопозиция", 23: "Другие функции",
@@ -206,6 +210,12 @@ public final class GoldgramAuthorSearchBridge: NSObject {
         guard value.customDashboard else { return nil }
         return ["order": value.visibleDashboard.map { NSNumber(value: $0) },
                 "pinned": value.dashboardPinned.map { NSNumber(value: $0) }] as NSDictionary
+    }
+
+    @objc(presentMediaCenterFromController:)
+    public static func presentMediaCenterFromController(_ controller: UIViewController) {
+        guard let context = primaryContext, isCurrentAccount(context) else { return }
+        presentPersonal(GoldgramMediaCenter(context: context), from: controller)
     }
 
     @objc(presentLayoutFromController:)
@@ -1675,6 +1685,734 @@ private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearch
                 presenter.present(navigation, animated: false) { [weak self = self] in
                     self?.showError("Не удалось открыть сообщение. Проверьте доступность чата.")
                 }
+            }
+        }
+    }
+}
+
+
+
+// BEGIN GOLDGRAM_MEDIA_MODEL_V1
+// Pure bounded filter/order rules used by the UI and isolated CI test.
+private enum GoldgramMediaCategory: Int, CaseIterable {
+    case photo, video, document, music, voice, circle, link, gif
+
+    var title: String {
+        switch self {
+        case .photo: return "Фото"
+        case .video: return "Видео"
+        case .document: return "Документы"
+        case .music: return "Музыка"
+        case .voice: return "Голосовые"
+        case .circle: return "Видеокружки"
+        case .link: return "Ссылки"
+        case .gif: return "GIF"
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .photo: return "photo"
+        case .video: return "video"
+        case .document: return "doc.text"
+        case .music: return "music.note"
+        case .voice: return "mic"
+        case .circle: return "play.circle"
+        case .link: return "link"
+        case .gif: return "film"
+        }
+    }
+    var visual: Bool { self == .photo || self == .video || self == .circle || self == .gif }
+    var family: Int {
+        switch self {
+        case .photo, .video: return 0
+        case .document: return 1
+        case .music: return 2
+        case .voice, .circle: return 3
+        case .link: return 4
+        case .gif: return 5
+        }
+    }
+}
+
+private enum GoldgramMediaRules {
+    static func families(_ category: GoldgramMediaCategory?) -> [Int] {
+        return category.map { [$0.family] } ?? Array(0..<6)
+    }
+    static func acceptsSize(_ size: Int64?, minimum: Int64) -> Bool {
+        return minimum == 0 || (size.map { $0 >= minimum } ?? false)
+    }
+    static func matches(_ term: String, name: String, caption: String) -> Bool {
+        return term.isEmpty || name.range(of: term, options: [.caseInsensitive, .diacriticInsensitive]) != nil ||
+            caption.range(of: term, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+    }
+    static func extensionFor(_ name: String, fallback: String) -> String {
+        let ext = (name as NSString).pathExtension.lowercased()
+        return !ext.isEmpty && ext.count <= 10 && ext.unicodeScalars.allSatisfy {
+            CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyz0123456789").contains($0)
+        } ? ext : fallback
+    }
+}
+// END GOLDGRAM_MEDIA_MODEL_V1
+
+private struct GoldgramMediaEntry {
+    let message: EngineMessage
+    let category: GoldgramMediaCategory
+    let name: String
+    let size: Int64?
+    let thumbnail: Data?
+    var chat: String { message.enginePeers[message.id.peerId]?.compactDisplayTitle ?? "Диалог" }
+    var author: String { message.author?.compactDisplayTitle ?? "Автор неизвестен" }
+    var date: String {
+        DateFormatter.localizedString(from: Date(timeIntervalSince1970: Double(message.timestamp)), dateStyle: .short, timeStyle: .short)
+    }
+
+    static func acceptsPeer(_ peer: EnginePeer) -> Bool {
+        switch peer {
+        case let .channel(channel): return !channel.flags.contains(.copyProtectionEnabled)
+        case let .legacyGroup(group): return !group.flags.contains(.copyProtectionEnabled)
+        case .user: return true
+        case .secretChat: return false
+        }
+    }
+
+    static func kind(_ file: TelegramMediaFile, message: EngineMessage) -> GoldgramMediaCategory? {
+        guard !file.isSticker, !file.isAnimatedSticker, !file.isCustomEmoji else { return nil }
+        if file.isInstantVideo { return .circle }
+        if file.isVoice { return .voice }
+        if file.isAnimated || message.tags.contains(.gif) { return .gif }
+        if file.isVideo { return .video }
+        if file.isMusic { return .music }
+        return message.tags.contains(.file) ? .document : nil
+    }
+
+    static func linkName(_ message: EngineMessage) -> String {
+        for media in message.media {
+            if let page = media as? TelegramMediaWebpage, let url = page.content.url, !url.isEmpty {
+                return String(url.prefix(400))
+            }
+        }
+        return String(message.text.prefix(400))
+    }
+
+    // Only ordinary cloud messages with known source peer and no protection/expiry.
+    static func eligible(_ message: EngineMessage) -> Bool {
+        guard message.id.namespace == Namespaces.Message.Cloud, message.id.id > 0,
+              GoldgramUnifiedIdentity.sources(message.id.peerId) != nil,
+              let peer = message.enginePeers[message.id.peerId],
+              !message._asMessage().isCopyProtected(), !message.containsSecretMedia,
+              !message.flags.isSending, !message.flags.contains(.Failed),
+              message.adAttribute == nil,
+              !message.attributes.contains(where: {
+                  $0 is AutoremoveTimeoutMessageAttribute || $0 is AutoclearTimeoutMessageAttribute ||
+                  $0 is EphemeralMessageAttribute || $0 is EphemeralReplacementMessageAttribute ||
+                  $0 is EphemeralOutgoingMessageAttribute || $0 is MediaSpoilerMessageAttribute ||
+                  $0 is RestrictedContentMessageAttribute
+              }),
+              !message.media.contains(where: { $0 is TelegramMediaAction || $0 is TelegramMediaExpiredContent }) else { return false }
+        return acceptsPeer(peer)
+    }
+
+    static func from(_ message: EngineMessage, category: GoldgramMediaCategory?) -> Self? {
+        guard eligible(message) else { return nil }
+        if category == .link, message.tags.contains(.webPage) {
+            return Self(message: message, category: .link, name: linkName(message), size: nil, thumbnail: nil)
+        }
+        for media in message.media {
+            if let image = media as? TelegramMediaImage, category == nil || category == .photo {
+                return Self(message: message, category: .photo, name: "Фотография", size: nil,
+                            thumbnail: image.immediateThumbnailData)
+            }
+            if let file = media as? TelegramMediaFile, let kind = Self.kind(file, message: message) {
+                guard category == nil || category == kind else { continue }
+                return Self(message: message, category: kind, name: file.fileName ?? kind.title,
+                            size: file.size.flatMap { $0 > 0 ? $0 : nil }, thumbnail: file.immediateThumbnailData)
+            }
+        }
+        if category == nil, message.tags.contains(.webPage) {
+            return Self(message: message, category: .link, name: linkName(message), size: nil, thumbnail: nil)
+        }
+        return nil
+    }
+
+    var sizeText: String {
+        size.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? "Размер неизвестен"
+    }
+
+    func previewResource() -> (EngineMediaResource, MediaResourceReference, MediaResourceUserContentType, String)? {
+        let reference = MessageReference(message._asMessage())
+        for media in message.media {
+            if category == .photo, let image = media as? TelegramMediaImage,
+               let representation = image.representations.max(by: {
+                   Int64($0.dimensions.width) * Int64($0.dimensions.height) < Int64($1.dimensions.width) * Int64($1.dimensions.height)
+               }) {
+                let ref: ImageMediaReference = .message(message: reference, media: image)
+                return (EngineMediaResource(representation.resource), ref.resourceReference(representation.resource), .image, "jpg")
+            }
+            if let file = media as? TelegramMediaFile, Self.kind(file, message: message) == category {
+                let ref: FileMediaReference = .message(message: reference, media: file)
+                let fallback: String
+                switch category {
+                case .video, .circle, .gif: fallback = file.mimeType == "image/gif" ? "gif" : "mp4"
+                case .music: fallback = "mp3"
+                case .voice: fallback = "ogg"
+                default: fallback = "bin"
+                }
+                return (EngineMediaResource(file.resource), ref.resourceReference(file.resource),
+                        MediaResourceUserContentType(file: file), GoldgramMediaRules.extensionFor(file.fileName ?? "", fallback: fallback))
+            }
+        }
+        return nil
+    }
+}
+
+private final class GoldgramMediaPreview: QLPreviewController, QLPreviewControllerDataSource {
+    private let url: URL
+    init(url: URL) {
+        self.url = url
+        super.init(nibName: nil, bundle: nil)
+        dataSource = self
+    }
+    required init?(coder: NSCoder) { return nil }
+    func numberOfPreviewItems(in controller: QLPreviewController) -> Int { 1 }
+    func previewController(_ controller: QLPreviewController, previewItemAt index: Int) -> QLPreviewItem { url as NSURL }
+}
+
+private final class GoldgramMediaCell: UICollectionViewCell {
+    private let image = UIImageView()
+    private let name = UILabel()
+    private let details = UILabel()
+    private let column = UIStackView()
+    private let labels = UIStackView()
+    private var listWidth: NSLayoutConstraint?
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        contentView.backgroundColor = .secondarySystemGroupedBackground
+        contentView.layer.cornerRadius = 12
+        contentView.clipsToBounds = true
+        image.clipsToBounds = true
+        image.tintColor = .systemTeal
+        image.contentMode = .scaleAspectFit
+        name.font = .preferredFont(forTextStyle: .subheadline)
+        name.numberOfLines = 2
+        details.font = .preferredFont(forTextStyle: .caption2)
+        details.textColor = .secondaryLabel
+        details.numberOfLines = 2
+        labels.addArrangedSubview(name); labels.addArrangedSubview(details)
+        labels.axis = .vertical; labels.spacing = 4
+        column.addArrangedSubview(image); column.addArrangedSubview(labels)
+        column.axis = .vertical; column.spacing = 8
+        listWidth = image.widthAnchor.constraint(equalToConstant: 70)
+        column.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(column)
+        NSLayoutConstraint.activate([
+            column.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 8),
+            column.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -8),
+            column.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 8),
+            column.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -8),
+            image.heightAnchor.constraint(greaterThanOrEqualToConstant: 22)
+        ])
+        name.setContentCompressionResistancePriority(.required, for: .vertical)
+        details.setContentCompressionResistancePriority(.required, for: .vertical)
+    }
+    required init?(coder: NSCoder) { return nil }
+    func configure(_ row: GoldgramMediaEntry, grid: Bool) {
+        listWidth?.isActive = !grid
+        column.axis = grid ? .vertical : .horizontal
+        name.text = row.name.isEmpty ? row.category.title : row.name
+        details.text = row.chat + " · " + row.date + (grid ? "" : " · " + row.sizeText)
+        let decoded = row.thumbnail.flatMap { $0.count <= 65536 ? decodeTinyThumbnail(data: $0) : nil }.flatMap { UIImage(data: $0) }
+        image.image = decoded ?? UIImage(systemName: row.category.symbol)
+        image.contentMode = decoded == nil ? .scaleAspectFit : .scaleAspectFill
+        isAccessibilityElement = true
+        accessibilityLabel = [name.text ?? "", details.text ?? ""].joined(separator: ", ")
+    }
+}
+
+private final class GoldgramMediaCenter: UIViewController, UICollectionViewDataSource, UICollectionViewDelegateFlowLayout, UISearchBarDelegate {
+    private let context: AccountContext
+    private let input = UISearchBar()
+    private let categoryBar = UIScrollView()
+    private let categoryStack = UIStackView()
+    private let filterButton = UIButton(type: .system)
+    private let info = UILabel()
+    private let more = UIButton(type: .system)
+    private let layout = UICollectionViewFlowLayout()
+    private lazy var collection = UICollectionView(frame: .zero, collectionViewLayout: layout)
+    private let queryTask = MetaDisposable()
+    private let dialogsTask = MetaDisposable()
+    private let previewTask = MetaDisposable()
+    private let downloadTask = MetaDisposable()
+    private var category: GoldgramMediaCategory?
+    private var author: EnginePeer?
+    private var chat: EnginePeer?
+    private var scope = 0 // all/private/groups/channels
+    private var from: Int32?
+    private var through: Int32?
+    private var minSize: Int64 = 0
+    private var sort = 0
+    private var grid = true
+    private var rows: [GoldgramMediaEntry] = []
+    private var found: [EngineMessage.Id: GoldgramMediaEntry] = [:]
+    private var allowed: [EnginePeer.Id: EnginePeer] = [:]
+    private var states: [Int: SearchMessagesState] = [:]
+    private var pages: [Int: Int] = [:]
+    private var finished = Set<Int>()
+    private var families: [Int] = []
+    private var activeFamily: Int?
+    private var generation = 0
+    private var previewGeneration = 0
+    private var busy = false
+    private var partial = false
+    private var started = false
+    private var handingOff = false
+    private var query = ""
+    private var previewAlert: UIAlertController?
+    private var accountOK: Bool { GoldgramAuthorSearchBridge.isCurrentAccount(context) }
+
+    init(context: AccountContext) { self.context = context; super.init(nibName: nil, bundle: nil) }
+    required init?(coder: NSCoder) { return nil }
+    deinit { queryTask.dispose(); dialogsTask.dispose(); previewTask.dispose(); downloadTask.dispose() }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        title = "Единый медиацентр"
+        view.backgroundColor = .systemGroupedBackground
+        input.placeholder = "Название, подпись или ссылка"
+        input.returnKeyType = .search; input.delegate = self
+        filterButton.addTarget(self, action: #selector(filters), for: .touchUpInside)
+        let search = UIButton(type: .system)
+        search.setTitle("Найти", for: .normal); search.addTarget(self, action: #selector(restart), for: .touchUpInside)
+        let layoutButton = UIButton(type: .system)
+        layoutButton.setImage(UIImage(systemName: "square.grid.2x2"), for: .normal)
+        layoutButton.accessibilityLabel = "Галерея или список"
+        layoutButton.addTarget(self, action: #selector(toggleLayout), for: .touchUpInside)
+        let controls = UIStackView(arrangedSubviews: [filterButton, search, layoutButton])
+        controls.axis = .horizontal; controls.distribution = .fillEqually; controls.spacing = 8
+        info.font = .preferredFont(forTextStyle: .footnote); info.textColor = .secondaryLabel; info.numberOfLines = 0
+        categoryStack.axis = .horizontal; categoryStack.spacing = 8
+        categoryStack.translatesAutoresizingMaskIntoConstraints = false
+        categoryBar.showsHorizontalScrollIndicator = false
+        categoryBar.addSubview(categoryStack)
+        NSLayoutConstraint.activate([
+            categoryStack.leadingAnchor.constraint(equalTo: categoryBar.contentLayoutGuide.leadingAnchor),
+            categoryStack.trailingAnchor.constraint(equalTo: categoryBar.contentLayoutGuide.trailingAnchor),
+            categoryStack.topAnchor.constraint(equalTo: categoryBar.contentLayoutGuide.topAnchor),
+            categoryStack.bottomAnchor.constraint(equalTo: categoryBar.contentLayoutGuide.bottomAnchor),
+            categoryStack.heightAnchor.constraint(equalTo: categoryBar.frameLayoutGuide.heightAnchor),
+            categoryBar.heightAnchor.constraint(equalToConstant: 44)
+        ])
+        layout.minimumLineSpacing = 6; layout.minimumInteritemSpacing = 6
+        collection.backgroundColor = .clear
+        collection.register(GoldgramMediaCell.self, forCellWithReuseIdentifier: "media")
+        collection.dataSource = self; collection.delegate = self
+        collection.alwaysBounceVertical = true
+        more.addTarget(self, action: #selector(loadNext), for: .touchUpInside)
+        let stack = UIStackView(arrangedSubviews: [input, controls, categoryBar, info, collection, more])
+        stack.axis = .vertical; stack.spacing = 8; stack.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 12),
+            stack.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -12),
+            stack.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 4),
+            stack.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -6),
+            collection.heightAnchor.constraint(greaterThanOrEqualToConstant: 80),
+            more.heightAnchor.constraint(equalToConstant: 44)
+        ])
+        collection.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
+        rebuildCategories(); updateStatus()
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        handingOff = false
+        guard accountOK else { clear(); updateStatus(); return }
+        if !started { restart() }
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        if !handingOff && (isMovingFromParent || navigationController?.isBeingDismissed == true) {
+            clear(); previewGeneration += 1; previewTask.set(nil); downloadTask.set(nil)
+        }
+    }
+
+    private func rebuildCategories() {
+        for subview in categoryStack.arrangedSubviews { categoryStack.removeArrangedSubview(subview); subview.removeFromSuperview() }
+        for index in -1..<GoldgramMediaCategory.allCases.count {
+            let kind = GoldgramMediaCategory(rawValue: index)
+            let button = UIButton(type: .system)
+            button.tag = index
+            button.setTitle(kind?.title ?? "Все", for: .normal)
+            button.setImage(UIImage(systemName: kind?.symbol ?? "square.grid.2x2"), for: .normal)
+            button.tintColor = kind == category ? .white : .systemTeal
+            button.backgroundColor = kind == category ? .systemTeal : .secondarySystemGroupedBackground
+            button.layer.cornerRadius = 11
+            button.widthAnchor.constraint(greaterThanOrEqualToConstant: 100).isActive = true
+            button.addTarget(self, action: #selector(selectCategory(_:)), for: .touchUpInside)
+            categoryStack.addArrangedSubview(button)
+        }
+    }
+    @objc private func selectCategory(_ button: UIButton) {
+        category = GoldgramMediaCategory(rawValue: button.tag)
+        grid = category?.visual ?? true
+        rebuildCategories(); restart()
+    }
+    @objc private func toggleLayout() { grid.toggle(); layout.invalidateLayout(); collection.reloadData() }
+    func searchBarSearchButtonClicked(_ searchBar: UISearchBar) { restart() }
+
+    private func clear() {
+        generation += 1; busy = false; activeFamily = nil; queryTask.set(nil); dialogsTask.set(nil)
+        rows.removeAll(); found.removeAll(); allowed.removeAll(); states.removeAll()
+        pages.removeAll(); finished.removeAll(); families.removeAll()
+        collection.reloadData()
+    }
+    @objc private func restart() {
+        input.resignFirstResponder()
+        clear()
+        guard accountOK else { updateStatus(); return }
+        query = (input.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard query.count <= 200 else { info.text = "Введите не более 200 символов."; return }
+        started = true; partial = false; busy = true; families = GoldgramMediaRules.families(category)
+        let token = generation
+        updateStatus()
+        if let chat {
+            if GoldgramMediaEntry.acceptsPeer(chat) { allowed[chat.id] = chat }
+            busy = false; loadNext(); return
+        }
+        let root = context.engine.messages.chatList(group: .root, count: 1000) |> filter { !$0.isLoading } |> take(1)
+        let archive = context.engine.messages.chatList(group: .archive, count: 1000) |> filter { !$0.isLoading } |> take(1)
+        dialogsTask.set((combineLatest(root, archive) |> deliverOnMainQueue).start(next: { [weak self = self] a, b in
+            guard let self, self.generation == token, self.accountOK, self.busy else { return }
+            self.partial = a.hasEarlier || a.hasLater || b.hasEarlier || b.hasLater || a.items.count >= 1000 || b.items.count >= 1000
+            for item in a.items + b.items {
+                guard case let .chatList(id) = item.id, let peer = item.renderedPeer.peer,
+                      GoldgramUnifiedIdentity.sources(id) != nil, self.acceptScope(peer),
+                      GoldgramMediaEntry.acceptsPeer(peer) else { continue }
+                self.allowed[id] = peer
+            }
+            self.busy = false; self.loadNext()
+        }))
+        DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self = self] in
+            guard let self, self.generation == token, self.busy, self.pages.isEmpty else { return }
+            self.dialogsTask.set(nil); self.busy = false; self.partial = true; self.finished = Set(self.families); self.updateStatus()
+        }
+    }
+
+    private func acceptScope(_ peer: EnginePeer) -> Bool {
+        switch scope {
+        case 1: if case .user = peer { return true }; return false
+        case 2:
+            switch peer {
+            case .legacyGroup: return true
+            case let .channel(channel): if case .group = channel.info { return true }; return false
+            default: return false
+            }
+        case 3:
+            if case let .channel(channel) = peer, case .broadcast = channel.info { return true }
+            return false
+        default: return true
+        }
+    }
+    private func tags(_ family: Int) -> EngineMessage.Tags {
+        switch family {
+        case 0: return .photoOrVideo
+        case 1: return .file
+        case 2: return .music
+        case 3: return .voiceOrInstantVideo
+        case 4: return .webPage
+        default: return .gif
+        }
+    }
+    @objc private func loadNext() {
+        guard accountOK, !busy, started else { return }
+        guard !allowed.isEmpty else { finished = Set(families); updateStatus(); return }
+        guard found.count < 1000,
+              let family = families.filter({ !finished.contains($0) }).min(by: { (pages[$0] ?? 0) < (pages[$1] ?? 0) }) else {
+            if found.count >= 1000 { partial = true }
+            updateStatus(); return
+        }
+        busy = true
+        let token = generation, page = pages[family] ?? 0, previous = states[family]
+        pages[family] = page + 1
+        activeFamily = family
+        let location: SearchMessagesLocation
+        if let chat {
+            location = .peer(peerId: chat.id, fromId: author?.id, tags: tags(family), reactions: nil, threadId: nil, minDate: from, maxDate: through)
+        } else {
+            location = .general(scope: .everywhere, groupId: nil, tags: tags(family), minDate: from, maxDate: through, folderId: nil, communityId: nil)
+        }
+        updateStatus()
+        queryTask.set((context.engine.messages.searchMessages(location: location, query: query, state: previous, limit: 50)
+            |> take(1) |> deliverOnMainQueue).start(next: { [weak self = self] result, nextState in
+            guard let self, self.generation == token, self.accountOK, self.busy,
+                  self.activeFamily == family, self.pages[family] == page + 1 else { return }
+            self.busy = false; self.activeFamily = nil
+            for raw in result.messages {
+                let message = EngineMessage(raw)
+                guard self.allowed[message.id.peerId] != nil,
+                      self.author == nil || message.author?.id == self.author?.id,
+                      self.from == nil || message.timestamp >= (self.from ?? 0),
+                      self.through == nil || message.timestamp <= (self.through ?? Int32.max),
+                      let row = GoldgramMediaEntry.from(message, category: self.category),
+                      GoldgramMediaRules.acceptsSize(row.size, minimum: self.minSize),
+                      GoldgramMediaRules.matches(self.query, name: row.name, caption: message.text) else { continue }
+                if self.found.count >= 1000 && self.found[message.id] == nil { self.partial = true; break }
+                self.found[message.id] = row
+            }
+            self.states[family] = nextState
+            if result.completed || previous == nextState || page + 1 >= 10 {
+                self.finished.insert(family)
+                if !result.completed { self.partial = true }
+            }
+            self.rebuild()
+            // One initial page per category, then explicitly load more.
+            if self.families.contains(where: { self.pages[$0] == nil && !self.finished.contains($0) }) {
+                DispatchQueue.main.async { [weak self = self] in
+                    guard let self, self.generation == token else { return }
+                    self.loadNext()
+                }
+            }
+        }))
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self = self] in
+            guard let self, self.generation == token, self.busy, self.activeFamily == family,
+                  self.pages[family] == page + 1, !self.finished.contains(family) else { return }
+            self.busy = false; self.activeFamily = nil; self.queryTask.set(nil); self.finished.insert(family); self.partial = true; self.updateStatus()
+        }
+    }
+
+    private func rebuild() {
+        rows = found.values.sorted {
+            switch sort {
+            case 1: if $0.message.timestamp != $1.message.timestamp { return $0.message.timestamp < $1.message.timestamp }
+            case 2:
+                if $0.size != $1.size { return ($0.size ?? -1) > ($1.size ?? -1) }
+            case 3:
+                let comparison = $0.name.localizedCaseInsensitiveCompare($1.name)
+                if comparison != .orderedSame { return comparison == .orderedAscending }
+            default: break
+            }
+            if $0.message.timestamp != $1.message.timestamp { return $0.message.timestamp > $1.message.timestamp }
+            if $0.message.id.peerId != $1.message.id.peerId {
+                return $0.message.id.peerId.id._internalGetInt64Value() < $1.message.id.peerId.id._internalGetInt64Value()
+            }
+            return $0.message.id.id > $1.message.id.id
+        }
+        collection.reloadData(); updateStatus()
+    }
+    private func updateStatus() {
+        filterButton.setTitle("Фильтры", for: .normal)
+        guard accountOK else { info.text = "Аккаунт изменён. Откройте медиацентр заново."; more.isEnabled = false; return }
+        let scopeName = chat?.compactDisplayTitle ?? ["Все чаты", "Личные", "Группы", "Каналы"][scope]
+        var text = "\(scopeName) · \(author?.compactDisplayTitle ?? "Любой автор")\nЗагружено: \(rows.count) · \(busy ? "поиск…" : "доступные результаты")"
+        if partial || (author != nil && chat == nil) { text += " · возможна неполная выдача" }
+        if minSize > 0 { text += "\nРазмер от \(ByteCountFormatter.string(fromByteCount: minSize, countStyle: .file)); неизвестный размер исключён" }
+        if from != nil || through != nil { text += " · выбран период" }
+        info.text = text
+        more.setTitle(busy ? "Загрузка…" : "Загрузить ещё", for: .normal)
+        more.isEnabled = !busy && started && found.count < 1000 && families.contains { !finished.contains($0) }
+    }
+    @objc private func filters() {
+        guard accountOK else { return }
+        let sheet = UIAlertController(title: "Фильтры медиацентра", message: "Поиск по доступным облачным чатам. Сортировка относится к загруженным результатам.", preferredStyle: .actionSheet)
+        sheet.addAction(UIAlertAction(title: "Выбрать чат или канал", style: .default) { [weak self = self] _ in
+            guard let self else { return }
+            self.navigationController?.pushViewController(GoldgramUnifiedDialogPicker(context: self.context) { [weak self = self] peer in
+                guard let self else { return }
+                self.chat = peer; self.scope = 0; self.restart()
+            }, animated: true)
+        })
+        sheet.addAction(UIAlertAction(title: "Тип диалога", style: .default) { [weak self = self] _ in self?.chooseScope() })
+        sheet.addAction(UIAlertAction(title: "Выбрать автора", style: .default) { [weak self = self] _ in
+            guard let self else { return }
+            self.navigationController?.pushViewController(GoldgramAuthorSearchScreen(context: self.context, chatId: nil, authorSelection: { [weak self = self] peer in
+                self?.author = peer; self?.restart()
+            }), animated: true)
+        })
+        sheet.addAction(UIAlertAction(title: "Любой автор", style: .default) { [weak self = self] _ in self?.author = nil; self?.restart() })
+        sheet.addAction(UIAlertAction(title: "Период отправки", style: .default) { [weak self = self] _ in self?.chooseDate() })
+        sheet.addAction(UIAlertAction(title: "Минимальный размер", style: .default) { [weak self = self] _ in self?.chooseSize() })
+        sheet.addAction(UIAlertAction(title: "Сортировка", style: .default) { [weak self = self] _ in self?.chooseSort() })
+        sheet.addAction(UIAlertAction(title: "Сбросить фильтры", style: .destructive) { [weak self = self] _ in
+            guard let self else { return }
+            self.chat = nil; self.author = nil; self.scope = 0; self.from = nil; self.through = nil; self.minSize = 0; self.sort = 0; self.input.text = ""
+            self.restart()
+        })
+        sheet.addAction(UIAlertAction(title: "Отмена", style: .cancel))
+        sheet.popoverPresentationController?.sourceView = filterButton
+        sheet.popoverPresentationController?.sourceRect = filterButton.bounds
+        present(sheet, animated: true)
+    }
+    private func choices(_ title: String, _ labels: [String], action: @escaping (Int) -> Void) {
+        let alert = UIAlertController(title: title, message: nil, preferredStyle: .alert)
+        for (index, label) in labels.enumerated() {
+            alert.addAction(UIAlertAction(title: label, style: .default) { _ in action(index) })
+        }
+        alert.addAction(UIAlertAction(title: "Отмена", style: .cancel)); present(alert, animated: true)
+    }
+    private func chooseScope() {
+        choices("Тип диалога", ["Все чаты", "Личные", "Группы", "Каналы"]) { [weak self = self] index in
+            self?.scope = index; self?.chat = nil; self?.restart()
+        }
+    }
+    private func chooseSize() {
+        choices("Минимальный размер", ["Любой", "1 МБ", "10 МБ", "100 МБ", "500 МБ"]) { [weak self = self] index in
+            self?.minSize = [0, 1, 10, 100, 500][index] * Int64(1024 * 1024); self?.restart()
+        }
+    }
+    private func chooseSort() {
+        choices("Сортировка загруженных", ["Сначала новые", "Сначала старые", "По размеру", "По названию"]) { [weak self = self] index in
+            self?.sort = index; self?.rebuild()
+        }
+    }
+    private func chooseDate() {
+        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian); formatter.dateFormat = "yyyy-MM-dd"; formatter.isLenient = false
+        let alert = UIAlertController(title: "Период", message: "ГГГГ-ММ-ДД, обе даты включительно.", preferredStyle: .alert)
+        alert.addTextField { $0.placeholder = "Начальная дата"; if let from = self.from { $0.text = formatter.string(from: Date(timeIntervalSince1970: Double(from))) } }
+        alert.addTextField { $0.placeholder = "Конечная дата"; $0.text = self.through.map { formatter.string(from: Date(timeIntervalSince1970: Double($0))) } ?? formatter.string(from: Date()) }
+        alert.addAction(UIAlertAction(title: "Применить", style: .default) { [weak self = self, weak alert] _ in
+            guard let self, let fields = alert?.textFields, fields.count == 2,
+                  let a = fields[0].text, let b = fields[1].text, let first = formatter.date(from: a), let last = formatter.date(from: b),
+                  formatter.string(from: first) == a, formatter.string(from: last) == b,
+                  let next = formatter.calendar.date(byAdding: .day, value: 1, to: last),
+                  let low = Int32(exactly: Int64(first.timeIntervalSince1970)), let high = Int32(exactly: Int64(next.timeIntervalSince1970) - 1),
+                  low > 0, low <= high else { self?.error("Проверьте даты."); return }
+            self.from = low; self.through = high; self.restart()
+        })
+        alert.addAction(UIAlertAction(title: "Любая дата", style: .default) { [weak self = self] _ in self?.from = nil; self?.through = nil; self?.restart() })
+        alert.addAction(UIAlertAction(title: "Отмена", style: .cancel)); present(alert, animated: true)
+    }
+
+    func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int { accountOK ? rows.count : 0 }
+    func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
+        let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "media", for: indexPath)
+        if let cell = cell as? GoldgramMediaCell, accountOK, rows.indices.contains(indexPath.item) { cell.configure(rows[indexPath.item], grid: grid) }
+        return cell
+    }
+    func collectionView(_ collectionView: UICollectionView, layout collectionViewLayout: UICollectionViewLayout, sizeForItemAt indexPath: IndexPath) -> CGSize {
+        let columns: CGFloat = grid ? (collectionView.bounds.width > 600 ? 4 : 3) : 1
+        let width = max(80, floor((collectionView.bounds.width - (columns - 1) * 6) / columns))
+        return CGSize(width: width, height: grid ? max(125, width + 24) : 105)
+    }
+    func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
+        guard accountOK, rows.indices.contains(indexPath.item) else { return }
+        details(rows[indexPath.item])
+    }
+    private func details(_ row: GoldgramMediaEntry) {
+        guard accountOK, GoldgramMediaEntry.eligible(row.message) else { return }
+        let alert = UIAlertController(title: row.name.isEmpty ? row.category.title : row.name,
+            message: "\(row.category.title) · \(row.sizeText)\n\(row.chat)\n\(row.author) · \(row.date)\n\n" + String(row.message.text.prefix(1000)),
+            preferredStyle: .alert)
+        if row.category != .link {
+            alert.addAction(UIAlertAction(title: "Открыть файл", style: .default) { [weak self = self] _ in self?.open(row) })
+        }
+        alert.addAction(UIAlertAction(title: "Перейти к сообщению", style: .default) { [weak self = self] _ in self?.jump(row.message.id) })
+        alert.addAction(UIAlertAction(title: "В личное избранное", style: .default) { [weak self = self] _ in
+            self?.revalidate(row) { [weak self = self] current in
+                guard let self else { return }
+                GoldgramAuthorSearchBridge.addBookmark(from: self, context: self.context, message: current.message)
+            }
+        })
+        alert.addAction(UIAlertAction(title: "Закрыть", style: .cancel)); present(alert, animated: true)
+    }
+    private func revalidate(_ row: GoldgramMediaEntry, action: @escaping (GoldgramMediaEntry) -> Void) {
+        guard accountOK else { return }
+        previewGeneration += 1
+        let token = previewGeneration
+        let signal = context.engine.data.get(
+            TelegramEngine.EngineData.Item.Messages.Message(id: row.message.id),
+            TelegramEngine.EngineData.Item.Peer.Peer(id: row.message.id.peerId)) |> take(1) |> deliverOnMainQueue
+        previewTask.set(signal.start(next: { [weak self = self] message, peer in
+            guard let self, self.accountOK, self.previewGeneration == token, self.viewIfLoaded?.window != nil else { return }
+            guard let message, let peer, GoldgramMediaEntry.acceptsPeer(peer),
+                  let current = GoldgramMediaEntry.from(message, category: row.category) else {
+                self.error("Не удалось подтвердить доступность обычного медиа. Откройте исходное сообщение."); return
+            }
+            DispatchQueue.main.async { [weak self = self] in
+                guard let self, self.accountOK, self.previewGeneration == token, self.viewIfLoaded?.window != nil else { return }
+                action(current)
+            }
+        }))
+    }
+    private func open(_ row: GoldgramMediaEntry) {
+        revalidate(row) { [weak self = self] current in self?.checkCache(current, afterDownload: false) }
+    }
+    private func checkCache(_ row: GoldgramMediaEntry, afterDownload: Bool) {
+        guard accountOK, let resource = row.previewResource() else { error("Откройте файл в исходном сообщении."); return }
+        previewGeneration += 1
+        let token = previewGeneration
+        previewTask.set((context.engine.resources.data(resource: resource.0, pathExtension: resource.3)
+            |> take(1) |> deliverOnMainQueue).start(next: { [weak self = self] data in
+            guard let self, self.accountOK, self.previewGeneration == token, self.viewIfLoaded?.window != nil else { return }
+            if data.isComplete, FileManager.default.fileExists(atPath: data.path) {
+                let url = URL(fileURLWithPath: data.path)
+                if QLPreviewController.canPreview(url as NSURL) {
+                    self.navigationController?.pushViewController(GoldgramMediaPreview(url: url), animated: true)
+                } else {
+                    self.offerNative(row, message: "Формат не поддерживается системным предпросмотром. Откройте в Telegram.")
+                }
+            } else if afterDownload {
+                self.offerNative(row, message: "Файл ещё недоступен в кэше. Откройте в Telegram.")
+            } else {
+                let alert = UIAlertController(title: "Файл не загружен", message: "\(row.sizeText). Загрузить через обычный медиакэш Telegram?", preferredStyle: .alert)
+                alert.addAction(UIAlertAction(title: "Загрузить", style: .default) { [weak self = self] _ in self?.download(row) })
+                alert.addAction(UIAlertAction(title: "Открыть в Telegram", style: .default) { [weak self = self] _ in self?.jump(row.message.id) })
+                alert.addAction(UIAlertAction(title: "Отмена", style: .cancel)); self.present(alert, animated: true)
+            }
+        }))
+    }
+    private func download(_ row: GoldgramMediaEntry) {
+        revalidate(row) { [weak self = self] current in
+            guard let self, let resource = current.previewResource(), self.presentedViewController == nil else { return }
+            self.previewGeneration += 1
+            let token = self.previewGeneration
+            let alert = UIAlertController(title: "Загрузка", message: "Файл сохраняется в штатном медиакэше Telegram.", preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "Отменить", style: .cancel) { [weak self = self] _ in
+                self?.previewGeneration += 1; self?.downloadTask.set(nil); self?.previewAlert = nil
+            })
+            self.previewAlert = alert; self.present(alert, animated: true)
+            let signal = self.context.engine.resources.fetch(reference: resource.1, userLocation: .peer(current.message.id.peerId), userContentType: resource.2)
+                |> deliverOnMainQueue
+            self.downloadTask.set(signal.start(error: { [weak self = self] _ in
+                self?.endDownload(current, token: token, success: false)
+            }, completed: { [weak self = self] in
+                self?.endDownload(current, token: token, success: true)
+            }))
+        }
+    }
+    private func endDownload(_ row: GoldgramMediaEntry, token: Int, success: Bool) {
+        guard previewGeneration == token, accountOK else { return }
+        previewGeneration += 1
+        let alert = previewAlert; previewAlert = nil
+        alert?.dismiss(animated: true) { [weak self = self] in
+            guard let self, self.accountOK else { return }
+            if success { self.revalidate(row) { [weak self = self] current in self?.checkCache(current, afterDownload: true) } }
+            else { self.offerNative(row, message: "Не удалось загрузить файл.") }
+        }
+    }
+    private func offerNative(_ row: GoldgramMediaEntry, message: String) {
+        let alert = UIAlertController(title: "Медиацентр", message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Перейти к сообщению", style: .default) { [weak self = self] _ in self?.jump(row.message.id) })
+        alert.addAction(UIAlertAction(title: "Закрыть", style: .cancel)); present(alert, animated: true)
+    }
+    private func error(_ message: String) {
+        guard presentedViewController == nil else { return }
+        let alert = UIAlertController(title: "Медиацентр", message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default)); present(alert, animated: true)
+    }
+    private func jump(_ id: EngineMessage.Id) {
+        guard accountOK, !handingOff, let navigation = navigationController, navigation.topViewController === self,
+              let presenter = navigation.presentingViewController, let jump = GoldgramAuthorSearchBridge.nativeJump else {
+            error("Не удалось открыть точное сообщение."); return
+        }
+        handingOff = true
+        let snapshot = navigation.view.snapshotView(afterScreenUpdates: false)
+        presenter.dismiss(animated: true) { [weak self = self] in
+            guard let self else { return }
+            if !jump(self.context, id, navigation, presenter, snapshot) {
+                self.handingOff = false
+                guard presenter.viewIfLoaded?.window != nil, presenter.presentedViewController == nil else { return }
+                presenter.present(navigation, animated: false) { [weak self = self] in self?.error("Сообщение недоступно.") }
             }
         }
     }

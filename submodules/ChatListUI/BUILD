@@ -52,6 +52,7 @@ swift_library(
         "//submodules/ContactsPeerItem:ContactsPeerItem",
         "//submodules/ContactListUI:ContactListUI",
         "//submodules/PhotoResources:PhotoResources",
+        "//submodules/TinyThumbnail:TinyThumbnail",
         "//submodules/AppBundle:AppBundle",
         "//submodules/ContextUI:ContextUI",
         "//submodules/Markdown:Markdown",
