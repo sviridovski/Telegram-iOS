@@ -1,17 +1,17 @@
 # CURRENT_STATUS — verified checkpoint
 
-> **2026-11-24 local user date — #256 green and user-confirmed unified search; latest recovery checkpoint.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
+> **2026-11-24 local user date — #257 personal bookmarks and cards published; #256 green/user-confirmed recovery checkpoint.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
 
 ## Current code / CI / device state
 
 | Item | Latest confirmed status |
 | --- | --- |
 | Feature branch | `gold-next-243-author-search` |
-| HEAD | `b616ea603876121253d4d7c40284e5aac6a0896d` (#256), direct parent #255 |
+| HEAD | `80c974795d9bb1d029a8329817517404a1125a55` (#257), direct parent #256 |
 | Last green CI | [#256](https://github.com/sviridovski/Telegram-iOS/actions/runs/45317928698), all three jobs success; IPA artifact 14887166379, not expired at verification |
 | Last installed and tested | #256 — user confirmed search works and reports satisfaction; individual subcases not separately reported |
 | Failed candidate | [#255](https://github.com/sviridovski/Telegram-iOS/actions/runs/45311895241), Native success, Mx failed, Build skipped; NSDictionary conversion fixed in #256 |
-| Next candidate | None; roadmap discussion only, no implementation approved. |
+| Next candidate | [#257](https://github.com/sviridovski/Telegram-iOS/actions/runs/45321519764), in_progress at API check; bookmarks and contact cards; full CI/device acceptance pending |
 | Recovery | #256 latest green/user-tested search baseline; #254 previous green/device-tested archive-search and revision-diff baseline. Original port/telegram-13.2 not modified. |
 
 ## #252 corrections retained in #253
@@ -80,3 +80,15 @@
 
 - Native restored #255 cache, 8294/10103 disk hits, Bazel 175.427s, critical path 27.94s. Native cache saved under #256 SHA; Mx cache miss expected, staged Mx successfully saved. Total workflow 15m46s. Unified SQL regression explicitly passed again. All three jobs green. User reports search works; no broader per-case capture/Ghost/Collector test results inferred.
 - Ideas for discussion (not authorized for implementation): local user-controlled bookmarks/tags/notes (references instead of duplicate stored message text), private contact notes/aliases, saved search filters and custom date range/highlight/sort/media filters for supported results, configurable contextual menu/quick actions, Face ID for local archive and previews, encrypted backup with account-aware non-destructive restore, simplified Live status and bounded reliability tests. Check existing Swiftgram/Mx analogues before adding features. Respect existing archive visibility, account scoping, user-initiated access, Ghost and storage rules. No new source changes or CI run for documentation.
+
+## #257 personal bookmarks and contact cards
+
+- User approved both in one commit on #256. [Source 80c9747](https://github.com/sviridovski/Telegram-iOS/commit/80c974795d9bb1d029a8329817517404a1125a55), verified published branch and direct parent; [#257](https://github.com/sviridovski/Telegram-iOS/actions/runs/45321519764), in_progress at API check. Six source/workflow/test files changed: GoldgramAuthorSearch.swift, GoldgramHistoryStore.swift, prepare_mx.py, test_sqlite_reader.py, test_personal_metadata.py, build.yml.
+- New dashboard tiles + unified search toolbar shortcuts. Explicit long-press unified-search result to create/edit bookmark (folder, up to 12 tags, own note); list filter by folder/tag/title/note; remove reference without deleting message. Canonical cloud peer/message ID, 2/3 channel dedup, account scope. Contact cards created by existing user picker or known actual author of search result; local alias, own note, search shortcut preselects author, linked bookmark list, explicit card deletion. No automatic contact profiling or server profile change, no new collector, no changes to Ghost rules.
+- Store is bounded versioned local metadata JSON at Goldgram/Accounts/<account>/Personal/references-v1.json (not a second database), atomic writes, iOS complete file protection and folder excluded from backup. No stored message body/revision copies, no network/cloud sync of personal metadata; 2000 bookmark/1000 card limits, 16 MiB cap. Guard selected account before edits, fail closed on corrupt/wrong-account files. User-entered notes are not archive bodies. A bookmark references a message and its currently available revision history, not an immutable copy of a specific revision. Explicitly open archive by validated exact scoped messageId through existing read-only query and revalidate visibility on revision retrieval; if removed/purged show unavailable; preview bounded, full history available via #254 archive. Telegram bookmark explicit prepare_jump then existing native return stack. Archive deletion removes content, not personal references/own notes.
+- Foundation-only model copied to local Swift compiler and tested successfully (atomic roundtrip, canonical dedup, account/corrupt-store guards, invalid peer). CI runs actual extracted production model harness, Swift syntax preflight, exact lookup SQL fast/fallback tests. Full iOS compilation, UIKit and file-protection behavior remain unverified. Same Native/Mx key families and branch, staged Mx save retained; Mx source/recipe changed so Mx rebuild expected. Added fast isolated preflight before Bazel to catch storage regressions; measure actual CI time. No DB schema/reset/Collector/Bridge/ghost filter changes.
+
+### Acceptance (pending)
+1. Green CI and IPA. Dashboard and unified search shortcut opens both new screens; save ordinary and archive search hits, same message twice, tags/folders/notes, edit and delete bookmark only. Reopen app and check persistence; switch accounts and verify isolation. Test archive lookup with colliding raw IDs/peer types, deleted or purged reference, preview and exact jump/back.
+2. Select a known contact by name/username, edit local alias/note, restart app, open card, search preselected author, view own linked bookmarks, remove card without deleting bookmarks. Existing Ghost exception picker remains unchanged. Test iPad layout and corrupted/unavailable storage error; confirm no cloud changes.
+3. Recheck #256 unified search and #254 archive comparison, existing Ghost and Collector behavior. Latest verified recovery #256. Remaining roadmap proposals not approved.
