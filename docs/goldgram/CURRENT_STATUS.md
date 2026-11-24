@@ -1,17 +1,17 @@
 # CURRENT_STATUS — verified checkpoint
 
-> **2026-11-24 local user date — #254 source published; CI pending; #253 green/device-tested recovery checkpoint.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
+> **2026-11-24 local user date — #255 source published; CI queued; #254 green/device-tested recovery checkpoint.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
 
 ## Current code / CI / device state
 
 | Item | Latest confirmed status |
 | --- | --- |
 | Feature branch | `gold-next-243-author-search` |
-| HEAD | `89185f6468e5081b46351689453fb47061c0fe75` (#254), parent verified #253 |
-| Last green CI | [#253](https://github.com/sviridovski/Telegram-iOS/actions/runs/45294198691), all three jobs success; IPA artifact 14878545864, not expired at verification |
-| Last installed and tested | #253 — user confirmed installed/tested and all works on 2026-11-24 local; individual acceptance subcases not separately reported |
+| HEAD | `3312ed8cc689e736665227874653251b47f7cdec` (#255), parent verified #254 |
+| Last green CI | [#254](https://github.com/sviridovski/Telegram-iOS/actions/runs/45305068882), all three jobs success; IPA artifact 14880104195, not expired at verification |
+| Last installed and tested | #254 — user confirmed all checked and working, then approved unified search; individual test subcases not separately reported |
 | Failed candidate | [#252](https://github.com/sviridovski/Telegram-iOS/actions/runs/45287862914), Native failed, Mx success, Build skipped; Swift ImplicitStrongCapture in SharedAccountContext.swift:1308 |
-| Next candidate | [#254](https://github.com/sviridovski/Telegram-iOS/actions/runs/45305068882), in progress at API check; local archive search + visual revision diff; not yet green/device-tested |
+| Next candidate | [#255](https://github.com/sviridovski/Telegram-iOS/actions/runs/45311895241), queued at API check; unified search; CI and device acceptance pending |
 | Recovery | #250 green and author lookup confirmed, but result tap ignored. #243 older green baseline. Original port/telegram-13.2 not modified. |
 
 ## #252 corrections retained in #253
@@ -43,16 +43,29 @@
 - Privacy/storage: optional local Face ID gate, encrypted backup/restore with non-destructive merge, per-dialog retention/exclusions. Preserve account scoping, existing DB, clear-category semantics and explicit user choice. Any media organizer must respect content restrictions.
 - Reliability: controlled own-test-message capture and import checks; exact deleted-anchor fallback, pagination and explicit partial search results, measure CI cache and expensive compilation steps. Proposals only; no feature changes in #253 checkpoint update.
 
-## #254 combined feature candidate
+## #254 combined feature — green and user-tested
 
 - User approved implementing local archive search and visual comparison in one commit. [Code 89185f64](https://github.com/sviridovski/Telegram-iOS/commit/89185f6468e5081b46351689453fb47061c0fe75), verified parent #253. Only GoldgramHistoryStore.swift, GoldgramArchiveScreen.swift, test_sqlite_reader.py and build.yml changed.
 - Search: read-only selected-account SQLite, existing fast visible projection/fallback, original and all stored revisions, literal Unicode case/diacritic-insensitive matching (including Cyrillic е/ё), all/edited/deleted, event-time today/7/30/all, current dialog or all archive, author filtering by known saved (kind,id) from record context menu. Displays matching intermediate text separately from latest. 30-row pages, bounded query length/offset; explicit search, no schema/index migration, no new DB, network search or automatic capture. Existing native author search unchanged.
 - Revision comparison: context-menu action, original evidence preserved, red strikethrough removals and green underlined additions, compare stored sequential versions; no fabricated missing versions. Bounded 40 comparisons, 500 tokens/8000 UTF-16 units per diff; larger text falls back to plain before/after. Existing full local history remains available (up to 250 versions).
-- Local isolated Swift harness passed real SQLite Unicode function registration, Cyrillic/е/ё, literal wildcard/null, five token diff cases. CI reader regression extended with actual extracted SQL fast/fallback, scope, author-kind, intermediate text, date/event, paging and cross-account isolation; full repository suite and iOS build pending.
+- Local isolated Swift harness passed real SQLite Unicode function registration, Cyrillic/е/ё, literal wildcard/null, five token diff cases. CI reader regression extended with actual extracted SQL fast/fallback, scope, author-kind, intermediate text, date/event, paging and cross-account isolation; #254 all CI jobs succeeded and reader regression explicitly passed; user reported all works.
 - CI optimization: save validated staged Mx in independent successful Mx job, with final packaging cache save fallback; same input keys, final IPA checks unchanged. Native cache family unchanged. Mx rebuild needed because its compiled sources changed. Measure actual hits/timings, no speculative speed claim.
 
-### #254 acceptance (pending)
+### #254 acceptance (user reported all works; reusable regression cases)
 
 1. All CI jobs green and artifact present; install over #253 only then. Check prior Ghost, author navigation, archive and swipe-back regressions.
 2. In each archive tap magnifier; search a known own test string with mixed Cyrillic case and е/ё, literal %/_; find an intermediate revision no longer in latest. Switch all/edited/deleted, period, dialog/all scope, known author via long press and clear author. Verify account changes and purge cannot expose stale results; results show exact message and return to same list.
 3. Long-press own test record, choose «Сравнить редакции»: check added/removed words, punctuation, emoji, whitespace, missing-original label, very long message fallback, plain revision history. No changes to SQLite content, Ghost, Collector, Bridge or native capture expected.
+
+## #255 unified search candidate
+
+- User approved unified Telegram + archive search after confirming #254. [Code 3312ed8](https://github.com/sviridovski/Telegram-iOS/commit/3312ed8cc689e736665227874653251b47f7cdec) direct parent #254; [CI #255](https://github.com/sviridovski/Telegram-iOS/actions/runs/45311895241) queued at API verification. Seven changed files: GoldgramAuthorSearch.swift, ChatController.swift, GoldgramHistoryStore.swift, GoldgramArchiveScreen.swift, prepare_mx.py, test_sqlite_reader.py, build.yml.
+- Unified screen replaces native author search entry and Mx dashboard tile; #254 local archive magnifier and revision comparison remain accessible. Telegram/Archive/Both; optional literal text, selected actual user author by name or username, selected known dialog from root/archive lists, common send-date today/7/30/all. Selecting edited/deleted switches to Archive. Native text-only all-chat path uses TelegramEngine global search filtered to accessible root/archive cloud dialogs; author/explicit-dialog/date-only path uses bounded per-peer searches. TelegramEngine may fall back to local index; no guarantee of server availability or exhaustive search. Limits 1000 dialogs per folder, ten pages per peer/global, two peer searches concurrently, 5000 native hits, 20s chatlist and 30s request deadlines. Archive pages 30, offset cap 5000. No automatic opening/marking read, no new account/session or DB.
+- C ABI bridge to Mx existing read-only SQLite reader and narrow native metadata/explicit prepare_jump resolver. Canonical dedup by full Telegram MessageId including peer namespace, not raw IDs/text; SQLite 2/3 share CloudChannel namespace. Local original/matched/latest shown; source labels. Date filter for unified search uses sent_at, excluding unknown send dates only when a date chosen; standalone #254 retains event-time. NativeJump from #253 and existing return stack reused; no SharedAccountContext edits. Ghost exception picker still has its existing explicit confirmation path, separate from choosing an author. No capture/filter/Collector/Bridge/SQLite-schema changes.
+- #254 native CI log verified actual SQLite search regression passed, restored #253 cache, 8294/10103 disk hits, Bazel 185.345s, critical path 32.09s, saved cache under #254 SHA. Mx compiled and saved its staged cache independently. #255 preserves same keys, branch, and early Mx save; adds a Swift syntax preflight before expensive native compile and extends existing Python SQL regression for send/event date, unknown dates and source/identity guards. Local isolated Swift C ABI round-trip harness passed; full new tests and compilation not yet verified. Do not claim new performance numbers before CI.
+
+### #255 acceptance (pending)
+
+1. Verify all CI jobs and IPA; install only green. Dashboard and in-chat search entry; test Telegram, Archive, Both with own known test strings and author selected by name/username; choose another chat, clear author/dialog, switch period and edited/deleted. Verify common sent-date filter, standalone archive event-date unchanged.
+2. Same own test message matching both sources appears once with source label and stored matched text; distinct user/group/channel IDs do not merge; intermediate-only archive match still appears. Test no matches, partial/timeout, archive next page, cancellation when filters change and account switching/purge.
+3. Tap native result and swipe back to same results/scroll; archive-only saved record opens preview, explicit jump checks availability; deleted/unavailable message does not jump arbitrarily. Test Ghost exception confirmation, local comparison, existing archive and collector behavior unchanged.
