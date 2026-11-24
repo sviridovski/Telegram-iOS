@@ -153,3 +153,7 @@ Separate wide teal dashboard tile ID 33, integrated into #260 preferences migrat
 ## #262 media center compile fix
 
 EnginePeer in the 13.2 source has five cases, including community(TelegramCommunity). Media center acceptsPeer now explicitly rejects community and secretChat and fails closed on unknown future cases; ordinary user/channel/legacyGroup checks unchanged. Community is not supported by GoldgramUnifiedIdentity.sources, so no expansion of identity or capture. One source file changed; architecture and privacy boundaries otherwise unchanged. Source 7d1b137dbbde22ec6cffbcaac142735e9ba7ccfa; full CI pending.
+
+## Media center lifecycle correction (after #262)
+
+Do not clear GoldgramMediaCenter rows, search results, cursors or tasks in speculative viewWillDisappear: a cancelled sheet drag/pop can call it before dismissal commits. State belongs to the controller and survives cancelled transitions and native message handoff. ARC/deinit disposes the query, dialog, preview and download tasks on actual controller release. Explicit search/filter changes and account invalidation remain the clear boundaries; on account mismatch reset started and cancel preview/download. No change to protection gates, persistence, native media search, Ghost or Collector. Source fa1af6457deac9b55763e7bf8cd9fc3bd1fdeecb; device verification pending.

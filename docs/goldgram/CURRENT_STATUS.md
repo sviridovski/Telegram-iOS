@@ -1,17 +1,17 @@
 # CURRENT_STATUS — verified checkpoint
 
-> **2026-11-24 local user date — #262 first attempt failed with cancelled Native/Mx and unavailable logs; same-run retry queued; #260 verified green and user-tested.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
+> **2026-11-24 local user date — #262 retry green and installed; media gallery disappears on cancelled downward swipe. Lifecycle fix published; device acceptance pending.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
 
 ## Current code / CI / device state
 
 | Item | Latest confirmed status |
 | --- | --- |
 | Feature branch | `gold-next-243-author-search` |
-| HEAD | `7d1b137dbbde22ec6cffbcaac142735e9ba7ccfa` (#262), direct parent #261 |
-| Last green CI | [#260](https://github.com/sviridovski/Telegram-iOS/actions/runs/45357908933), Native/Mx/Build success; IPA artifact 14906095386, not expired at verification |
-| Last installed | #260 — user confirms tested and all excellent; individual acceptance cases not independently reported. |
+| HEAD | `fa1af6457deac9b55763e7bf8cd9fc3bd1fdeecb` (post-#262 lifecycle correction), direct parent #262 |
+| Last green CI | [#262 attempt 2](https://github.com/sviridovski/Telegram-iOS/actions/runs/45416651778), Native/Mx/Build success; IPA artifact 14938885512, not expired at verification |
+| Last installed | #262 — user reports media results load, then disappear after slight downward swipe; video confirms empty grid with unchanged count. Full acceptance not yet reported. |
 | Failed candidate | [#261](https://github.com/sviridovski/Telegram-iOS/actions/runs/45366241671): Mx success, Native failure (GoldgramAuthorSearch.swift:1770 exhaustive switch missing `.community(_)`), Build skipped. Earlier #257 failure retained in history. |
-| Next task | Verify same-run retry of [#262](https://github.com/sviridovski/Telegram-iOS/actions/runs/45416651778); diagnose fresh logs if failure recurs; then artifact and device acceptance. |
+| Next task | Verify lifecycle correction CI ([run #263](https://github.com/sviridovski/Telegram-iOS/actions/runs/45429887061) in_progress), IPA, cancelled swipe/actual dismissal/reopen, paging and native back; then broader media acceptance. |
 | Recovery | #260 latest green and user-confirmed working baseline; #259 fallback with disappearing chat search button; #256 earlier confirmed search baseline. Original port/telegram-13.2 not modified. |
 
 ## #252 corrections retained in #253
@@ -154,3 +154,10 @@
 ## #262 retry — cancelled jobs, no source change
 
 - Run #262 first attempt: workflow conclusion failure, Native and Mx cancelled, Build skipped. Both job-log endpoints returned 404 BlobNotFound; check-run annotations exist but connector denies annotation endpoint. Cause unknown, no new compiler error verified. Re-run failed jobs requested successfully on exact same run/commit, API status queued; no source change, #260 last green/device-tested.
+
+## #262 green retry and media center swipe fix
+
+- #262 attempt 2 Native/Mx/Build success, IPA 14938885512 present. Native restored #260 cache and saved #262 cache: 8228 disk hits / 10103 processes, elapsed 1313.496s, critical path 1069.85s. Layout and media rule tests reported OK. User installed #262 and reported defect; #260 remains verified fallback.
+- User supplied video ScreenRecording_11-24-2026 18-44-42_1.mp4, examined frame sequence: media grid loads, brief sheet drag, grid empty while status still indicates 241 results. Source matches premature clear in viewWillDisappear when navigation dismissal begins even if cancelled; started stays true. No runtime instrumentation proof, but strong matching code path.
+- Published fa1af6457deac9b55763e7bf8cd9fc3bd1fdeecb, direct #262 parent, exactly two files: GoldgramAuthorSearch.swift and test_personal_metadata.py. Remove destructive disappearance hook; retain state through cancelled drag, actual native handoff, cursor and filters. Controller deinit disposes tasks; explicit restart/account invalidation still clears; account mismatch resets started and cancels previews/download. Existing preflight gets source-level lifecycle regression checks (not a UIKit runtime test); source contract checked before publication. Cache recipe/keys unchanged, expect reuse of successful #262 cache. CI [run #263](https://github.com/sviridovski/Telegram-iOS/actions/runs/45429887061) in_progress; full compile/device verification pending. No archive/Ghost/Collector/SQLite changes.
+- Acceptance: after green IPA install over #262, open gallery, wait for results, slight downward swipe repeatedly and cancel, verify rows/count remain; scroll/paginate, change filters, open file and jump to chat/back, intentionally dismiss and reopen, verify current account guards. Do not claim actual gesture fixed until device test.

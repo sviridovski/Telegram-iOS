@@ -192,3 +192,8 @@ The public [macOS runner availability issue #15291](https://github.com/actions/r
 
 - Run #262 first attempt: workflow conclusion failure, Native and Mx cancelled, Build skipped. Both job-log endpoints returned 404 BlobNotFound; check-run annotations exist but connector denies annotation endpoint. Cause unknown, no new compiler error verified. Re-run failed jobs requested successfully on exact same run/commit, API status queued; no source change, #260 last green/device-tested.
 - Native job 138524582105 and Mx job 138524582961 cancelled, Build 138534629905 skipped. Run 45416651778, source 7d1b137dbbde22ec6cffbcaac142735e9ba7ccfa. Cache settings unchanged; no docs-triggered build.
+
+## 2026-11-24 — #262 retry successful; media swipe lifecycle fix
+
+- #262 attempt 2 green (all three jobs), IPA 14938885512 available; Native cache restored #260, 8228/10103 disk hits, 1313.496s elapsed, 1069.85s critical path, #262 cache saved. User installed #262. Video shows results loaded and then blank grid after brief downward sheet gesture while count stays at 241. Code inspection shows clear() in speculative viewWillDisappear, with started left true; likely cause.
+- Published fa1af6457deac9b55763e7bf8cd9fc3bd1fdeecb, direct #262 parent; source and existing preflight test only. Removed destructive disappearance hook, preserved deinit disposal and native return state; account mismatch clears and resets started/cancels preview/download. Source regression contract checked, no local UIKit runtime test. CI [run #263](https://github.com/sviridovski/Telegram-iOS/actions/runs/45429887061) in_progress; device acceptance pending. No changes to SQLite/Ghost/Collector or cache keys, no docs-triggered CI. #260 remains known good fallback.
