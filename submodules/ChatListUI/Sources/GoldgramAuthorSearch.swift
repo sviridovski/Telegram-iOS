@@ -2033,6 +2033,11 @@ private final class GoldgramMediaCenter: UIViewController, UICollectionViewDataS
     private var cacheIds = Set<EngineMessage.Id>()
     private var remoteUnavailable = false
     private var remoteResponded = false
+    private var cachedHistoryLatest: Int32?
+    private var remoteHistoryLatest: Int32?
+    private var cachedHistoryCount = 0
+    private var remoteHistoryCount = 0
+    private var cachedHistoryPending = false
     private var scope = 0 // all/private/groups/channels
     private var from: Int32?
     private var through: Int32?
@@ -2162,6 +2167,8 @@ private final class GoldgramMediaCenter: UIViewController, UICollectionViewDataS
     private func clear() {
         generation += 1; busy = false; activeFamily = nil; queryTask.set(nil); dialogsTask.set(nil); cacheTask.set(nil)
         cacheIds.removeAll(); remoteUnavailable = false; remoteResponded = false
+        cachedHistoryLatest = nil; remoteHistoryLatest = nil
+        cachedHistoryCount = 0; remoteHistoryCount = 0; cachedHistoryPending = false
         rows.removeAll(); found.removeAll(); allowed.removeAll(); states.removeAll()
         pages.removeAll(); finished.removeAll(); families.removeAll()
         collection.reloadData()
@@ -2186,7 +2193,11 @@ private final class GoldgramMediaCenter: UIViewController, UICollectionViewDataS
                 // Family 6 is recent unfiltered server history, before tag searches.
                 families.insert(6, at: 0)
             }
-            busy = false; loadNext(); return
+            // Always seed from the actual current peer's native history. A
+            // successful but stale server page must never suppress this read.
+            if allowed[chat.id] != nil { loadCachedRecent(token) }
+            else { busy = false; loadNext() }
+            return
         }
         let root = context.engine.messages.chatList(group: .root, count: 1000) |> filter { !$0.isLoading } |> take(1)
         let archive = context.engine.messages.chatList(group: .archive, count: 1000) |> filter { !$0.isLoading } |> take(1)
@@ -2267,20 +2278,17 @@ private final class GoldgramMediaCenter: UIViewController, UICollectionViewDataS
             if result.goldgramRemoteUnavailable {
                 self.remoteUnavailable = true; self.partial = true
                 self.finished.insert(family)
-                if recentHistory && page == 0 {
-                    self.loadCachedRecent(token)
-                    return
-                }
             } else {
                 self.remoteResponded = true
-                self.collectMedia(result.messages.map { EngineMessage($0) }, cached: false)
-                self.states[family] = nextState
-                if recentHistory && page == 0 && result.messages.isEmpty {
-                    self.partial = true
-                    self.finished.insert(family)
-                    self.loadCachedRecent(token)
-                    return
+                let messages = result.messages.map { EngineMessage($0) }
+                if recentHistory, let chat = self.chat {
+                    let exact = messages.filter { $0.id.peerId == chat.id }
+                    self.remoteHistoryCount = exact.count
+                    self.remoteHistoryLatest = exact.map { $0.timestamp }.max()
+                    if exact.isEmpty { self.partial = true }
                 }
+                self.collectMedia(messages, cached: false)
+                self.states[family] = nextState
                 if result.completed || previous == nextState || page + 1 >= (recentHistory ? 3 : 10) {
                     self.finished.insert(family)
                     if !result.completed { self.partial = true }
@@ -2294,8 +2302,7 @@ private final class GoldgramMediaCenter: UIViewController, UICollectionViewDataS
                   self.pages[family] == page + 1, !self.finished.contains(family) else { return }
             self.busy = false; self.activeFamily = nil; self.queryTask.set(nil); self.finished.insert(family)
             self.partial = true; self.remoteUnavailable = true
-            if recentHistory && page == 0 { self.loadCachedRecent(token) }
-            else { self.updateStatus(); self.continueInitial(token) }
+            self.updateStatus(); self.continueInitial(token)
         }
     }
 
@@ -2327,19 +2334,25 @@ private final class GoldgramMediaCenter: UIViewController, UICollectionViewDataS
     }
 
     private func loadCachedRecent(_ token: Int) {
-        guard let chat, accountOK, generation == token else { rebuild(); continueInitial(token); return }
+        guard let chat, accountOK, generation == token, allowed[chat.id] != nil else { return }
+        cachedHistoryPending = true
         busy = true; updateStatus()
         cacheTask.set((context.engine.messages.goldgramCachedRecentMediaCandidates(peerId: chat.id)
             |> take(1) |> deliverOnMainQueue).start(next: { [weak self = self] messages in
-            guard let self, self.accountOK, self.generation == token, self.busy, self.activeFamily == nil else { return }
+            guard let self, self.accountOK, self.generation == token, self.cachedHistoryPending else { return }
+            self.cachedHistoryPending = false
             self.busy = false
-            self.collectMedia(messages, cached: true)
+            let exact = messages.filter { $0.id.peerId == chat.id }
+            self.cachedHistoryCount = exact.count
+            self.cachedHistoryLatest = exact.map { $0.timestamp }.max()
+            self.collectMedia(exact, cached: true)
             self.rebuild()
             self.continueInitial(token)
         }))
         DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self = self] in
-            guard let self, self.generation == token, self.busy, self.activeFamily == nil else { return }
-            self.cacheTask.set(nil); self.busy = false
+            guard let self, self.generation == token, self.cachedHistoryPending else { return }
+            self.cachedHistoryPending = false
+            self.cacheTask.set(nil); self.busy = false; self.partial = true
             self.rebuild(); self.continueInitial(token)
         }
     }
@@ -2370,6 +2383,17 @@ private final class GoldgramMediaCenter: UIViewController, UICollectionViewDataS
         var text = "\(scopeName) · \(author?.compactDisplayTitle ?? "Любой автор")\nЗагружено: \(rows.count) · \(busy ? "поиск…" : "доступные результаты")"
         if remoteResponded || !cacheIds.isEmpty {
             text += "\nСервер Telegram: \(rows.count - cacheIds.count) · локальная история: \(cacheIds.count)"
+        }
+        if chat != nil && !busy {
+            // Compact source freshness evidence: no message contents, names or IDs.
+            func date(_ value: Int32?) -> String {
+                guard let value else { return "нет" }
+                return DateFormatter.localizedString(from: Date(timeIntervalSince1970: Double(value)), dateStyle: .short, timeStyle: .short)
+            }
+            text += "\nИстория: лок. \(cachedHistoryCount) / \(date(cachedHistoryLatest)); сервер \(remoteHistoryCount) / \(date(remoteHistoryLatest))"
+            if let local = cachedHistoryLatest, let remote = remoteHistoryLatest, local > remote {
+                text += " · сервер отстаёт"
+            }
         }
         if remoteUnavailable { text += "\nЧасть серверных запросов недоступна" }
         if !busy && rows.isEmpty && remoteUnavailable { text += " — отсутствие медиа не подтверждено" }

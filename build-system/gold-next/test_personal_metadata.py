@@ -146,3 +146,19 @@ assert "forceLocal: true" in engine
 assert "goldgramRemoteOnly && result == nil && state?.main.completed != true" in core
 assert "goldgramCloudHistory" in core and "if state?.additional == nil && !goldgramRemoteOnly" in core
 print("Goldgram #264 media freshness, exact migration and explicit source contracts OK")
+
+# #265: cached current-peer history is always read before server media search,
+# even when server returns nonempty stale results. Use bounded indexed read.
+selected_start = media_screen.split("@objc private func restart()", 1)[1].split("let root = context.engine.messages.chatList", 1)[0]
+assert "if allowed[chat.id] != nil { loadCachedRecent(token) }" in selected_start
+cache_read = engine.split("public func goldgramCachedRecentMediaCandidates", 1)[1].split("public func getSearchMessageCount", 1)[0]
+assert "transaction.getMessages(peerId: peerId, namespace: Namespaces.Message.Cloud" in cache_read
+assert "MessageIndex.upperBound(peerId: peerId" in cache_read and "MessageIndex.lowerBound(peerId: peerId" in cache_read
+assert "limit: 300" in cache_read and "withAllMessages" not in cache_read
+assert "cachedHistoryPending" in media_screen
+assert media_screen.count("loadCachedRecent(token)") == 1
+assert "self.collectMedia(exact, cached: true)" in media_screen
+assert "cacheIds.remove(message.id)" in media_screen
+assert "self.remoteHistoryLatest = exact.map" in media_screen
+assert "let row = GoldgramMediaEntry.from(message, category: category)" in media_screen
+print("Goldgram #265 always merge bounded current-peer native history; preserve source labels and guards")

@@ -228,22 +228,18 @@ public extension TelegramEngine {
                 state: state, centerId: nil, limit: limit, goldgramRemoteOnly: true, goldgramRecentHistory: recentHistory)
         }
 
-        // A bounded read of the already available native history, only when the
-        // selected chat's remote history is unavailable. No new storage or read receipts.
+        // A bounded newest-first native history read for the selected cloud chat.
+        // Independent of remote search success. No new storage or read receipts.
         public func goldgramCachedRecentMediaCandidates(peerId: EnginePeer.Id) -> Signal<[EngineMessage], NoError> {
             guard peerId.namespace == Namespaces.Peer.CloudUser || peerId.namespace == Namespaces.Peer.CloudGroup ||
                   peerId.namespace == Namespaces.Peer.CloudChannel else { return .single([]) }
             return self.account.postbox.transaction { transaction -> [EngineMessage] in
-                var result: [EngineMessage] = []
-                var visited = 0
-                transaction.withAllMessages(peerId: peerId, reversed: true, { message in
-                    visited += 1
-                    if message.id.namespace == Namespaces.Message.Cloud {
-                        result.append(EngineMessage(message))
-                    }
-                    return visited < 300
-                })
-                return result.sorted { $0.timestamp > $1.timestamp }
+                let messages = transaction.getMessages(peerId: peerId, namespace: Namespaces.Message.Cloud,
+                    from: MessageIndex.upperBound(peerId: peerId, namespace: Namespaces.Message.Cloud),
+                    includeFrom: false,
+                    to: MessageIndex.lowerBound(peerId: peerId, namespace: Namespaces.Message.Cloud),
+                    limit: 300)
+                return messages.map { EngineMessage($0) }.sorted { $0.timestamp > $1.timestamp }
             }
         }
 
