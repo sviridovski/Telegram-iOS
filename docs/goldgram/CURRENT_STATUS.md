@@ -1,17 +1,17 @@
 # CURRENT_STATUS — verified checkpoint
 
-> **2026-11-24 local user date — #255 source published; CI queued; #254 green/device-tested recovery checkpoint.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
+> **2026-11-24 local user date — #256 metadata hotfix published; #255 failed Mx; #254 green/device-tested recovery checkpoint.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
 
 ## Current code / CI / device state
 
 | Item | Latest confirmed status |
 | --- | --- |
 | Feature branch | `gold-next-243-author-search` |
-| HEAD | `3312ed8cc689e736665227874653251b47f7cdec` (#255), parent verified #254 |
+| HEAD | `b616ea603876121253d4d7c40284e5aac6a0896d` (#256), direct parent #255 |
 | Last green CI | [#254](https://github.com/sviridovski/Telegram-iOS/actions/runs/45305068882), all three jobs success; IPA artifact 14880104195, not expired at verification |
 | Last installed and tested | #254 — user confirmed all checked and working, then approved unified search; individual test subcases not separately reported |
 | Failed candidate | [#252](https://github.com/sviridovski/Telegram-iOS/actions/runs/45287862914), Native failed, Mx success, Build skipped; Swift ImplicitStrongCapture in SharedAccountContext.swift:1308 |
-| Next candidate | [#255](https://github.com/sviridovski/Telegram-iOS/actions/runs/45311895241), queued at API check; unified search; CI and device acceptance pending |
+| Next candidate | [#256](https://github.com/sviridovski/Telegram-iOS/actions/runs/45317928698), in_progress at API check; #255 unified search + typed metadata bridge correction; CI and device acceptance pending |
 | Recovery | #250 green and author lookup confirmed, but result tap ignored. #243 older green baseline. Original port/telegram-13.2 not modified. |
 
 ## #252 corrections retained in #253
@@ -57,7 +57,7 @@
 2. In each archive tap magnifier; search a known own test string with mixed Cyrillic case and е/ё, literal %/_; find an intermediate revision no longer in latest. Switch all/edited/deleted, period, dialog/all scope, known author via long press and clear author. Verify account changes and purge cannot expose stale results; results show exact message and return to same list.
 3. Long-press own test record, choose «Сравнить редакции»: check added/removed words, punctuation, emoji, whitespace, missing-original label, very long message fallback, plain revision history. No changes to SQLite content, Ghost, Collector, Bridge or native capture expected.
 
-## #255 unified search candidate
+## #255 unified search candidate (Native success, Mx failed)
 
 - User approved unified Telegram + archive search after confirming #254. [Code 3312ed8](https://github.com/sviridovski/Telegram-iOS/commit/3312ed8cc689e736665227874653251b47f7cdec) direct parent #254; [CI #255](https://github.com/sviridovski/Telegram-iOS/actions/runs/45311895241) queued at API verification. Seven changed files: GoldgramAuthorSearch.swift, ChatController.swift, GoldgramHistoryStore.swift, GoldgramArchiveScreen.swift, prepare_mx.py, test_sqlite_reader.py, build.yml.
 - Unified screen replaces native author search entry and Mx dashboard tile; #254 local archive magnifier and revision comparison remain accessible. Telegram/Archive/Both; optional literal text, selected actual user author by name or username, selected known dialog from root/archive lists, common send-date today/7/30/all. Selecting edited/deleted switches to Archive. Native text-only all-chat path uses TelegramEngine global search filtered to accessible root/archive cloud dialogs; author/explicit-dialog/date-only path uses bounded per-peer searches. TelegramEngine may fall back to local index; no guarantee of server availability or exhaustive search. Limits 1000 dialogs per folder, ten pages per peer/global, two peer searches concurrently, 5000 native hits, 20s chatlist and 30s request deadlines. Archive pages 30, offset cap 5000. No automatic opening/marking read, no new account/session or DB.
@@ -69,3 +69,9 @@
 1. Verify all CI jobs and IPA; install only green. Dashboard and in-chat search entry; test Telegram, Archive, Both with own known test strings and author selected by name/username; choose another chat, clear author/dialog, switch period and edited/deleted. Verify common sent-date filter, standalone archive event-date unchanged.
 2. Same own test message matching both sources appears once with source label and stored matched text; distinct user/group/channel IDs do not merge; intermediate-only archive match still appears. Test no matches, partial/timeout, archive next page, cancellation when filters change and account switching/purge.
 3. Tap native result and swipe back to same results/scroll; archive-only saved record opens preview, explicit jump checks availability; deleted/unavailable message does not jump arbitrarily. Test Ghost exception confirmation, local comparison, existing archive and collector behavior unchanged.
+
+## #256 targeted Mx compile fix
+
+- [#255](https://github.com/sviridovski/Telegram-iOS/actions/runs/45311895241) failed in Mx (job 138169385986, Build Mx 1.0.0 step); Native success, assembly skipped. Compiler: Sources/tgapi/GoldgramArchiveScreen.swift:2275:43 — 'NSDictionary' is not convertible to '[AnyHashable : Any]'. This is the unified metadata bridge, not the native search screen. Native log confirms #255 SQL regression passed (sent/event date, unknown dates, identity/bridge guards) and successful compile.
+- [Fix b616ea6](https://github.com/sviridovski/Telegram-iOS/commit/b616ea603876121253d4d7c40284e5aac6a0896d) published; exact diff verified: only GoldgramArchiveScreen.swift changed, inside goldgramUnifiedMetadataV1. Construct a typed Swift dictionary from validated accountId/items and optional explicitly allowed prepare_jump, no cast or force cast. Keep account and action checks and native resolver. All #255 search modes retained; no other changes to native UI, database schema, capture, Ghost, Collector or Live Bridge. [#256](https://github.com/sviridovski/Telegram-iOS/actions/runs/45317928698), in_progress at API check; not yet compile/device verified. #254 remains recovery baseline.
+- #255 Native restored #254 cache, 8224/10103 disk hits, Bazel 1413.863s, critical path 1152.67s, saved cache under #255 SHA. #256 changes only Mx Swift source; preserve Native cache family and all native source inputs, expect reuse of #255 native cache if runner/key available. Mx rebuild required due to changed source; prior failed Mx produced no usable cache. No cache reset. Existing #255 acceptance remains pending.
