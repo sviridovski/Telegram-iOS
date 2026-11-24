@@ -782,16 +782,27 @@ private enum GoldgramUnifiedIdentity {
 private final class GoldgramUnifiedDialogPicker: UITableViewController, UISearchBarDelegate {
     private let context: AccountContext
     private let choose: (EnginePeer?) -> Void
+    private let chooseMedia: ((EnginePeer?, [EnginePeer]) -> Void)?
     private let query = UISearchBar()
     private let disposable = MetaDisposable()
     private var peers: [EnginePeer] = []
     private var filtered: [EnginePeer] = []
+    private var activity: [EnginePeer.Id: Int32] = [:]
+    private var predecessors: [EnginePeer.Id: [EnginePeer]] = [:]
     private var loaded = false
     private var partial = false
 
     init(context: AccountContext, choose: @escaping (EnginePeer?) -> Void) {
         self.context = context
         self.choose = choose
+        self.chooseMedia = nil
+        super.init(style: .insetGrouped)
+    }
+
+    init(context: AccountContext, chooseMedia: @escaping (EnginePeer?, [EnginePeer]) -> Void) {
+        self.context = context
+        self.choose = { _ in }
+        self.chooseMedia = chooseMedia
         super.init(style: .insetGrouped)
     }
     required init?(coder: NSCoder) { return nil }
@@ -809,11 +820,42 @@ private final class GoldgramUnifiedDialogPicker: UITableViewController, UISearch
         disposable.set((combineLatest(root, archive) |> deliverOnMainQueue).start(next: { [weak self = self] a, b in
             guard let self, GoldgramAuthorSearchBridge.isCurrentAccount(self.context) else { return }
             var seen = Set<EnginePeer.Id>()
-            self.peers = (a.items + b.items).compactMap { item in
+            var candidates: [EnginePeer] = []
+            for item in a.items + b.items {
                 guard case .chatList = item.id, let peer = item.renderedPeer.peer,
-                      GoldgramUnifiedIdentity.sources(peer.id) != nil, seen.insert(peer.id).inserted else { return nil }
-                return peer
-            }.sorted { $0.compactDisplayTitle.localizedCaseInsensitiveCompare($1.compactDisplayTitle) == .orderedAscending }
+                      GoldgramUnifiedIdentity.sources(peer.id) != nil else { continue }
+                if let date = item.messages.map({ $0.timestamp }).max() {
+                    self.activity[peer.id] = max(self.activity[peer.id] ?? 0, date)
+                }
+                if seen.insert(peer.id).inserted { candidates.append(peer) }
+            }
+            if self.chooseMedia != nil {
+                candidates = candidates.filter { GoldgramMediaEntry.acceptsPeer($0) }
+                let byId = Dictionary(uniqueKeysWithValues: candidates.map { ($0.id, $0) })
+                var hidden = Set<EnginePeer.Id>()
+                for peer in candidates {
+                    // Never merge by title or bare numeric ID. Only a native
+                    // migration reference to an available, ordinary supergroup.
+                    guard case let .legacyGroup(group) = peer,
+                          let targetId = group.migrationReference?.peerId,
+                          let target = byId[targetId],
+                          case let .channel(channel) = target,
+                          case .group = channel.info else { continue }
+                    self.predecessors[targetId, default: []].append(peer)
+                    hidden.insert(peer.id)
+                    self.activity[targetId] = max(self.activity[targetId] ?? 0, self.activity[peer.id] ?? 0)
+                }
+                candidates.removeAll { hidden.contains($0.id) }
+            }
+            self.peers = candidates.sorted {
+                if self.chooseMedia != nil {
+                    let left = self.activity[$0.id] ?? 0, right = self.activity[$1.id] ?? 0
+                    if left != right { return left > right }
+                }
+                let order = $0.compactDisplayTitle.localizedCaseInsensitiveCompare($1.compactDisplayTitle)
+                if order != .orderedSame { return order == .orderedAscending }
+                return $0.id.toInt64() < $1.id.toInt64()
+            }
             self.partial = a.hasEarlier || a.hasLater || b.hasEarlier || b.hasLater ||
                 a.items.count >= 1000 || b.items.count >= 1000
             self.loaded = true
@@ -824,7 +866,9 @@ private final class GoldgramUnifiedDialogPicker: UITableViewController, UISearch
     private func applyFilter() {
         let term = (query.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         filtered = peers.filter {
-            term.isEmpty || $0.compactDisplayTitle.range(of: term, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+            term.isEmpty || $0.compactDisplayTitle.range(of: term, options: [.caseInsensitive, .diacriticInsensitive]) != nil ||
+                (chooseMedia != nil && (($0.addressName ?? "").range(of: term.trimmingCharacters(in: CharacterSet(charactersIn: "@")), options: [.caseInsensitive]) != nil ||
+                    String($0.id.id._internalGetInt64Value()).contains(term)))
         }
         tableView.reloadData()
     }
@@ -837,14 +881,50 @@ private final class GoldgramUnifiedDialogPicker: UITableViewController, UISearch
         "Только доступные облачные диалоги текущего аккаунта."
     }
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = UITableViewCell(style: .default, reuseIdentifier: nil)
+        let cell = UITableViewCell(style: chooseMedia == nil ? .default : .subtitle, reuseIdentifier: nil)
         cell.textLabel?.text = indexPath.row == 0 ? "Все диалоги" : filtered[indexPath.row - 1].compactDisplayTitle
+        guard chooseMedia != nil, indexPath.row > 0 else { return cell }
+        let peer = filtered[indexPath.row - 1]
+        let kind: String
+        let icon: String
+        switch peer {
+        case .user: kind = "Личный чат"; icon = "person.crop.circle"
+        case let .legacyGroup(group):
+            kind = group.migrationReference != nil ? "Старая группа" : "Группа"; icon = "person.2.circle"
+        case let .channel(channel):
+            if case .group = channel.info { kind = "Супергруппа"; icon = "person.3.sequence.fill" }
+            else { kind = "Канал"; icon = "megaphone" }
+        default: kind = "Диалог"; icon = "bubble.left"
+        }
+        var parts = [kind, "ID \(peer.id.id._internalGetInt64Value())"]
+        if let name = peer.addressName, !name.isEmpty { parts.append("@"+name) }
+        if let date = activity[peer.id], date > 0 {
+            parts.append(DateFormatter.localizedString(from: Date(timeIntervalSince1970: Double(date)), dateStyle: .short, timeStyle: .short))
+        }
+        if predecessors[peer.id]?.isEmpty == false { parts.append("Есть прежняя история") }
+        cell.detailTextLabel?.text = parts.joined(separator: " · ")
+        cell.detailTextLabel?.numberOfLines = 2
+        cell.detailTextLabel?.textColor = .secondaryLabel
+        let thumbnailData = peer.smallProfileImage?.immediateThumbnailData
+        let tiny = thumbnailData.flatMap { $0.count <= 65536 ? decodeTinyThumbnail(data: $0) : nil }.flatMap { UIImage(data: $0) }
+        let image = tiny ?? UIImage(systemName: icon)
+        if let image {
+            cell.imageView?.image = UIGraphicsImageRenderer(size: CGSize(width: 40, height: 40)).image { _ in
+                UIBezierPath(ovalIn: CGRect(x: 0, y: 0, width: 40, height: 40)).addClip()
+                UIColor.secondarySystemGroupedBackground.setFill()
+                UIRectFill(CGRect(x: 0, y: 0, width: 40, height: 40))
+                image.draw(in: CGRect(x: 0, y: 0, width: 40, height: 40))
+            }
+        }
         return cell
     }
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         guard GoldgramAuthorSearchBridge.isCurrentAccount(context),
               indexPath.row == 0 || filtered.indices.contains(indexPath.row - 1) else { return }
-        choose(indexPath.row == 0 ? nil : filtered[indexPath.row - 1])
+        let peer = indexPath.row == 0 ? nil : filtered[indexPath.row - 1]
+        if let chooseMedia {
+            chooseMedia(peer, peer.flatMap { predecessors[$0.id] } ?? [])
+        } else { choose(peer) }
         navigationController?.popViewController(animated: true)
     }
 }
@@ -1918,11 +1998,11 @@ private final class GoldgramMediaCell: UICollectionViewCell {
         details.setContentCompressionResistancePriority(.required, for: .vertical)
     }
     required init?(coder: NSCoder) { return nil }
-    func configure(_ row: GoldgramMediaEntry, grid: Bool) {
+    func configure(_ row: GoldgramMediaEntry, grid: Bool, cached: Bool = false) {
         listWidth?.isActive = !grid
         column.axis = grid ? .vertical : .horizontal
         name.text = row.name.isEmpty ? row.category.title : row.name
-        details.text = row.chat + " · " + row.date + (grid ? "" : " · " + row.sizeText)
+        details.text = row.chat + " · " + row.date + (cached ? " · Локально" : "") + (grid ? "" : " · " + row.sizeText)
         let decoded = row.thumbnail.flatMap { $0.count <= 65536 ? decodeTinyThumbnail(data: $0) : nil }.flatMap { UIImage(data: $0) }
         image.image = decoded ?? UIImage(systemName: row.category.symbol)
         image.contentMode = decoded == nil ? .scaleAspectFit : .scaleAspectFill
@@ -1943,11 +2023,16 @@ private final class GoldgramMediaCenter: UIViewController, UICollectionViewDataS
     private lazy var collection = UICollectionView(frame: .zero, collectionViewLayout: layout)
     private let queryTask = MetaDisposable()
     private let dialogsTask = MetaDisposable()
+    private let cacheTask = MetaDisposable()
     private let previewTask = MetaDisposable()
     private let downloadTask = MetaDisposable()
     private var category: GoldgramMediaCategory?
     private var author: EnginePeer?
     private var chat: EnginePeer?
+    private var relatedChats: [EnginePeer] = []
+    private var cacheIds = Set<EngineMessage.Id>()
+    private var remoteUnavailable = false
+    private var remoteResponded = false
     private var scope = 0 // all/private/groups/channels
     private var from: Int32?
     private var through: Int32?
@@ -1974,7 +2059,7 @@ private final class GoldgramMediaCenter: UIViewController, UICollectionViewDataS
 
     init(context: AccountContext) { self.context = context; super.init(nibName: nil, bundle: nil) }
     required init?(coder: NSCoder) { return nil }
-    deinit { queryTask.dispose(); dialogsTask.dispose(); previewTask.dispose(); downloadTask.dispose() }
+    deinit { queryTask.dispose(); dialogsTask.dispose(); cacheTask.dispose(); previewTask.dispose(); downloadTask.dispose() }
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -1989,7 +2074,11 @@ private final class GoldgramMediaCenter: UIViewController, UICollectionViewDataS
         layoutButton.setImage(UIImage(systemName: "square.grid.2x2"), for: .normal)
         layoutButton.accessibilityLabel = "Галерея или список"
         layoutButton.addTarget(self, action: #selector(toggleLayout), for: .touchUpInside)
-        let controls = UIStackView(arrangedSubviews: [filterButton, search, layoutButton])
+        let refresh = UIButton(type: .system)
+        refresh.setImage(UIImage(systemName: "arrow.clockwise"), for: .normal)
+        refresh.accessibilityLabel = "Обновить результаты"
+        refresh.addTarget(self, action: #selector(restart), for: .touchUpInside)
+        let controls = UIStackView(arrangedSubviews: [filterButton, search, refresh, layoutButton])
         controls.axis = .horizontal; controls.distribution = .fillEqually; controls.spacing = 8
         info.font = .preferredFont(forTextStyle: .footnote); info.textColor = .secondaryLabel; info.numberOfLines = 0
         categoryStack.axis = .horizontal; categoryStack.spacing = 8
@@ -2071,7 +2160,8 @@ private final class GoldgramMediaCenter: UIViewController, UICollectionViewDataS
     func searchBarSearchButtonClicked(_ searchBar: UISearchBar) { restart() }
 
     private func clear() {
-        generation += 1; busy = false; activeFamily = nil; queryTask.set(nil); dialogsTask.set(nil)
+        generation += 1; busy = false; activeFamily = nil; queryTask.set(nil); dialogsTask.set(nil); cacheTask.set(nil)
+        cacheIds.removeAll(); remoteUnavailable = false; remoteResponded = false
         rows.removeAll(); found.removeAll(); allowed.removeAll(); states.removeAll()
         pages.removeAll(); finished.removeAll(); families.removeAll()
         collection.reloadData()
@@ -2086,7 +2176,16 @@ private final class GoldgramMediaCenter: UIViewController, UICollectionViewDataS
         let token = generation
         updateStatus()
         if let chat {
-            if GoldgramMediaEntry.acceptsPeer(chat) { allowed[chat.id] = chat }
+            if GoldgramMediaEntry.acceptsPeer(chat) {
+                allowed[chat.id] = chat
+                for old in relatedChats where GoldgramMediaEntry.acceptsPeer(old) {
+                    if case let .legacyGroup(group) = old, group.migrationReference?.peerId == chat.id {
+                        allowed[old.id] = old
+                    }
+                }
+                // Family 6 is recent unfiltered server history, before tag searches.
+                families.insert(6, at: 0)
+            }
             busy = false; loadNext(); return
         }
         let root = context.engine.messages.chatList(group: .root, count: 1000) |> filter { !$0.isLoading } |> take(1)
@@ -2137,7 +2236,11 @@ private final class GoldgramMediaCenter: UIViewController, UICollectionViewDataS
         guard accountOK, !busy, started else { return }
         guard !allowed.isEmpty else { finished = Set(families); updateStatus(); return }
         guard found.count < 1000,
-              let family = families.filter({ !finished.contains($0) }).min(by: { (pages[$0] ?? 0) < (pages[$1] ?? 0) }) else {
+              let family = families.filter({ !finished.contains($0) }).min(by: {
+                  let a = pages[$0] ?? 0, b = pages[$1] ?? 0
+                  if a != b { return a < b }
+                  return (families.firstIndex(of: $0) ?? 0) < (families.firstIndex(of: $1) ?? 0)
+              }) else {
             if found.count >= 1000 { partial = true }
             updateStatus(); return
         }
@@ -2146,47 +2249,98 @@ private final class GoldgramMediaCenter: UIViewController, UICollectionViewDataS
         pages[family] = page + 1
         activeFamily = family
         let location: SearchMessagesLocation
+        let recentHistory = family == 6
         if let chat {
-            location = .peer(peerId: chat.id, fromId: author?.id, tags: tags(family), reactions: nil, threadId: nil, minDate: from, maxDate: through)
+            location = .peer(peerId: chat.id, fromId: recentHistory ? nil : author?.id,
+                tags: recentHistory ? nil : tags(family), reactions: nil, threadId: nil,
+                minDate: recentHistory ? nil : from, maxDate: recentHistory ? nil : through)
         } else {
             location = .general(scope: .everywhere, groupId: nil, tags: tags(family), minDate: from, maxDate: through, folderId: nil, communityId: nil)
         }
         updateStatus()
-        queryTask.set((context.engine.messages.searchMessages(location: location, query: query, state: previous, limit: 50)
+        queryTask.set((context.engine.messages.goldgramMediaSearch(location: location, query: recentHistory ? "" : query,
+            state: previous, limit: recentHistory ? 100 : 50, recentHistory: recentHistory)
             |> take(1) |> deliverOnMainQueue).start(next: { [weak self = self] result, nextState in
             guard let self, self.generation == token, self.accountOK, self.busy,
                   self.activeFamily == family, self.pages[family] == page + 1 else { return }
             self.busy = false; self.activeFamily = nil
-            for raw in result.messages {
-                let message = EngineMessage(raw)
-                guard self.allowed[message.id.peerId] != nil,
-                      self.author == nil || message.author?.id == self.author?.id,
-                      self.from == nil || message.timestamp >= (self.from ?? 0),
-                      self.through == nil || message.timestamp <= (self.through ?? Int32.max),
-                      let row = GoldgramMediaEntry.from(message, category: self.category),
-                      GoldgramMediaRules.acceptsSize(row.size, minimum: self.minSize),
-                      GoldgramMediaRules.matches(self.query, name: row.name, caption: message.text) else { continue }
-                if self.found.count >= 1000 && self.found[message.id] == nil { self.partial = true; break }
-                self.found[message.id] = row
-            }
-            self.states[family] = nextState
-            if result.completed || previous == nextState || page + 1 >= 10 {
+            if result.goldgramRemoteUnavailable {
+                self.remoteUnavailable = true; self.partial = true
                 self.finished.insert(family)
-                if !result.completed { self.partial = true }
-            }
-            self.rebuild()
-            // One initial page per category, then explicitly load more.
-            if self.families.contains(where: { self.pages[$0] == nil && !self.finished.contains($0) }) {
-                DispatchQueue.main.async { [weak self = self] in
-                    guard let self, self.generation == token else { return }
-                    self.loadNext()
+                if recentHistory && page == 0 {
+                    self.loadCachedRecent(token)
+                    return
+                }
+            } else {
+                self.remoteResponded = true
+                self.collectMedia(result.messages.map { EngineMessage($0) }, cached: false)
+                self.states[family] = nextState
+                if recentHistory && page == 0 && result.messages.isEmpty {
+                    self.partial = true
+                    self.finished.insert(family)
+                    self.loadCachedRecent(token)
+                    return
+                }
+                if result.completed || previous == nextState || page + 1 >= (recentHistory ? 3 : 10) {
+                    self.finished.insert(family)
+                    if !result.completed { self.partial = true }
                 }
             }
+            self.rebuild()
+            self.continueInitial(token)
         }))
         DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self = self] in
             guard let self, self.generation == token, self.busy, self.activeFamily == family,
                   self.pages[family] == page + 1, !self.finished.contains(family) else { return }
-            self.busy = false; self.activeFamily = nil; self.queryTask.set(nil); self.finished.insert(family); self.partial = true; self.updateStatus()
+            self.busy = false; self.activeFamily = nil; self.queryTask.set(nil); self.finished.insert(family)
+            self.partial = true; self.remoteUnavailable = true
+            if recentHistory && page == 0 { self.loadCachedRecent(token) }
+            else { self.updateStatus(); self.continueInitial(token) }
+        }
+    }
+
+    private func collectMedia(_ messages: [EngineMessage], cached: Bool) {
+        for message in messages {
+            guard allowed[message.id.peerId] != nil,
+                  author == nil || message.author?.id == author?.id,
+                  from == nil || message.timestamp >= (from ?? 0),
+                  through == nil || message.timestamp <= (through ?? Int32.max),
+                  let row = GoldgramMediaEntry.from(message, category: category),
+                  GoldgramMediaRules.acceptsSize(row.size, minimum: minSize),
+                  GoldgramMediaRules.matches(query, name: row.name, caption: message.text) else { continue }
+            if found.count >= 1000 && found[message.id] == nil { partial = true; break }
+            if cached {
+                if found[message.id] != nil { continue }
+                cacheIds.insert(message.id)
+            } else { cacheIds.remove(message.id) }
+            found[message.id] = row
+        }
+    }
+
+    private func continueInitial(_ token: Int) {
+        if families.contains(where: { pages[$0] == nil && !finished.contains($0) }) {
+            DispatchQueue.main.async { [weak self = self] in
+                guard let self, self.generation == token else { return }
+                self.loadNext()
+            }
+        }
+    }
+
+    private func loadCachedRecent(_ token: Int) {
+        guard let chat, accountOK, generation == token else { rebuild(); continueInitial(token); return }
+        busy = true; updateStatus()
+        cacheTask.set((context.engine.messages.goldgramCachedRecentMediaCandidates(peerId: chat.id)
+            |> take(1) |> deliverOnMainQueue).start(next: { [weak self = self] messages in
+            guard let self, self.accountOK, self.generation == token, self.busy, self.activeFamily == nil else { return }
+            self.busy = false
+            self.collectMedia(messages, cached: true)
+            self.rebuild()
+            self.continueInitial(token)
+        }))
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self = self] in
+            guard let self, self.generation == token, self.busy, self.activeFamily == nil else { return }
+            self.cacheTask.set(nil); self.busy = false
+            self.rebuild(); self.continueInitial(token)
         }
     }
 
@@ -2214,6 +2368,11 @@ private final class GoldgramMediaCenter: UIViewController, UICollectionViewDataS
         guard accountOK else { info.text = "Аккаунт изменён. Откройте медиацентр заново."; more.isEnabled = false; return }
         let scopeName = chat?.compactDisplayTitle ?? ["Все чаты", "Личные", "Группы", "Каналы"][scope]
         var text = "\(scopeName) · \(author?.compactDisplayTitle ?? "Любой автор")\nЗагружено: \(rows.count) · \(busy ? "поиск…" : "доступные результаты")"
+        if remoteResponded || !cacheIds.isEmpty {
+            text += "\nСервер Telegram: \(rows.count - cacheIds.count) · локальная история: \(cacheIds.count)"
+        }
+        if remoteUnavailable { text += "\nЧасть серверных запросов недоступна" }
+        if !busy && rows.isEmpty && remoteUnavailable { text += " — отсутствие медиа не подтверждено" }
         if partial || (author != nil && chat == nil) { text += " · возможна неполная выдача" }
         if minSize > 0 { text += "\nРазмер от \(ByteCountFormatter.string(fromByteCount: minSize, countStyle: .file)); неизвестный размер исключён" }
         if from != nil || through != nil { text += " · выбран период" }
@@ -2226,10 +2385,10 @@ private final class GoldgramMediaCenter: UIViewController, UICollectionViewDataS
         let sheet = UIAlertController(title: "Фильтры медиацентра", message: "Поиск по доступным облачным чатам. Сортировка относится к загруженным результатам.", preferredStyle: .actionSheet)
         sheet.addAction(UIAlertAction(title: "Выбрать чат или канал", style: .default) { [weak self = self] _ in
             guard let self else { return }
-            self.navigationController?.pushViewController(GoldgramUnifiedDialogPicker(context: self.context) { [weak self = self] peer in
+            self.navigationController?.pushViewController(GoldgramUnifiedDialogPicker(context: self.context, chooseMedia: { [weak self = self] peer, related in
                 guard let self else { return }
-                self.chat = peer; self.scope = 0; self.restart()
-            }, animated: true)
+                self.chat = peer; self.relatedChats = related; self.scope = 0; self.restart()
+            }), animated: true)
         })
         sheet.addAction(UIAlertAction(title: "Тип диалога", style: .default) { [weak self = self] _ in self?.chooseScope() })
         sheet.addAction(UIAlertAction(title: "Выбрать автора", style: .default) { [weak self = self] _ in
@@ -2244,7 +2403,7 @@ private final class GoldgramMediaCenter: UIViewController, UICollectionViewDataS
         sheet.addAction(UIAlertAction(title: "Сортировка", style: .default) { [weak self = self] _ in self?.chooseSort() })
         sheet.addAction(UIAlertAction(title: "Сбросить фильтры", style: .destructive) { [weak self = self] _ in
             guard let self else { return }
-            self.chat = nil; self.author = nil; self.scope = 0; self.from = nil; self.through = nil; self.minSize = 0; self.sort = 0; self.input.text = ""
+            self.chat = nil; self.relatedChats.removeAll(); self.author = nil; self.scope = 0; self.from = nil; self.through = nil; self.minSize = 0; self.sort = 0; self.input.text = ""
             self.restart()
         })
         sheet.addAction(UIAlertAction(title: "Отмена", style: .cancel))
@@ -2261,7 +2420,7 @@ private final class GoldgramMediaCenter: UIViewController, UICollectionViewDataS
     }
     private func chooseScope() {
         choices("Тип диалога", ["Все чаты", "Личные", "Группы", "Каналы"]) { [weak self = self] index in
-            self?.scope = index; self?.chat = nil; self?.restart()
+            self?.scope = index; self?.chat = nil; self?.relatedChats.removeAll(); self?.restart()
         }
     }
     private func chooseSize() {
@@ -2296,7 +2455,7 @@ private final class GoldgramMediaCenter: UIViewController, UICollectionViewDataS
     func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int { accountOK ? rows.count : 0 }
     func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
         let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "media", for: indexPath)
-        if let cell = cell as? GoldgramMediaCell, accountOK, rows.indices.contains(indexPath.item) { cell.configure(rows[indexPath.item], grid: grid) }
+        if let cell = cell as? GoldgramMediaCell, accountOK, rows.indices.contains(indexPath.item) { cell.configure(rows[indexPath.item], grid: grid, cached: cacheIds.contains(rows[indexPath.item].message.id)) }
         return cell
     }
     func collectionView(_ collectionView: UICollectionView, layout collectionViewLayout: UICollectionViewLayout, sizeForItemAt indexPath: IndexPath) -> CGSize {

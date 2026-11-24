@@ -128,3 +128,21 @@ for task in ("queryTask", "dialogsTask", "previewTask", "downloadTask"):
     assert task + ".dispose()" in deinit_line
 assert "handingOff = true" in media_screen and "GoldgramAuthorSearchBridge.nativeJump" in media_screen
 print("Goldgram #263 media lifecycle contract: cancelled transitions preserve results and cursors; deinit disposal retained")
+
+# #264: source contracts for media-only recent history and migration-aware picker.
+root = Path(__file__).resolve().parents[2]
+core = (root / "submodules/TelegramCore/Sources/TelegramEngine/Messages/SearchMessages.swift").read_text()
+engine = (root / "submodules/TelegramCore/Sources/TelegramEngine/Messages/TelegramEngineMessages.swift").read_text()
+assert "goldgramMediaSearch" in media_screen and "context.engine.messages.searchMessages(" not in media_screen
+assert "families.insert(6, at: 0)" in media_screen
+assert "goldgramRemoteUnavailable" in media_screen and "goldgramCachedRecentMediaCandidates" in media_screen
+assert "group.migrationReference?.peerId == chat.id" in media_screen
+assert "cacheTask.dispose()" in deinit_line
+picker = native.split("private final class GoldgramUnifiedDialogPicker:", 1)[1].split("private final class", 1)[0]
+assert "group.migrationReference?.peerId" in picker and "byId[targetId]" in picker
+assert "case .group = channel.info" in picker and "hidden.insert(peer.id)" in picker
+assert "goldgramRemoteOnly: true, goldgramRecentHistory: recentHistory" in engine
+assert "forceLocal: true" in engine
+assert "goldgramRemoteOnly && result == nil && state?.main.completed != true" in core
+assert "goldgramCloudHistory" in core and "if state?.additional == nil && !goldgramRemoteOnly" in core
+print("Goldgram #264 media freshness, exact migration and explicit source contracts OK")

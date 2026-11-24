@@ -47,17 +47,19 @@ public struct SearchMessagesResult: Equatable {
     public let readStates: [PeerId: CombinedPeerReadState]
     public let totalCount: Int32
     public let completed: Bool
+    public let goldgramRemoteUnavailable: Bool
     
-    public init(messages: [Message], readStates: [PeerId: CombinedPeerReadState], threadInfo:[MessageId : MessageHistoryThreadData], totalCount: Int32, completed: Bool) {
+    public init(messages: [Message], readStates: [PeerId: CombinedPeerReadState], threadInfo:[MessageId : MessageHistoryThreadData], totalCount: Int32, completed: Bool, goldgramRemoteUnavailable: Bool = false) {
         self.messages = messages
         self.threadInfo = threadInfo
         self.readStates = readStates
         self.totalCount = totalCount
         self.completed = completed
+        self.goldgramRemoteUnavailable = goldgramRemoteUnavailable
     }
     
     public static func ==(lhs: SearchMessagesResult, rhs: SearchMessagesResult) -> Bool {
-        if lhs.messages.count != rhs.messages.count {
+        if lhs.goldgramRemoteUnavailable != rhs.goldgramRemoteUnavailable || lhs.messages.count != rhs.messages.count {
             return false
         }
         for i in 0 ..< lhs.messages.count {
@@ -305,7 +307,7 @@ func _internal_getSearchMessageCount(account: Account, location: SearchMessagesL
     }
 }
 
-func _internal_searchMessages(account: Account, location: SearchMessagesLocation, query: String, state: SearchMessagesState?, centerId: MessageId?, limit: Int32 = 100, forceLocal: Bool = false) -> Signal<(SearchMessagesResult, SearchMessagesState), NoError> {
+func _internal_searchMessages(account: Account, location: SearchMessagesLocation, query: String, state: SearchMessagesState?, centerId: MessageId?, limit: Int32 = 100, forceLocal: Bool = false, goldgramRemoteOnly: Bool = false, goldgramRecentHistory: Bool = false) -> Signal<(SearchMessagesResult, SearchMessagesState), NoError> {
     if case let .peer(peerId, fromId, tags, reactions, threadId, minDate, maxDate) = location, fromId == nil, tags == nil, peerId == account.peerId, let reactions, let reaction = reactions.first, (minDate == nil || minDate == 0), (maxDate == nil || maxDate == 0) {
         return account.postbox.transaction { transaction -> (SearchMessagesResult, SearchMessagesState) in
             let messages = transaction.getMessagesWithCustomTag(peerId: peerId, namespace: Namespaces.Message.Cloud, threadId: threadId, customTag: ReactionsMessageAttribute.messageTag(reaction: reaction), from: MessageIndex.upperBound(peerId: peerId, namespace: Namespaces.Message.Cloud), includeFrom: false, to: MessageIndex.lowerBound(peerId: peerId, namespace: Namespaces.Message.Cloud), limit: 500)
@@ -432,7 +434,9 @@ func _internal_searchMessages(account: Account, location: SearchMessagesLocation
                 } else {
                     let lowerBound = state?.main.messages.last.flatMap({ $0.index })
                     let signal: Signal<Api.messages.Messages, MTRpcError>
-                    if peer.id.namespace == Namespaces.Peer.CloudChannel && query.isEmpty && fromId == nil && tags == nil && minDate == nil && maxDate == nil && threadId == nil {
+                    let goldgramCloudHistory = goldgramRemoteOnly && goldgramRecentHistory &&
+                        (peer.id.namespace == Namespaces.Peer.CloudUser || peer.id.namespace == Namespaces.Peer.CloudGroup || peer.id.namespace == Namespaces.Peer.CloudChannel)
+                    if (peer.id.namespace == Namespaces.Peer.CloudChannel || goldgramCloudHistory) && query.isEmpty && fromId == nil && tags == nil && minDate == nil && maxDate == nil && threadId == nil {
                         signal = account.network.request(Api.functions.messages.getHistory(peer: inputPeer, offsetId: lowerBound?.id.id ?? 0, offsetDate: 0, addOffset: 0, limit: limit, maxId: Int32.max - 1, minId: 0, hash: 0))
                     } else {
                         var savedReactions: [Api.Reaction]?
@@ -590,7 +594,7 @@ func _internal_searchMessages(account: Account, location: SearchMessagesLocation
         return account.postbox.transaction { transaction -> (SearchMessagesResult, SearchMessagesState) in
             var additional: SearchMessagesPeerState? = mergedState(transaction: transaction, seedConfiguration: account.postbox.seedConfiguration, accountPeerId: account.peerId, state: state?.additional, result: additionalResult)
             
-            if state?.additional == nil {
+            if state?.additional == nil && !goldgramRemoteOnly {
                 switch location {
                     case let .general(_, _, tags, minDate, maxDate, _, communityId):
                         let secretMessages: [Message]
@@ -661,7 +665,13 @@ func _internal_searchMessages(account: Account, location: SearchMessagesLocation
             }
             
             let updatedState = SearchMessagesState(main: mergedState(transaction: transaction, seedConfiguration: account.postbox.seedConfiguration, accountPeerId: account.peerId, state: state?.main, result: result) ?? SearchMessagesPeerState(messages: [], readStates: [:], threadInfo: [:], totalCount: 0, completed: true, nextRate: nil), additional: additional)
-            return (mergedResult(updatedState), updatedState)
+            let merged = mergedResult(updatedState)
+            if goldgramRemoteOnly && result == nil && state?.main.completed != true {
+                return (SearchMessagesResult(messages: merged.messages, readStates: merged.readStates,
+                    threadInfo: merged.threadInfo, totalCount: merged.totalCount, completed: merged.completed,
+                    goldgramRemoteUnavailable: true), updatedState)
+            }
+            return (merged, updatedState)
         }
     }
 }

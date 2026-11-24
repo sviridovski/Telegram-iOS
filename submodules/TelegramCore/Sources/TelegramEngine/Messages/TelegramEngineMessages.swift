@@ -221,6 +221,32 @@ public extension TelegramEngine {
             //
         }
         
+        // Goldgram media only: no silent Swiftgram forceLocal fallback, no secret
+        // additional results. Ordinary searchMessages retains its existing behavior.
+        public func goldgramMediaSearch(location: SearchMessagesLocation, query: String, state: SearchMessagesState?, limit: Int32 = 50, recentHistory: Bool = false) -> Signal<(SearchMessagesResult, SearchMessagesState), NoError> {
+            return _internal_searchMessages(account: self.account, location: location, query: query,
+                state: state, centerId: nil, limit: limit, goldgramRemoteOnly: true, goldgramRecentHistory: recentHistory)
+        }
+
+        // A bounded read of the already available native history, only when the
+        // selected chat's remote history is unavailable. No new storage or read receipts.
+        public func goldgramCachedRecentMediaCandidates(peerId: EnginePeer.Id) -> Signal<[EngineMessage], NoError> {
+            guard peerId.namespace == Namespaces.Peer.CloudUser || peerId.namespace == Namespaces.Peer.CloudGroup ||
+                  peerId.namespace == Namespaces.Peer.CloudChannel else { return .single([]) }
+            return self.account.postbox.transaction { transaction -> [EngineMessage] in
+                var result: [EngineMessage] = []
+                var visited = 0
+                transaction.withAllMessages(peerId: peerId, reversed: true, { message in
+                    visited += 1
+                    if message.id.namespace == Namespaces.Message.Cloud {
+                        result.append(EngineMessage(message))
+                    }
+                    return visited < 300
+                })
+                return result.sorted { $0.timestamp > $1.timestamp }
+            }
+        }
+
         public func getSearchMessageCount(location: SearchMessagesLocation, query: String) -> Signal<Int?, NoError> {
             return _internal_getSearchMessageCount(account: self.account, location: location, query: query)
         }
