@@ -149,3 +149,7 @@ The public [macOS runner availability issue #15291](https://github.com/actions/r
 
 - #257 Native failed, Mx succeeded, Build skipped. CI explicitly passed exact archive lookup and Foundation personal metadata tests. Only reported ChatListUI source errors: GoldgramAuthorSearch.swift:1389:17 and 1407:21, implicit catch error shadows alert helper. [#258 fix ca01fa7](https://github.com/sviridovski/Telegram-iOS/commit/ca01fa7f128c5704557073af071719e430d2e53d), direct #257 parent, two-line qualified helper call. Branch publication and exact diff verified. [Run 45325944910](https://github.com/sviridovski/Telegram-iOS/actions/runs/45325944910) queued at check, not green yet. Both personal features retained; #256 remains device-tested recovery.
 - #257 Native restored #256 cache, 8059/9830 disk hits, 246.132s before failure. Mx job saved validated staged compiled output despite Native failure. #258 leaves Mx inputs and all cache families unchanged, expect exact Mx reuse, check actual logs. No new code or CI for docs-only save.
+
+## 2026-11-24 local — #258 green and installed
+
+- [#258](https://github.com/sviridovski/Telegram-iOS/actions/runs/45325944910) all three jobs successful, IPA 14890978439 present. User confirms installation, asks for favorites usage. Explained unified search long-press, optional folder/tags/note, dashboard/toolbar entry, edit/remove, exact reference behavior. No device acceptance beyond installation inferred; #256 confirmed recovery baseline. No source changes.
