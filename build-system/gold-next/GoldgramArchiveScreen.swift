@@ -2267,12 +2267,18 @@ public func goldgramUnifiedMetadataV1(
           let items = request["items"] as? [[String: Any]], items.count <= 30 else {
         finish(["status": "account_changed", "items": []]); return
     }
+    // Build the Swift dictionary from validated fields rather than casting
+    // NSDictionary across the Objective-C importer. No other actions allowed.
+    var nativeRequest: [AnyHashable: Any] = [
+        "accountId": NSNumber(value: account), "items": items
+    ]
     if let action = request["action"] {
         guard action as? String == "prepare_jump", items.count == 1 else {
             finish(["status": "invalid_request", "items": []]); return
         }
+        nativeRequest["action"] = "prepare_jump"
     }
-    goldgramResolveNativeMetadata(request as [AnyHashable: Any]) { response in
+    goldgramResolveNativeMetadata(nativeRequest) { response in
         guard GoldgramArchiveReader.activeAccountId()?.int64Value == account else {
             finish(["status": "account_changed", "items": []]); return
         }
