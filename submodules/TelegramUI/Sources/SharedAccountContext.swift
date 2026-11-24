@@ -1305,7 +1305,7 @@ public final class SharedAccountContextImpl: SharedAccountContext {
                 if hadUpdates {
                     goldgramNativeNavigationContext = self
                     GoldgramAuthorSearchBridge.bindPrimary(context: primary)
-                    GoldgramAuthorSearchBridge.nativeJump = { [weak self] context, id, archiveNavigation, presenter, snapshot in
+                    GoldgramAuthorSearchBridge.nativeJump = { [weak self = self] context, id, archiveNavigation, presenter, snapshot in
                         guard let self, let current = self.sgPrimaryAccountContextForMigration(),
                               current.account.id == context.account.id,
                               archiveNavigation.presentingViewController == nil,
