@@ -2028,16 +2028,23 @@ private final class GoldgramMediaCenter: UIViewController, UICollectionViewDataS
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         handingOff = false
-        guard accountOK else { clear(); updateStatus(); return }
+        guard accountOK else {
+            clear()
+            started = false
+            previewGeneration += 1
+            previewTask.set(nil); downloadTask.set(nil)
+            updateStatus()
+            return
+        }
         if !started { restart() }
+        else { updateStatus() }
     }
 
-    override func viewWillDisappear(_ animated: Bool) {
-        super.viewWillDisappear(animated)
-        if !handingOff && (isMovingFromParent || navigationController?.isBeingDismissed == true) {
-            clear(); previewGeneration += 1; previewTask.set(nil); downloadTask.set(nil)
-        }
-    }
+    // A sheet dismissal or interactive pop can call viewWillDisappear before
+    // the gesture is committed. Never discard results or cursors there.
+    // Keep the same controller state on cancellation and native chat handoff.
+    // Real departure releases this controller; deinit disposes every task.
+    // Only explicit search/filter changes or account invalidation clear rows.
 
     private func rebuildCategories() {
         for subview in categoryStack.arrangedSubviews { categoryStack.removeArrangedSubview(subview); subview.removeFromSuperview() }

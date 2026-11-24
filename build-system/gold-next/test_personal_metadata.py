@@ -111,3 +111,20 @@ with tempfile.TemporaryDirectory() as tmp:
     binary = Path(tmp) / "test"
     subprocess.run(["swiftc", str(source), "-o", str(binary)], check=True)
     subprocess.run([str(binary)], check=True)
+
+# Regression #263: the media browser must not clear on speculative UIKit
+# disappearance (interactive sheet drag/pop can be cancelled).
+# This source contract is not an on-device UIKit gesture test.
+media_screen = native.split("private final class GoldgramMediaCenter:", 1)[1].split("// BEGIN GOLDGRAM_PERSONAL_MODEL_V1", 1)[0]
+assert "override func viewWillDisappear" not in media_screen
+assert "override func viewDidDisappear" not in media_screen
+appearance = media_screen.split("override func viewDidAppear", 1)[1].split("private func rebuildCategories", 1)[0]
+assert "guard accountOK else {" in appearance
+assert "clear()" in appearance and "started = false" in appearance
+assert "if !started { restart() }" in appearance
+assert media_screen.count("clear()") == 3  # definition, account invalidation, explicit restart
+deinit_line = next(line for line in media_screen.splitlines() if "deinit {" in line)
+for task in ("queryTask", "dialogsTask", "previewTask", "downloadTask"):
+    assert task + ".dispose()" in deinit_line
+assert "handingOff = true" in media_screen and "GoldgramAuthorSearchBridge.nativeJump" in media_screen
+print("Goldgram #263 media lifecycle contract: cancelled transitions preserve results and cursors; deinit disposal retained")
