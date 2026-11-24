@@ -1,6 +1,6 @@
 # CURRENT_STATUS — verified checkpoint
 
-> **2026-11-24 local user date — #259 native chat bookmarks and search 2.0 green; #258 installed, #256 user-confirmed recovery checkpoint.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
+> **2026-11-24 local user date — #259 green and installed; broadly positive user feedback, one unspecified defect remains; #256 confirmed fallback.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
 
 ## Current code / CI / device state
 
@@ -9,10 +9,10 @@
 | Feature branch | `gold-next-243-author-search` |
 | HEAD | `faaae4908f5606f94d20405206f8bab7f1463832` (#259), direct parent #258 |
 | Last green CI | [#259](https://github.com/sviridovski/Telegram-iOS/actions/runs/45332682368), Native/Mx/Build success; IPA artifact 14893668082, not expired at verification |
-| Last installed | #258 — user confirms installation; requests how to use personal favorites; feature acceptance not yet reported. #256 last user-confirmed working search. |
+| Last installed | #259 — user confirms installed and tested, broadly positive feedback with one unspecified defect to report later. Individual acceptance cases not confirmed. |
 | Failed candidate | [#257](https://github.com/sviridovski/Telegram-iOS/actions/runs/45321519764), Native failed, Mx passed, Build skipped; Swift catch error shadowing at lines 1389/1407 |
-| Next device test | [#259](https://github.com/sviridovski/Telegram-iOS/actions/runs/45332682368), CI success; native bookmark action and search 2.0; installation/device acceptance pending. |
-| Recovery | #256 latest green/user-tested search baseline; #254 previous green/device-tested archive-search and revision-diff baseline. Original port/telegram-13.2 not modified. |
+| Next task | Await exact #259 defect description; roadmap discussion only, no additional implementation approved. |
+| Recovery | #259 latest green and broadly device-tested baseline with one unspecified defect; #256 confirmed working search fallback, #254 earlier archive/diff fallback. Original port/telegram-13.2 not modified. |
 
 ## #252 corrections retained in #253
 
@@ -119,3 +119,8 @@
 
 - 2026-11-24: verified working branch HEAD remains `faaae4908f5606f94d20405206f8bab7f1463832`. [CI #259](https://github.com/sviridovski/Telegram-iOS/actions/runs/45332682368): Native job 138237301883, Mx job 138237302311 and Build job 138248823564 all completed successfully; IPA artifact 14893668082 present and not expired. Last installed remains #258; last user-confirmed working recovery baseline remains #256. No #259 iPhone result reported yet.
 - Native restored #258 Bazel cache, 8225 disk hits / 10103 processes, elapsed 1405.056s, critical path 1159.96s; cache saved under #259 SHA. Mx exact cache miss as expected for changed inputs, new staged Mx cache saved. Keep same branch/key families and investigate critical path before tuning. No production source changes or new build for this checkpoint. Next: user tests native context-menu bookmarks and search 2.0 using preceding acceptance checklist; preserve existing archive, Ghost, independent Collector and Live Bridge.
+
+## #259 device feedback and multifunction Goldgram roadmap discussion
+
+- User confirms #259 installed and tested, broadly satisfied except one unspecified defect that will be described later. Do not invent its cause, severity or reproduction steps; no individually verified acceptance tests inferred. #259 latest broadly device-tested checkpoint; #256 established fallback.
+- User asks for feature ideas, not implementation. Proposed: configurable dashboard/context menu, unified media/link center (respect protected/ephemeral content), local tasks/reminders and reply templates, smart folders, favorites/contact cards 2.0, calendar, search 3.0 over accessible history and own metadata, aggregate own-message analytics, notification rules within iOS limits, explicit user-selected AI and voice transcription (local preferred; explicit consent for external processing), Face ID protection, encrypted backup/non-destructive restore, storage management, Live status dashboard and power profiles. No automatic profiling, disclosure, new database, capture expansion or cloud transfer. Check existing native functionality before implementing, preserve account scoping/Ghost/Collector and original evidence. Roadmap proposals only. No new source commit or CI.
