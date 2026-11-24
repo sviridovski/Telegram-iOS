@@ -138,11 +138,22 @@ private struct GoldgramLocationLabReportRow: Decodable {
 }
 
 @objc(GoldgramArchiveScreen)
-public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPickerDelegate {
+public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPickerDelegate, UISearchBarDelegate {
     private let category: Int
     // nil = dialog index; non-nil = one conversation or a verified channel pair.
     private let sources: [[String: Any]]?
     private let displayName: String?
+    private let isLocalSearch: Bool
+    private lazy var archiveSearchBar = UISearchBar()
+    private lazy var archiveSearchType = UISegmentedControl(items: ["Все", "Изменённые", "Удалённые"])
+    private lazy var archiveSearchPeriod = UISegmentedControl(items: ["Любая дата", "Сегодня", "7 дней", "30 дней"])
+    private lazy var archiveSearchScope = UISegmentedControl(items: ["Этот диалог", "Весь архив"])
+    private lazy var archiveAuthorButton = UIButton(type: .system)
+    private var archiveSearchSubmitted = false
+    private var archiveSearchNeedle = ""
+    private var archiveSearchSince: Int64 = 0
+    private var archiveSearchOffset = 0
+    private var archiveSearchAuthor: (kind: Int32, id: Int64, name: String)?
     private var boundAccount: Int64?
     private var items: [[String: Any]] = [] // raw rows: pagination offsets never use grouped count
     private var displayItems: [[String: Any]] = []
@@ -191,10 +202,11 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
         self.init(category: category, sources: nil, displayName: nil)
     }
 
-    private init(category: Int, sources: [[String: Any]]?, displayName: String?) {
+    private init(category: Int, sources: [[String: Any]]?, displayName: String?, isLocalSearch: Bool = false) {
         self.category = category
         self.sources = sources
         self.displayName = displayName
+        self.isLocalSearch = isLocalSearch
         super.init(style: .insetGrouped)
     }
 
@@ -1149,11 +1161,222 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
         present(alert, animated: true)
     }
 
+
+    // #254: separate search view reuses archive cells, metadata and exact jump.
+    @objc private func openArchiveSearch() {
+        presentArchiveSearch(author: nil)
+    }
+
+    private func presentArchiveSearch(author: (kind: Int32, id: Int64, name: String)?) {
+        guard let active = GoldgramArchiveReader.activeAccountId()?.int64Value,
+              active == boundAccount else { return }
+        let child = GoldgramArchiveScreen(category: category, sources: sources,
+                                          displayName: displayName, isLocalSearch: true)
+        child.boundAccount = active
+        child.archiveSearchAuthor = author
+        child.archiveSearchSubmitted = author != nil
+        self.preserveListOnNextAppearance = true
+        navigationController?.pushViewController(child, animated: true)
+    }
+
+    private func setupArchiveSearch() {
+        title = "Поиск в архиве"
+        archiveSearchBar.placeholder = "Текст оригинала или редакции"
+        archiveSearchBar.delegate = self
+        archiveSearchBar.autocorrectionType = .no
+        archiveSearchBar.returnKeyType = .search
+        archiveSearchType.selectedSegmentIndex = category == 3 ? 2 : category == 4 ? 1 : 0
+        archiveSearchPeriod.selectedSegmentIndex = 0
+        archiveSearchScope.selectedSegmentIndex = sources == nil ? 1 : 0
+        let button = UIButton(type: .system)
+        button.setTitle("Найти", for: .normal)
+        button.addTarget(self, action: #selector(submitArchiveSearch), for: .touchUpInside)
+        archiveAuthorButton.addTarget(self, action: #selector(clearArchiveAuthor), for: .touchUpInside)
+        updateArchiveAuthorButton()
+        let caption = UILabel()
+        caption.text = "Период — по последнему событию в архиве. Поиск только по сохранённым записям."
+        caption.font = .preferredFont(forTextStyle: .footnote)
+        caption.textColor = .secondaryLabel
+        caption.numberOfLines = 0
+        let controls = UIStackView()
+        controls.axis = .vertical
+        controls.spacing = 7
+        controls.translatesAutoresizingMaskIntoConstraints = false
+        controls.addArrangedSubview(archiveSearchBar)
+        if sources != nil { controls.addArrangedSubview(archiveSearchScope) }
+        controls.addArrangedSubview(archiveSearchType)
+        controls.addArrangedSubview(archiveSearchPeriod)
+        controls.addArrangedSubview(archiveAuthorButton)
+        controls.addArrangedSubview(button)
+        controls.addArrangedSubview(caption)
+        archiveSearchBar.heightAnchor.constraint(equalToConstant: 50).isActive = true
+        for control in [archiveSearchType, archiveSearchPeriod, archiveSearchScope] {
+            if control.superview != nil { control.heightAnchor.constraint(equalToConstant: 32).isActive = true }
+            control.addTarget(self, action: #selector(archiveSearchFilterChanged), for: .valueChanged)
+        }
+        button.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+        archiveAuthorButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 35).isActive = true
+        let header = UIView(frame: CGRect(x: 0, y: 0, width: tableView.bounds.width,
+                                          height: sources == nil ? 275 : 315))
+        header.autoresizingMask = [.flexibleWidth]
+        header.addSubview(controls)
+        NSLayoutConstraint.activate([
+            controls.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 16),
+            controls.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -16),
+            controls.topAnchor.constraint(equalTo: header.topAnchor, constant: 8),
+            controls.bottomAnchor.constraint(equalTo: header.bottomAnchor, constant: -8)
+        ])
+        tableView.tableHeaderView = header
+        tableView.rowHeight = UITableView.automaticDimension
+        tableView.estimatedRowHeight = 110
+        status = "Введите текст или выберите фильтры и нажмите «Найти»"
+        let refresh = UIBarButtonItem(image: UIImage(systemName: "arrow.clockwise"),
+                                      style: .plain, target: self, action: #selector(submitArchiveSearch))
+        refresh.accessibilityLabel = "Повторить поиск"
+        navigationItem.rightBarButtonItem = refresh
+    }
+
+    private func updateArchiveAuthorButton() {
+        archiveAuthorButton.setTitle(archiveSearchAuthor.map { "Автор: \($0.name) · сбросить" }
+            ?? "Все авторы · выбрать из результата долгим нажатием", for: .normal)
+        archiveAuthorButton.isEnabled = archiveSearchAuthor != nil
+        archiveAuthorButton.titleLabel?.font = .preferredFont(forTextStyle: .footnote)
+        archiveAuthorButton.titleLabel?.lineBreakMode = .byTruncatingTail
+    }
+
+    @objc private func clearArchiveAuthor() {
+        archiveSearchAuthor = nil
+        updateArchiveAuthorButton()
+        submitArchiveSearch()
+    }
+
+    @objc private func archiveSearchFilterChanged() {
+        if archiveSearchSubmitted { submitArchiveSearch() }
+    }
+
+    public func searchBarSearchButtonClicked(_ searchBar: UISearchBar) {
+        submitArchiveSearch()
+    }
+
+    public func searchBar(_ searchBar: UISearchBar, textDidChange searchText: String) {
+        guard isLocalSearch, archiveSearchSubmitted else { return }
+        generation += 1
+        inFlight = false
+        archiveSearchSubmitted = false
+        items = []; displayItems = []; hasMore = false
+        status = "Нажмите «Найти»"
+        tableView.reloadData()
+    }
+
+    @objc private func submitArchiveSearch() {
+        guard isLocalSearch else { return }
+        archiveSearchBar.resignFirstResponder()
+        archiveSearchNeedle = (archiveSearchBar.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard archiveSearchNeedle.count <= 200 else {
+            generation += 1
+            inFlight = false
+            archiveSearchSubmitted = false
+            items = []; displayItems = []; hasMore = false
+            status = "Введите не более 200 символов"
+            tableView.reloadData(); return
+        }
+        let now = Date()
+        let start: Date?
+        switch archiveSearchPeriod.selectedSegmentIndex {
+        case 1: start = Calendar.current.startOfDay(for: now)
+        case 2: start = Calendar.current.date(byAdding: .day, value: -7, to: now)
+        case 3: start = Calendar.current.date(byAdding: .day, value: -30, to: now)
+        default: start = nil
+        }
+        archiveSearchSince = start.map { Int64($0.timeIntervalSince1970 * 1000) } ?? 0
+        archiveSearchSubmitted = true
+        loadArchiveSearch(reset: true)
+    }
+
+    private func loadArchiveSearch(reset: Bool) {
+        guard archiveSearchSubmitted else { return }
+        if reset {
+            generation += 1
+            inFlight = false
+            items = []; displayItems = []; hasMore = false
+            archiveSearchOffset = 0
+            status = "Поиск…"
+            tableView.reloadData()
+        }
+        guard !inFlight else { return }
+        guard let active = GoldgramArchiveReader.activeAccountId()?.int64Value, active > 0,
+              boundAccount == nil || boundAccount == active else {
+            items = []; displayItems = []; hasMore = false
+            status = "Аккаунт изменён — откройте архив заново"
+            tableView.reloadData(); return
+        }
+        boundAccount = active
+        let offset = archiveSearchOffset
+        guard offset <= 5000 else { hasMore = false; tableView.reloadData(); return }
+        inFlight = true
+        let callGeneration = generation
+        let scope = archiveSearchScope.selectedSegmentIndex == 0 ? sources : nil
+        GoldgramArchiveReader.searchLocal(accountId: active, needle: archiveSearchNeedle,
+            sources: scope, event: archiveSearchType.selectedSegmentIndex, since: archiveSearchSince,
+            authorKind: archiveSearchAuthor?.kind, authorId: archiveSearchAuthor?.id, offset: offset) { [weak self] answer in
+            guard let self, self.generation == callGeneration else { return }
+            self.inFlight = false
+            guard GoldgramArchiveReader.activeAccountId()?.int64Value == active else {
+                self.items = []; self.displayItems = []; self.hasMore = false
+                self.status = "Аккаунт изменён — откройте архив заново"
+                self.tableView.reloadData(); return
+            }
+            guard answer["status"] as? String == "ok" else {
+                self.status = answer["status"] as? String == "no_archive"
+                    ? "Локальный архив ещё не создан" : "Не удалось выполнить поиск"
+                self.hasMore = false
+                self.tableView.reloadData(); return
+            }
+            let page = answer["items"] as? [[String: Any]] ?? []
+            self.archiveSearchOffset += page.count
+            var keys = Set(self.items.map { Self.key($0) })
+            let uniquePage = page.filter { keys.insert(Self.key($0)).inserted }
+            let displayOffset = self.items.count
+            self.items.append(contentsOf: uniquePage)
+            self.displayItems = self.items
+            self.hasMore = (answer["hasMore"] as? Bool ?? false) && self.archiveSearchOffset <= 5000
+            self.status = "Совпадений нет"
+            self.tableView.reloadData()
+            self.decorate(uniquePage, accountId: active) { [weak self] enriched in
+                guard let self, self.generation == callGeneration,
+                      GoldgramArchiveReader.activeAccountId()?.int64Value == active else { return }
+                for (index, row) in enriched.enumerated() {
+                    let slot = displayOffset + index
+                    guard self.items.indices.contains(slot),
+                          Self.key(self.items[slot]) == Self.key(row) else { continue }
+                    self.items[slot] = row
+                }
+                self.displayItems = self.items
+                self.tableView.reloadData()
+            }
+        }
+    }
+
+    private func archiveAuthor(_ entry: [String: Any]) -> (kind: Int32, id: Int64, name: String)? {
+        guard let kind = (entry["senderKind"] as? NSNumber)?.int32Value, (0...3).contains(kind),
+              let id = (entry["senderId"] as? NSNumber)?.int64Value, id > 0 else { return nil }
+        return (kind, id, entry["senderName"] as? String ?? "Автор #\(id)")
+    }
+
+    private func filterArchiveAuthor(_ author: (kind: Int32, id: Int64, name: String)) {
+        guard GoldgramArchiveReader.activeAccountId()?.int64Value == boundAccount else { return }
+        if !isLocalSearch { presentArchiveSearch(author: author); return }
+        archiveSearchAuthor = author
+        updateArchiveAuthorButton()
+        submitArchiveSearch()
+    }
+
     public override func viewDidLoad() {
         super.viewDidLoad()
         NotificationCenter.default.addObserver(
             self, selector: #selector(didCommitLiveArchiveChange(_:)),
             name: Notification.Name("GoldgramArchiveChanged"), object: nil)
+        if isLocalSearch { setupArchiveSearch(); return }
         // #244: keep immediate refresh visible; move ALL former top-bar tools
         // into a single menu without changing their existing handlers.
         let refreshButton = UIBarButtonItem(image: UIImage(systemName: "arrow.clockwise"),
@@ -1164,7 +1387,10 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
                                           style: .plain, target: self,
                                           action: #selector(showArchiveTools))
         toolsButton.accessibilityLabel = "Инструменты Goldgram"
-        navigationItem.rightBarButtonItems = [toolsButton, refreshButton]
+        let searchButton = UIBarButtonItem(image: UIImage(systemName: "magnifyingglass"),
+                                            style: .plain, target: self, action: #selector(openArchiveSearch))
+        searchButton.accessibilityLabel = "Поиск по локальному архиву"
+        navigationItem.rightBarButtonItems = [toolsButton, searchButton, refreshButton]
         title = displayName ?? (category == 4 ? "Изменённые сообщения" :
              category == 0 ? "Личные сообщения" :
              category == 1 ? "Группы и чаты" : category == 3 ? "Удалённые сообщения" : "Каналы")
@@ -1219,8 +1445,37 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
         present(sheet, animated: true)
     }
 
+    public override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        guard isLocalSearch, let header = tableView.tableHeaderView else { return }
+        let width = tableView.bounds.width
+        guard width > 0 else { return }
+        let size = header.systemLayoutSizeFitting(
+            CGSize(width: width, height: UIView.layoutFittingCompressedSize.height),
+            withHorizontalFittingPriority: .required, verticalFittingPriority: .fittingSizeLevel)
+        if size.height > 0 && (abs(header.frame.height - size.height) > 1 ||
+                               abs(header.frame.width - width) > 1) {
+            header.frame = CGRect(x: 0, y: 0, width: width, height: ceil(size.height))
+            tableView.tableHeaderView = header
+        }
+    }
+
     public override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        if isLocalSearch {
+            if let boundAccount, GoldgramArchiveReader.activeAccountId()?.int64Value != boundAccount {
+                generation += 1
+                inFlight = false
+                archiveSearchSubmitted = false
+                items = []; displayItems = []; hasMore = false
+                status = "Аккаунт изменён — откройте архив заново"
+                tableView.reloadData()
+            } else if archiveSearchSubmitted && items.isEmpty && !inFlight {
+                loadArchiveSearch(reset: true)
+            }
+            preserveListOnNextAppearance = false
+            return
+        }
         // On an already-running Live session, merely starting the timer can
         // leave us waiting for its next 12-second tick. Poll immediately.
         GoldgramLiveBridge.shared.pollNow()
@@ -1250,7 +1505,19 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
         guard let account = (note.object as? NSNumber)?.int64Value,
               account == boundAccount,
               GoldgramArchiveReader.activeAccountId()?.int64Value == account,
-              isViewLoaded, view.window != nil else { return }
+              isViewLoaded else { return }
+        if isLocalSearch {
+            if note.userInfo?["journalPurge"] as? Bool == true {
+                generation += 1
+                inFlight = false
+                archiveSearchSubmitted = false
+                items = []; displayItems = []; hasMore = false
+                status = "Архив очищен — повторите поиск"
+                tableView.reloadData()
+            }
+            return
+        }
+        guard view.window != nil else { return }
         // #235: throttle, not a trailing debounce. Continuous packets must
         // not postpone the FIRST visible update until the backlog is empty.
         if liveRefreshWork != nil { return }
@@ -1337,6 +1604,7 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
     }
 
     private func load(reset: Bool) {
+        if isLocalSearch { loadArchiveSearch(reset: reset); return }
         if reset {
             generation += 1
             // Keep the previous (account-scoped) first paint visible until the
@@ -1442,7 +1710,7 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
         cell.detailTextLabel?.textColor = .secondaryLabel
         if displayItems.indices.contains(indexPath.row) {
             let entry = displayItems[indexPath.row]
-            if sources == nil {
+            if sources == nil && !isLocalSearch {
                 cell.textLabel?.text = entry["displayName"] as? String
                 if category == 3 {
                     let last = (entry["lastEventAt"] as? NSNumber)?.int64Value ?? 0
@@ -1466,8 +1734,10 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
                 let location = kind == 3 ? "Публикация" : (entry["channelId"] as? NSNumber) != nil ? "Обсуждение" : "Сообщение"
                 let receiptOnly = removed && original == nil && (latest == nil || latest == "[Содержимое не было получено]")
                 let body = receiptOnly ? "Получено только уведомление об удалении" : (removed ? latest ?? original : original ?? latest) ?? "Содержимое недоступно"
-                cell.textLabel?.text = "\(sender) · \(date)\n\(body)"
+                let matched = isLocalSearch ? entry["matchedText"] as? String : nil
+                cell.textLabel?.text = "\(sender) · \(date)\n\(matched ?? body)"
                 var details = ["\(state) · \(location)", entry["peerName"] as? String ?? Self.fallbackName(entry)]
+                if let matched, matched != body { details.append("Совпадение в сохранённой версии") }
                 if let deletedAt = (entry["deletedAt"] as? NSNumber)?.int64Value, removed {
                     details.append("Удаление замечено: \(dateFormatter.string(from: Date(timeIntervalSince1970: Double(deletedAt) / 1000)))")
                 }
@@ -1491,23 +1761,36 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
     // Inspect a single archived message without including its text or IDs in the report.
     public override func tableView(_ tableView: UITableView,
         contextMenuConfigurationForRowAt indexPath: IndexPath, point: CGPoint) -> UIContextMenuConfiguration? {
-        guard sources != nil, displayItems.indices.contains(indexPath.row) else { return nil }
+        guard (sources != nil || isLocalSearch), displayItems.indices.contains(indexPath.row),
+              GoldgramArchiveReader.activeAccountId()?.int64Value == boundAccount else { return nil }
         let entry = displayItems[indexPath.row]
+        let author = archiveAuthor(entry)
         return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { _ in
             let count = (entry["revisionCount"] as? NSNumber)?.intValue ?? 0
-            return UIMenu(children: [
+            var actions: [UIMenuElement] = [
                 UIAction(title: "Вся история редакций (\(count))",
                          image: UIImage(systemName: "text.book.closed")) { [weak self] _ in
                     self?.showRevisionHistory(entry)
                 },
+                UIAction(title: "Сравнить редакции",
+                         image: UIImage(systemName: "arrow.left.arrow.right")) { [weak self] _ in
+                    self?.showRevisionHistory(entry, compare: true)
+                },
                 UIAction(title: "Маршрут оригинала") { [weak self] _ in
                     self?.showTrace(entry)
                 }
-            ])
+            ]
+            if let author {
+                actions.append(UIAction(title: "Поиск по этому автору",
+                    image: UIImage(systemName: "person.crop.circle")) { [weak self] _ in
+                    self?.filterArchiveAuthor(author)
+                })
+            }
+            return UIMenu(children: actions)
         }
     }
 
-    private func showRevisionHistory(_ entry: [String: Any]) {
+    private func showRevisionHistory(_ entry: [String: Any], compare: Bool = false) {
         guard let account = GoldgramArchiveReader.activeAccountId()?.int64Value,
               account == boundAccount,
               let kind = (entry["peerKind"] as? NSNumber)?.int32Value,
@@ -1521,7 +1804,9 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
             let confirmed = (entry["originalObserved"] as? NSNumber)?.boolValue == true
             let lines: [String] = revisions.map { version in
                 let n = (version["index"] as? NSNumber)?.intValue ?? 0
-                let label = n == 0 && confirmed ? "Оригинал" : "Редакция \(n)"
+                let body = (version["text"] as? String) ?? ""
+                let matchesOriginal = n == 0 && confirmed && body == (entry["originalText"] as? String)
+                let label = matchesOriginal ? "Оригинал" : n == 0 ? "Первая сохранённая версия" : "Редакция \(n)"
                 let date = (version["edited"] as? NSNumber).map {
                     self.dateFormatter.string(from: Date(timeIntervalSince1970:
                         Double($0.int64Value) / 1000))
@@ -1530,14 +1815,19 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
                     "\n" + ((version["text"] as? String) ?? "")
             }
             let controller = UIViewController()
-            controller.title = "История редакций"
+            controller.title = compare ? "Сравнение редакций" : "История редакций"
             controller.view.backgroundColor = .systemBackground
             let text = UITextView(frame: .zero)
             text.isEditable = false
             text.isSelectable = true
             text.font = UIFont.preferredFont(forTextStyle: .body)
-            text.text = lines.isEmpty ? "История пока недоступна" :
-                lines.joined(separator: "\n\n— — —\n\n")
+            if compare {
+                text.attributedText = Self.revisionComparison(entry: entry, revisions: revisions,
+                    dateFormatter: self.dateFormatter)
+            } else {
+                text.text = lines.isEmpty ? "История пока недоступна" :
+                    lines.joined(separator: "\n\n— — —\n\n")
+            }
             text.translatesAutoresizingMaskIntoConstraints = false
             controller.view.addSubview(text)
             NSLayoutConstraint.activate([
@@ -1549,6 +1839,116 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
             self.preserveListOnNextAppearance = true
             self.navigationController?.pushViewController(controller, animated: true)
         }
+    }
+
+
+    // Word/whitespace runs and individual punctuation/graphemes preserve the
+    // full source strings; bound expensive diff work for unusually long posts.
+    private static func revisionTokens(_ text: String) -> [String] {
+        var result: [String] = []
+        var run = ""
+        var lastKind = 0
+        for character in text {
+            let kind = character.isWhitespace ? 1 :
+                (character.isLetter || character.isNumber || character == "_") ? 2 : 0
+            if kind == 0 || kind != lastKind {
+                if !run.isEmpty { result.append(run); run = "" }
+            }
+            if kind == 0 { result.append(String(character)) }
+            else { run.append(character) }
+            lastKind = kind
+        }
+        if !run.isEmpty { result.append(run) }
+        return result
+    }
+
+    private static func revisionComparison(entry: [String: Any], revisions: [[String: Any]],
+                                           dateFormatter: DateFormatter) -> NSAttributedString {
+        let result = NSMutableAttributedString(string: "")
+        let base: [NSAttributedString.Key: Any] = [.font: UIFont.preferredFont(forTextStyle: .body),
+                                                  .foregroundColor: UIColor.label]
+        func append(_ value: String, _ attributes: [NSAttributedString.Key: Any]? = nil) {
+            result.append(NSAttributedString(string: value, attributes: attributes ?? base))
+        }
+        var heading = base
+        heading[.font] = UIFont.preferredFont(forTextStyle: .headline)
+        var removed = base
+        removed[.foregroundColor] = UIColor.systemRed
+        removed[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
+        removed[.backgroundColor] = UIColor.systemRed.withAlphaComponent(0.10)
+        var added = base
+        added[.foregroundColor] = UIColor.systemGreen
+        added[.underlineStyle] = NSUnderlineStyle.single.rawValue
+        added[.backgroundColor] = UIColor.systemGreen.withAlphaComponent(0.10)
+        append("Удалено", removed)
+        append("   ")
+        append("Добавлено", added)
+        append("\nСравниваются только сохранённые версии; пропущенные изменения не восстанавливаются.\n\n")
+        let original = (entry["originalObserved"] as? NSNumber)?.boolValue == true
+            ? entry["originalText"] as? String : nil
+        var previous: String?
+        if let original, original != "[Содержимое не было получено]" {
+            append("Оригинал\n", heading); append(original + "\n\n"); previous = original
+        } else {
+            append("Оригинал не получен\n\n", heading)
+        }
+        var displayed = 0
+        var stopped = false
+        for version in revisions {
+            guard let body = version["text"] as? String,
+                  body != "[Содержимое не было получено]" else { continue }
+            let index = (version["index"] as? NSNumber)?.intValue ?? 0
+            if index == 0 && previous == body { continue }
+            if displayed >= 40 || result.length > 120000 {
+                stopped = true; break
+            }
+            displayed += 1
+            let date = (version["edited"] as? NSNumber).map {
+                dateFormatter.string(from: Date(timeIntervalSince1970: Double($0.int64Value) / 1000))
+            }
+            let label = index == 0 ? "Первая сохранённая версия" : "Редакция \(index)"
+            append(label + (date.map { " · " + $0 } ?? "") + "\n", heading)
+            if let old = previous {
+                if old == body {
+                    append("Текст не изменился\n")
+                    append(body)
+                } else if old.utf16.count <= 8000 && body.utf16.count <= 8000 {
+                    let before = revisionTokens(old), after = revisionTokens(body)
+                    if before.count <= 500 && after.count <= 500 {
+                        let diff = after.difference(from: before)
+                        var removals = Set<Int>(), insertions = Set<Int>()
+                        for change in diff {
+                            switch change {
+                            case let .remove(offset, _, _): removals.insert(offset)
+                            case let .insert(offset, _, _): insertions.insert(offset)
+                            }
+                        }
+                        append("Было\n", heading)
+                        for (i, token) in before.enumerated() { append(token, removals.contains(i) ? removed : base) }
+                        append("\nСтало\n", heading)
+                        for (i, token) in after.enumerated() { append(token, insertions.contains(i) ? added : base) }
+                    } else {
+                        append("Длинная версия — показан текст без подсветки.\n")
+                        append("Было\n", heading); append(old)
+                        append("\nСтало\n", heading); append(body)
+                    }
+                } else {
+                    append("Длинная версия — показан текст без подсветки.\n")
+                    append("Было\n", heading); append(old)
+                    append("\nСтало\n", heading); append(body)
+                }
+            } else {
+                append("Нет предыдущего сохранённого текста для сравнения.\n")
+                append(body)
+            }
+            append("\n\n— — —\n\n")
+            previous = body
+        }
+        if displayed == 0 { append(original == nil ? "История пока недоступна" : "Других сохранённых версий нет") }
+        if stopped || revisions.count >= 250 {
+            append("Показана ограниченная часть сравнения. Другие доступные версии — в «Вся история редакций» (до 250).")
+        }
+        return result
     }
 
     private func showTrace(_ entry: [String: Any]) {
@@ -1832,7 +2232,8 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
         if hasMore && indexPath.row == displayItems.count { load(reset: false); return }
         guard displayItems.indices.contains(indexPath.row) else { return }
         let entry = displayItems[indexPath.row]
-        if sources != nil, let accountId = boundAccount {
+        if (sources != nil || isLocalSearch), let accountId = boundAccount {
+            guard GoldgramArchiveReader.activeAccountId()?.int64Value == accountId else { return }
             openMessage(entry, accountId: accountId)
             return
         }

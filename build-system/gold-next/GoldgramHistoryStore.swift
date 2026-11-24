@@ -1733,11 +1733,183 @@ public final class GoldgramArchiveReader: NSObject {
         return NSNumber(value: sqlite3_column_int64(stmt, column))
     }
 
+    private static func decodeArchiveRow(_ stmt: OpaquePointer) -> [String: Any] {
+        let observed = sqlite3_column_int(stmt, 4) == 1
+        // A catch-up snapshot (observed=0) is never called original.
+        return [
+            "peerKind": NSNumber(value: sqlite3_column_int(stmt, 0)),
+            "peerId": NSNumber(value: sqlite3_column_int64(stmt, 1)),
+            "messageId": NSNumber(value: sqlite3_column_int64(stmt, 2)),
+            "originalText": observed ? text(stmt, 3) : NSNull(),
+            "originalObserved": NSNumber(value: observed),
+            "captureProvenance": NSNumber(value: sqlite3_column_int(stmt, 5)),
+            "senderId": nullableInt(stmt, 6),
+            "sentAt": nullableInt(stmt, 7),
+            "lastSeenAt": nullableInt(stmt, 8),
+            "deleted": NSNumber(value: sqlite3_column_int(stmt, 9) == 1 || sqlite3_column_int(stmt, 15) == 1),
+            "latestText": text(stmt, 10),
+            "revisionCount": NSNumber(value: sqlite3_column_int64(stmt, 11)),
+            "firstKnownText": text(stmt, 12),
+            "senderKind": nullableInt(stmt, 13),
+            "edited": NSNumber(value: sqlite3_column_int(stmt, 14) == 1),
+            "deletedAt": nullableInt(stmt, 16),
+            "retained": NSNumber(value: sqlite3_column_int(stmt, 17) == 1)
+        ]
+    }
+
+    // #254: explicitly initiated search of the existing, visible local archive.
+    // No capture, network request, DB creation, schema change or text duplication.
+    private struct LocalSearch {
+        let needle: String
+        let sources: [(kind: Int32, id: Int64)]
+        let event: Int
+        let since: Int64
+        let authorKind: Int32?
+        let authorId: Int64?
+    }
+
+    static func searchLocal(accountId: Int64, needle: String, sources: [[String: Any]]?,
+                            event: Int, since: Int64, authorKind: Int32?, authorId: Int64?,
+                            offset: Int, completion: @escaping (NSDictionary) -> Void) {
+        let needle = needle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard isSelected(accountId), needle.count <= 200, (0...2).contains(event),
+              since >= 0, (0...5000).contains(offset),
+              (authorKind == nil) == (authorId == nil),
+              authorKind.map({ (0...3).contains($0) }) ?? true,
+              authorId.map({ $0 > 0 }) ?? true else {
+            completion(["status": "invalid_request", "items": []]); return
+        }
+        var scope: [(kind: Int32, id: Int64)] = []
+        if let sources {
+            guard (1...2).contains(sources.count) else {
+                completion(["status": "invalid_request", "items": []]); return
+            }
+            for row in sources {
+                guard let k = (row["peerKind"] as? NSNumber)?.int64Value,
+                      let kind = Int32(exactly: k), (0...3).contains(kind),
+                      let id = (row["peerId"] as? NSNumber)?.int64Value, id > 0 else {
+                    completion(["status": "invalid_request", "items": []]); return
+                }
+                scope.append((kind, id))
+            }
+        }
+        let request = LocalSearch(needle: needle, sources: scope, event: event, since: since,
+                                  authorKind: authorKind, authorId: authorId)
+        archiveReadQueue.async {
+            guard isSelected(accountId) else {
+                DispatchQueue.main.async { completion(["status": "account_changed", "items": []]) }
+                return
+            }
+            let result = read(accountId: accountId, mode: "search", kinds: [0,1,2,3],
+                              peerId: 0, peerKind: -1, sources: [], deletedOnly: false,
+                              offset: Int32(offset), limit: 30, editedOnly: false,
+                              diagnosticSince: 0, geoSince: 0, geoUntil: 0,
+                              attemptTokens: [], localSearch: request)
+            DispatchQueue.main.async {
+                completion(isSelected(accountId) ? result as NSDictionary :
+                           ["status": "account_changed", "items": []])
+            }
+        }
+    }
+
+    private static func readLocalSearch(db: OpaquePointer, search: LocalSearch,
+                                        offset: Int32, limit: Int32) -> [String: Any] {
+        // SQLite's built-in NOCASE only folds ASCII. This read-connection-only
+        // scalar performs literal Unicode matching, including Cyrillic and е/ё.
+        let registered = sqlite3_create_function_v2(db, "goldgram_contains_v1", 2,
+            SQLITE_UTF8 | SQLITE_DETERMINISTIC, nil, { context, argc, values in
+                guard argc == 2, let values,
+                      let body = sqlite3_value_text(values[0]),
+                      let term = sqlite3_value_text(values[1]) else {
+                    sqlite3_result_int(context, 0); return
+                }
+                let haystack = String(decoding: UnsafeBufferPointer(start: body,
+                    count: Int(sqlite3_value_bytes(values[0]))), as: UTF8.self)
+                let needle = String(decoding: UnsafeBufferPointer(start: term,
+                    count: Int(sqlite3_value_bytes(values[1]))), as: UTF8.self)
+                let matches = haystack.range(of: needle,
+                    options: [.caseInsensitive, .diacriticInsensitive]) != nil
+                sqlite3_result_int(context, matches ? 1 : 0)
+            }, nil, nil, nil)
+        guard registered == SQLITE_OK else { return ["status": "unavailable", "items": []] }
+
+        let projection = messagesSQL.components(separatedBy: "FROM messages m\n")
+        guard projection.count == 2 else { return ["status": "unavailable", "items": []] }
+        let fast = fastIndexAvailable(db)
+        let source = fast
+            ? "goldgram_ui_fast_rows_v1 f JOIN messages m ON m.peer_kind=f.peer_kind AND m.peer_id=f.peer_id AND m.message_id=f.message_id"
+            : "messages m"
+        let deleted = fast ? "f.deleted=1" : "(m.is_deleted=1 OR \(fastDeleteEventPredicate))"
+        let edited = fast ? "f.edited=1" : fastEditPredicate
+        let newest = fast ? "f.newest_at" : "COALESCE((SELECT MAX(e.observed_at) FROM events e WHERE e.peer_kind=m.peer_kind AND e.peer_id=m.peer_id AND e.message_id=m.message_id), m.last_seen_at)"
+        let originalMatch = "(m.original_observed=1 AND m.original_text!='[Содержимое не было получено]' AND goldgram_contains_v1(m.original_text,terms.needle)=1)"
+        let revisionMatch = """
+        sr.peer_kind=m.peer_kind AND sr.peer_id=m.peer_id AND sr.message_id=m.message_id
+        AND sr.content!='[Содержимое не было получено]'
+        AND goldgram_contains_v1(sr.content,terms.needle)=1
+        """
+        var predicates = [fast ? "f.visible=1" : fastVisiblePredicate, "m.peer_kind IN (0,1,2,3)",
+            "(terms.needle='' OR \(originalMatch) OR EXISTS (SELECT 1 FROM revisions sr WHERE \(revisionMatch)))"]
+        var parameters: [Int64] = []
+        if !search.sources.isEmpty {
+            predicates.append("(" + search.sources.map { _ in "(m.peer_kind=? AND m.peer_id=?)" }.joined(separator: " OR ") + ")")
+            parameters += search.sources.flatMap { [Int64($0.kind), $0.id] }
+        }
+        if search.event == 1 { predicates.append(edited) }
+        if search.event == 2 { predicates.append(deleted) }
+        if search.since > 0 { predicates.append("\(newest)>=?"); parameters.append(search.since) }
+        if let kind = search.authorKind, let id = search.authorId {
+            predicates.append("m.sender_kind=? AND m.sender_id=?")
+            parameters += [Int64(kind), id]
+        }
+        let sql = """
+        WITH terms(needle) AS (VALUES (?))
+        \(projection[0]),
+        CASE WHEN terms.needle='' THEN NULL
+             WHEN \(originalMatch) THEN m.original_text
+             ELSE (SELECT sr.content FROM revisions sr WHERE \(revisionMatch)
+                   ORDER BY sr.version_index DESC LIMIT 1) END AS matched_text
+        FROM \(source) CROSS JOIN terms
+        WHERE \(predicates.joined(separator: " AND "))
+        ORDER BY \(newest) DESC, m.message_id DESC, m.peer_kind ASC, m.peer_id ASC
+        LIMIT ? OFFSET ?;
+        """
+        var ptr: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &ptr, nil) == SQLITE_OK, let stmt = ptr else {
+            if let ptr { sqlite3_finalize(ptr) }
+            return ["status": "unavailable", "items": []]
+        }
+        defer { sqlite3_finalize(stmt) }
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        let bound = search.needle.utf8CString.withUnsafeBufferPointer {
+            sqlite3_bind_text(stmt, 1, $0.baseAddress, Int32($0.count - 1), transient)
+        }
+        guard bound == SQLITE_OK else { return ["status": "unavailable", "items": []] }
+        parameters += [Int64(limit) + 1, Int64(offset)]
+        for (index, value) in parameters.enumerated() {
+            guard sqlite3_bind_int64(stmt, Int32(index + 2), value) == SQLITE_OK else {
+                return ["status": "unavailable", "items": []]
+            }
+        }
+        var rows: [[String: Any]] = []
+        while true {
+            let step = sqlite3_step(stmt)
+            if step == SQLITE_DONE { break }
+            guard step == SQLITE_ROW else { return ["status": "unavailable", "items": []] }
+            var entry = decodeArchiveRow(stmt)
+            entry["matchedText"] = text(stmt, 18)
+            rows.append(entry)
+        }
+        let more = rows.count > Int(limit)
+        if more { rows.removeLast() }
+        return ["status": "ok", "items": rows, "hasMore": more]
+    }
+
     private static func read(
         accountId: Int64, mode: String, kinds: [Int32],
         peerId: Int64, peerKind: Int32, sources: [(kind: Int32, id: Int64)], deletedOnly: Bool,
         offset: Int32, limit: Int32, editedOnly: Bool, diagnosticSince: Int64,
-        geoSince: Int64, geoUntil: Int64, attemptTokens: [String]
+        geoSince: Int64, geoUntil: Int64, attemptTokens: [String], localSearch: LocalSearch? = nil
     ) -> [String: Any] {
         // Opening a missing DB in READONLY mode must never create one.
         let support = FileManager.default.urls(
@@ -1782,6 +1954,9 @@ public final class GoldgramArchiveReader: NSObject {
             return ["status": "incompatible_schema", "items": []]
         }
 
+        if let localSearch {
+            return readLocalSearch(db: db, search: localSearch, offset: offset, limit: limit)
+        }
         if mode == "discussion_score" {
             let sql = """
             SELECT COUNT(*), COUNT(CASE WHEN a.committed_at < e.first_edit THEN 1 END)
@@ -2149,27 +2324,7 @@ public final class GoldgramArchiveReader: NSObject {
                     "lastMessageAt": nullableInt(stmt, 3)
                 ])
             } else {
-                let observed = sqlite3_column_int(stmt, 4) == 1
-                // A catch-up snapshot (observed=0) is never called original.
-                rows.append([
-                    "peerKind": NSNumber(value: sqlite3_column_int(stmt, 0)),
-                    "peerId": NSNumber(value: sqlite3_column_int64(stmt, 1)),
-                    "messageId": NSNumber(value: sqlite3_column_int64(stmt, 2)),
-                    "originalText": observed ? text(stmt, 3) : NSNull(),
-                    "originalObserved": NSNumber(value: observed),
-                    "captureProvenance": NSNumber(value: sqlite3_column_int(stmt, 5)),
-                    "senderId": nullableInt(stmt, 6),
-                    "sentAt": nullableInt(stmt, 7),
-                    "lastSeenAt": nullableInt(stmt, 8),
-                    "deleted": NSNumber(value: sqlite3_column_int(stmt, 9) == 1 || sqlite3_column_int(stmt, 15) == 1),
-                    "latestText": text(stmt, 10),
-                    "revisionCount": NSNumber(value: sqlite3_column_int64(stmt, 11)),
-                    "firstKnownText": text(stmt, 12),
-                    "senderKind": nullableInt(stmt, 13),
-                    "edited": NSNumber(value: sqlite3_column_int(stmt, 14) == 1),
-                    "deletedAt": nullableInt(stmt, 16),
-                    "retained": NSNumber(value: sqlite3_column_int(stmt, 17) == 1)
-                ])
+                rows.append(decodeArchiveRow(stmt))
             }
         }
         return ["status": "ok", "items": rows, "hasMore": rows.count == Int(limit)]

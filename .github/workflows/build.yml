@@ -14,6 +14,7 @@ jobs:
     outputs:
       cache-hit: ${{ steps.mx_cache.outputs.cache-hit }}
       cache-key: ${{ steps.mx_cache.outputs.cache-primary-key }}
+      cache-saved: ${{ steps.mx_stage_save.outcome }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -137,6 +138,17 @@ jobs:
           retention-days: 7
           overwrite: true
           if-no-files-found: error
+
+      # Retain a successfully compiled/checksummed Mx even if Native fails.
+      # Final assembly still performs the existing IPA/ABI verification.
+      - name: Save staged Mx after checksum and architecture validation
+        id: mx_stage_save
+        continue-on-error: true
+        if: steps.mx_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: mx-output
+          key: ${{ steps.mx_cache.outputs.cache-primary-key }}
 
   native:
     runs-on: xcode-27
@@ -610,7 +622,7 @@ jobs:
           cp "$RUNNER_TEMP/goldgram-native/Swiftgram-dSYMs.zip" "$RUNNER_TEMP/Swiftgram-dSYMs.zip"
 
       - name: Save verified Mx
-        if: needs.mx.outputs.cache-hit != 'true'
+        if: needs.mx.outputs.cache-hit != 'true' && needs.mx.outputs.cache-saved != 'success'
         uses: actions/cache/save@v4
         with:
           path: mx-output
