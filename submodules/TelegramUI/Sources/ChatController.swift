@@ -8065,7 +8065,7 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
             let searchButton = UIBarButtonItem(image: UIImage(systemName: "person.crop.circle.badge.magnifyingglass"),
                 style: .plain, target: self, action: #selector(goldgramOpenAuthorSearch))
             searchButton.accessibilityIdentifier = "GoldgramAuthorSearch"
-            searchButton.accessibilityLabel = "Поиск по автору в этом чате"
+            searchButton.accessibilityLabel = "Расширенный поиск Goldgram в этом чате"
             self.navigationItem.rightBarButtonItems = (self.navigationItem.rightBarButtonItems ?? []) + [searchButton]
         }
         self.forwardSideListAppearance(.didAppear, animated: animated)

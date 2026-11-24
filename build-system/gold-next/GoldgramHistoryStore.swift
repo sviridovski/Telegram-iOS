@@ -1764,13 +1764,15 @@ public final class GoldgramArchiveReader: NSObject {
         let sources: [(kind: Int32, id: Int64)]
         let event: Int
         let since: Int64
+        let sentDateFilter: Bool
         let authorKind: Int32?
         let authorId: Int64?
     }
 
     static func searchLocal(accountId: Int64, needle: String, sources: [[String: Any]]?,
                             event: Int, since: Int64, authorKind: Int32?, authorId: Int64?,
-                            offset: Int, completion: @escaping (NSDictionary) -> Void) {
+                            offset: Int, sentDateFilter: Bool = false,
+                            completion: @escaping (NSDictionary) -> Void) {
         let needle = needle.trimmingCharacters(in: .whitespacesAndNewlines)
         guard isSelected(accountId), needle.count <= 200, (0...2).contains(event),
               since >= 0, (0...5000).contains(offset),
@@ -1794,7 +1796,7 @@ public final class GoldgramArchiveReader: NSObject {
             }
         }
         let request = LocalSearch(needle: needle, sources: scope, event: event, since: since,
-                                  authorKind: authorKind, authorId: authorId)
+                                  sentDateFilter: sentDateFilter, authorKind: authorKind, authorId: authorId)
         archiveReadQueue.async {
             guard isSelected(accountId) else {
                 DispatchQueue.main.async { completion(["status": "account_changed", "items": []]) }
@@ -1857,7 +1859,10 @@ public final class GoldgramArchiveReader: NSObject {
         }
         if search.event == 1 { predicates.append(edited) }
         if search.event == 2 { predicates.append(deleted) }
-        if search.since > 0 { predicates.append("\(newest)>=?"); parameters.append(search.since) }
+        if search.since > 0 {
+            predicates.append(search.sentDateFilter ? "m.sent_at>=?" : "\(newest)>=?")
+            parameters.append(search.since)
+        }
         if let kind = search.authorKind, let id = search.authorId {
             predicates.append("m.sender_kind=? AND m.sender_id=?")
             parameters += [Int64(kind), id]
@@ -4795,4 +4800,43 @@ public func goldgramChatShowRevisionsV1(_ peerKey: Int64, _ messageId: Int32) ->
     #else
     return 0
     #endif
+}
+
+
+// #255: same-process C boundary. Native UI has no link dependency on Mx.
+// Request lives for this call; callback result lives until callback returns.
+// The caller owns a retained opaque completion context; exactly one reply.
+@_cdecl("goldgram_unified_search_v1")
+public func goldgramUnifiedSearchV1(
+    _ raw: UnsafeRawPointer?, _ opaque: UnsafeMutableRawPointer?,
+    _ callback: (@convention(c) (UnsafeMutableRawPointer?, UnsafeRawPointer?) -> Void)?
+) {
+    guard let callback else { return }
+    func finish(_ answer: NSDictionary) {
+        callback(opaque, UnsafeRawPointer(Unmanaged.passUnretained(answer).toOpaque()))
+    }
+    guard let raw, Thread.isMainThread else {
+        finish(["status": "invalid_request", "items": []]); return
+    }
+    let request = Unmanaged<NSDictionary>.fromOpaque(raw).takeUnretainedValue()
+    guard let account = (request["accountId"] as? NSNumber)?.int64Value,
+          let needle = request["needle"] as? String,
+          let event = (request["event"] as? NSNumber)?.intValue,
+          let since = (request["since"] as? NSNumber)?.int64Value,
+          let offset = (request["offset"] as? NSNumber)?.intValue else {
+        finish(["status": "invalid_request", "items": []]); return
+    }
+    let sources = request["sources"] as? [[String: Any]]
+    if request["sources"] != nil && sources == nil {
+        finish(["status": "invalid_request", "items": []]); return
+    }
+    let authorKind = (request["authorKind"] as? NSNumber).flatMap { Int32(exactly: $0.int64Value) }
+    let authorId = (request["authorId"] as? NSNumber)?.int64Value
+    if (request["authorKind"] != nil && authorKind == nil) ||
+       (request["authorId"] != nil && authorId == nil) {
+        finish(["status": "invalid_request", "items": []]); return
+    }
+    GoldgramArchiveReader.searchLocal(accountId: account, needle: needle, sources: sources,
+        event: event, since: since, authorKind: authorKind, authorId: authorId,
+        offset: offset, sentDateFilter: true, completion: finish)
 }

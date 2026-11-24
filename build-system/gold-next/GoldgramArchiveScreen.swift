@@ -2245,3 +2245,37 @@ public final class GoldgramArchiveScreen: UITableViewController, UIDocumentPicke
         navigationController?.pushViewController(child, animated: true)
     }
 }
+
+
+// #255: narrowly scoped existing native resolver for unified search metadata
+// and explicit user-initiated exact-message availability check.
+@_cdecl("goldgram_unified_metadata_v1")
+public func goldgramUnifiedMetadataV1(
+    _ raw: UnsafeRawPointer?, _ opaque: UnsafeMutableRawPointer?,
+    _ callback: (@convention(c) (UnsafeMutableRawPointer?, UnsafeRawPointer?) -> Void)?
+) {
+    guard let callback else { return }
+    func finish(_ answer: NSDictionary) {
+        callback(opaque, UnsafeRawPointer(Unmanaged.passUnretained(answer).toOpaque()))
+    }
+    guard let raw, Thread.isMainThread else {
+        finish(["status": "invalid_request", "items": []]); return
+    }
+    let request = Unmanaged<NSDictionary>.fromOpaque(raw).takeUnretainedValue()
+    guard let account = (request["accountId"] as? NSNumber)?.int64Value,
+          GoldgramArchiveReader.activeAccountId()?.int64Value == account,
+          let items = request["items"] as? [[String: Any]], items.count <= 30 else {
+        finish(["status": "account_changed", "items": []]); return
+    }
+    if let action = request["action"] {
+        guard action as? String == "prepare_jump", items.count == 1 else {
+            finish(["status": "invalid_request", "items": []]); return
+        }
+    }
+    goldgramResolveNativeMetadata(request as [AnyHashable: Any]) { response in
+        guard GoldgramArchiveReader.activeAccountId()?.int64Value == account else {
+            finish(["status": "account_changed", "items": []]); return
+        }
+        finish(response as NSDictionary)
+    }
+}

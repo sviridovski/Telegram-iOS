@@ -1906,8 +1906,8 @@ author_anchor_245 = '''  [stack addArrangedSubview:[self goldgramDashboardTile:
 if mx_ui_source.count(author_anchor_245) != 1:
     raise SystemExit('Goldgram #245: dashboard author entry anchor mismatch')
 mx_ui_source = mx_ui_source.replace(author_anchor_245, '''  [stack addArrangedSubview:[self goldgramDashboardTile:
-    russian ? @"Поиск по автору" : @"Search by author"
-    subtitle:russian ? @"Сообщения человека в разных чатах" : @"Messages by sender across chats"
+    russian ? @"Расширенный поиск" : @"Advanced search"
+    subtitle:russian ? @"Telegram и локальный архив" : @"Telegram and local archive"
     symbol:@"person.crop.circle.badge.magnifyingglass"
     tint:UIColor.systemBlueColor identifier:29 compact:NO]];
 ''' + author_anchor_245)

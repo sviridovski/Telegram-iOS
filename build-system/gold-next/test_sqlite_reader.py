@@ -107,7 +107,7 @@ projection = message_sql.split("FROM messages m\n", 1)[0]
 newest = "COALESCE((SELECT MAX(e.observed_at) FROM events e WHERE e.peer_kind=m.peer_kind AND e.peer_id=m.peer_id AND e.message_id=m.message_id), m.last_seen_at)"
 deleted = f"(m.is_deleted=1 OR {delete_pred})"
 
-def search(db, needle="", scope=(), event=0, since=0, author=None, limit=30, offset=0, fast=False):
+def search(db, needle="", scope=(), event=0, since=0, author=None, limit=30, offset=0, fast=False, sent_date=False):
     db.create_function("goldgram_contains_v1", 2, contains, deterministic=True)
     source = ("goldgram_ui_fast_rows_v1 f JOIN messages m ON m.peer_kind=f.peer_kind AND m.peer_id=f.peer_id AND m.message_id=f.message_id"
               if fast else "messages m")
@@ -123,7 +123,7 @@ def search(db, needle="", scope=(), event=0, since=0, author=None, limit=30, off
         where.append("f.deleted=1" if fast else deleted)
     date = "f.newest_at" if fast else newest
     if since:
-        where.append(date + ">=?")
+        where.append(("m.sent_at" if sent_date else date) + ">=?")
         params.append(since)
     if author:
         where.append("m.sender_kind=? AND m.sender_id=?")
@@ -182,3 +182,25 @@ for fast in (False, True):
 assert search(b, "ЕЩЕ 100%_") == [], "account A content cannot appear in B"
 assert a.total_changes == before, "search must not mutate archive"
 print("Goldgram #254 search: fast/fallback SQL, Unicode literal, intermediate match, filters, paging and account isolation OK")
+
+
+# #255: unified mode uses send time consistently, while standalone archive
+# retains its event-time filter. Unknown send time must not match a date.
+a.execute("PRAGMA query_only=OFF")
+a.execute("UPDATE messages SET sent_at=150 WHERE peer_kind=0")
+a.execute("UPDATE messages SET sent_at=450 WHERE peer_kind=2")
+a.execute("UPDATE messages SET sent_at=NULL WHERE peer_kind=3")
+a.execute("PRAGMA query_only=ON")
+for fast in (False, True):
+    assert ids(search(a, since=400, sent_date=True, fast=fast)) == [(2,20,7)]
+    assert ids(search(a, since=400, sent_date=False, fast=fast)) == [(2,20,7),(0,10,7)]
+assert '@_cdecl("goldgram_unified_search_v1")' in src
+assert "sentDateFilter: true, completion: finish" in src
+native = (Path(__file__).resolve().parents[2] / "submodules/ChatListUI/Sources/GoldgramAuthorSearch.swift").read_text()
+assert "case 2, 3: namespace = Namespaces.Peer.CloudChannel" in native
+assert "Set(remoteRows.keys).union(localRows.keys)" in native
+assert "allowed.contains(message.id.peerId)" in native
+assert "message.author?.id == requestedAuthor" in native
+assert "presentGhostPickerFromController" in native and "Добавить исключение?" in native
+assert "goldgram_unified_search_v1" in native and "goldgram_unified_metadata_v1" in native
+print("Goldgram #255 unified search: sent-date and event-date separation, unknown dates, identity and bridge guards OK")
