@@ -1,6 +1,6 @@
 # CURRENT_STATUS — verified checkpoint
 
-> **2026-11-24 local user date — #259 native chat bookmarks and search 2.0 published; #258 green/installed, #256 user-confirmed recovery checkpoint.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
+> **2026-11-24 local user date — #259 native chat bookmarks and search 2.0 green; #258 installed, #256 user-confirmed recovery checkpoint.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
 
 ## Current code / CI / device state
 
@@ -8,10 +8,10 @@
 | --- | --- |
 | Feature branch | `gold-next-243-author-search` |
 | HEAD | `faaae4908f5606f94d20405206f8bab7f1463832` (#259), direct parent #258 |
-| Last green CI | [#258](https://github.com/sviridovski/Telegram-iOS/actions/runs/45325944910), all three jobs success; IPA artifact 14890978439, not expired at verification |
+| Last green CI | [#259](https://github.com/sviridovski/Telegram-iOS/actions/runs/45332682368), Native/Mx/Build success; IPA artifact 14893668082, not expired at verification |
 | Last installed | #258 — user confirms installation; requests how to use personal favorites; feature acceptance not yet reported. #256 last user-confirmed working search. |
 | Failed candidate | [#257](https://github.com/sviridovski/Telegram-iOS/actions/runs/45321519764), Native failed, Mx passed, Build skipped; Swift catch error shadowing at lines 1389/1407 |
-| Next candidate | [#259](https://github.com/sviridovski/Telegram-iOS/actions/runs/45332682368), in_progress at API check; native bookmark action and search 2.0; full CI and device acceptance pending. |
+| Next device test | [#259](https://github.com/sviridovski/Telegram-iOS/actions/runs/45332682368), CI success; native bookmark action and search 2.0; installation/device acceptance pending. |
 | Recovery | #256 latest green/user-tested search baseline; #254 previous green/device-tested archive-search and revision-diff baseline. Original port/telegram-13.2 not modified. |
 
 ## #252 corrections retained in #253
@@ -114,3 +114,8 @@
 ### Acceptance pending
 1. Verify CI/artifact. In private/group/channel and media group, long press exact ordinary message, add folder/tag/note, reopen favorite and exact jump/back; duplicate and existing archive history, protected/ephemeral exclusion. Test account switch and no ghost regressions. Check old #258 bookmarks and contact cards retained.
 2. Custom one-day and multi-day boundaries, invalid/reversed dates, quick date reset, text+author+chat, each media type in Telegram, explicit source reset, sort new/old and unknown dates last; archive pages and partial labels. Test highlighted literal Cyrillic match and saved preset restore/remove/overwrite across restart, old metadata compatibility. Existing #256 search and archive standalone event dates unchanged.
+
+## #259 verified green — device acceptance pending
+
+- 2026-11-24: verified working branch HEAD remains `faaae4908f5606f94d20405206f8bab7f1463832`. [CI #259](https://github.com/sviridovski/Telegram-iOS/actions/runs/45332682368): Native job 138237301883, Mx job 138237302311 and Build job 138248823564 all completed successfully; IPA artifact 14893668082 present and not expired. Last installed remains #258; last user-confirmed working recovery baseline remains #256. No #259 iPhone result reported yet.
+- Native restored #258 Bazel cache, 8225 disk hits / 10103 processes, elapsed 1405.056s, critical path 1159.96s; cache saved under #259 SHA. Mx exact cache miss as expected for changed inputs, new staged Mx cache saved. Keep same branch/key families and investigate critical path before tuning. No production source changes or new build for this checkpoint. Next: user tests native context-menu bookmarks and search 2.0 using preceding acceptance checklist; preserve existing archive, Ghost, independent Collector and Live Bridge.
