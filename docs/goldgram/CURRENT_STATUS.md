@@ -1,17 +1,17 @@
 # CURRENT_STATUS — verified checkpoint
 
-> **2026-11-24 local user date — #260 green, installed and user-confirmed working; unified media center proposal under discussion.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
+> **2026-11-24 local user date — #261 unified media center 1.0 published; #260 verified green and user-tested; #261 CI/device acceptance pending.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
 
 ## Current code / CI / device state
 
 | Item | Latest confirmed status |
 | --- | --- |
 | Feature branch | `gold-next-243-author-search` |
-| HEAD | `3481fad1b63864a45f48dd282ac4867d2d53a248` (#260), direct parent #259 |
+| HEAD | `67b1649a27ffe37cb1dac80b4f31d8be4e7e8734` (#261), direct parent #260 |
 | Last green CI | [#260](https://github.com/sviridovski/Telegram-iOS/actions/runs/45357908933), Native/Mx/Build success; IPA artifact 14906095386, not expired at verification |
 | Last installed | #260 — user confirms tested and all excellent; individual acceptance cases not independently reported. |
 | Failed candidate | [#257](https://github.com/sviridovski/Telegram-iOS/actions/runs/45321519764), Native failed, Mx passed, Build skipped; Swift catch error shadowing at lines 1389/1407 |
-| Next task | Discuss unified media center design first; no implementation authorized yet. |
+| Next task | Verify [#261](https://github.com/sviridovski/Telegram-iOS/actions/runs/45366241671) CI, artifact and device acceptance of unified media center 1.0. |
 | Recovery | #260 latest green and user-confirmed working baseline; #259 fallback with disappearing chat search button; #256 earlier confirmed search baseline. Original port/telegram-13.2 not modified. |
 
 ## #252 corrections retained in #253
@@ -138,3 +138,10 @@
 - [#260](https://github.com/sviridovski/Telegram-iOS/actions/runs/45357908933), SHA 3481fad1b63864a45f48dd282ac4867d2d53a248: all three CI jobs success; IPA 14906095386 present and unexpired at check. User confirms installed/tested and all excellent. No individually verified subcases inferred. #260 latest recovery checkpoint.
 - Native restored #259 cache; 8225 disk hits / 10103 processes; Bazel 1313.853s, critical path 1107.61s; saved cache under #260 SHA. Actual layout preference test explicitly reported OK. Preserve existing branch/cache families.
 - User requests detailed design before implementation of unified media center. Proposed independent configurable dashboard tile, retain old Mx Media settings tile; accessible Telegram photo/video/documents/audio/voice/video messages/GIF/links, category filters, explicit search and bounded paging, grid/list, source chat/date, filename/caption, known file size, exact native navigation/back, existing personal bookmark references, local cache status when reliable. Existing #259 TelegramEngine search tags (.webPage, .photoOrVideo, .file, .voiceOrInstantVideo) can be reused; further audio/GIF classifications require native source verification. Respect protected/ephemeral/secret content, account and privacy boundaries. Archive SQLite has no verified media inventory; no fabricated deleted media, no auto-download, no duplicate media DB or separate session. Counts/sorts reflect loaded results unless server supports an accurate total/global ordering. No implementation approved or source changed; design discussion only, no CI triggered.
+
+## #261 unified media center 1.0 candidate
+
+- User approved implementation after design discussion. Published [source 67b1649](https://github.com/sviridovski/Telegram-iOS/commit/67b1649a27ffe37cb1dac80b4f31d8be4e7e8734), direct #260 parent, verified five changed files. [CI #261](https://github.com/sviridovski/Telegram-iOS/actions/runs/45366241671) in_progress at API check; #260 confirmed recovery baseline. No new green/IPA claim.
+- Separate configurable tile, eight categories (photo/video/documents/music/voice/circle/links/GIF), grid/list, accessible current-account cloud root/archive or selected chat, author/type/date/known-size and text filters, loaded-result date/size/name sort, bounded initial pages and load more. Actual thumbnail metadata only; unknown sizes remain unknown, one result per message; global author and server text results may be partial. Details, exact native jump/back, reference bookmark. For ordinary accessible media, revalidate local current message/peer before preview/download/bookmark; check existing cache, explicit user download to Telegram cache, Quick Look if supported and native source-message fallback. No automatic downloads/links, protected/ephemeral/spoiler/secret or restricted content excluded; no archive media recovery, duplicate storage, Ghost, capture or Collector changes.
+- Same branch and cache family, retain #260 Native cache and staged Mx save; Mx recipe changed so rebuild expected. Existing isolated Foundation harness extended for old layout migration, eight category mapping, literal name/caption matching, unknown size and safe extension. CI preflight runs before large Bazel restore; tests not yet verified. No claim of local iOS compilation.
+- Acceptance after all jobs green and IPA present: install over #260; confirm original Media settings and all original tiles plus ID 33, preserve custom order/hide/pin and reset. Open all eight categories with ordinary own test media; check previews, list/grid, filename/caption/date/size filters, known chat, author, load more/cancel/stale timeout and empty results; link opens source only; exact jump/back and bookmark. Check protected/ephemeral/spoiler/secret exclusion, account isolation, no background/full automatic download; explicit download/cache preview/fallback/cancel. Recheck #260 search header, Ghost, archive and Collector. Full device result pending.
