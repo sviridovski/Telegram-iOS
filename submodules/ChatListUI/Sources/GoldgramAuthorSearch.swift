@@ -1386,7 +1386,7 @@ private enum GoldgramPersonalUI {
         guard GoldgramAuthorSearchBridge.isCurrentAccount(context) else { return }
         let saved: GoldgramPersonalBookmark
         do { saved = try read(context).bookmarks.first(where: { $0.key == value.key }) ?? value }
-        catch { error(owner); return }
+        catch { GoldgramPersonalUI.error(owner); return }
         let alert = UIAlertController(title: "Личная закладка", message: "Только на этом устройстве. Сохраняется ссылка, а не копия сообщения.", preferredStyle: .alert)
         alert.addTextField { field in field.placeholder = "Папка (например, Работа)"; field.text = saved.folder }
         alert.addTextField { field in field.placeholder = "Теги через запятую"; field.text = saved.tags.joined(separator: ", ") }
@@ -1404,7 +1404,7 @@ private enum GoldgramPersonalUI {
             }.filter { !$0.isEmpty && seen.insert($0.lowercased()).inserted }.prefix(12))
             updated.note = String((fields[2].text ?? "").prefix(1000))
             do { try change(context) { $0.put(updated) }; completion() }
-            catch { error(owner) }
+            catch { GoldgramPersonalUI.error(owner) }
         })
         alert.addAction(UIAlertAction(title: "Отмена", style: .cancel))
         owner.present(alert, animated: true)
