@@ -2218,3 +2218,26 @@ patch_260('  if (identifier == 32) {', '''  if (identifier == 33) {
   if (identifier == 32) {''', 'media center route')
 mx_ui_path.write_text(mx_ui_source)
 print('Goldgram #261: unified media center tile, existing Media settings retained')
+
+# Goldgram #267: configurable Plugins tile and native manager route.
+patch_260('NSArray *known = @[@29,@30,@31,@33,@0,@20,@24,@27,@28,@25,@21,@22,@4,@23];',
+    'NSArray *known = @[@29,@30,@31,@33,@34,@0,@20,@24,@27,@28,@25,@21,@22,@4,@23];', 'plugins layout ids')
+patch_260('[@[@29, @33, @0, @25] containsObject:identifier]',
+    '[@[@29, @33, @34, @0, @25] containsObject:identifier]', 'plugins wide tile')
+patch_260(media_tile_anchor_261, '''  [stack addArrangedSubview:[self goldgramDashboardTile:
+    russian ? @"Плагины" : @"Plugins"
+    subtitle:russian ? @"Импорт, настройки и выполнение JavaScript" : @"Import, settings and JavaScript"
+    symbol:@"puzzlepiece.extension" tint:UIColor.systemOrangeColor identifier:34 compact:NO]];
+''' + media_tile_anchor_261, 'plugins tile')
+patch_260('  if (identifier == 33) {', '''  if (identifier == 34) {
+    Class bridge = NSClassFromString(@"GoldgramAuthorSearchBridge");
+    SEL action = NSSelectorFromString(@"presentPluginsFromController:");
+    if ([bridge respondsToSelector:action]) {
+      typedef void (*OpenPlugins)(id, SEL, UIViewController *);
+      ((OpenPlugins)[bridge methodForSelector:action])(bridge, action, self);
+    }
+    return;
+  }
+  if (identifier == 33) {''', 'plugins route')
+mx_ui_path.write_text(mx_ui_source)
+print('Goldgram #267: Plugins dashboard entry')

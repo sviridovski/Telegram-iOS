@@ -14,7 +14,7 @@ import QuickLook
 
 // BEGIN GOLDGRAM_LAYOUT_MODEL_V1
 private struct GoldgramLayoutPreferences: Codable, Equatable {
-    static let dashboardIDs = [29, 30, 31, 33, 0, 20, 24, 27, 28, 25, 21, 22, 4, 23]
+    static let dashboardIDs = [29, 30, 31, 33, 34, 0, 20, 24, 27, 28, 25, 21, 22, 4, 23]
     static let menuIDs = [100, 101, 102, 103]
     static let key = "Goldgram.LayoutPreferences.v1"
     var dashboardOrder = Self.dashboardIDs
@@ -29,8 +29,9 @@ private struct GoldgramLayoutPreferences: Codable, Equatable {
     }
 
     mutating func normalize() {
-        let oldDefault = Self.dashboardIDs.filter { $0 != 33 }
-        if dashboardOrder == oldDefault { dashboardOrder = Self.dashboardIDs }
+        let oldDefault = Self.dashboardIDs.filter { $0 != 33 && $0 != 34 }
+        let previousDefault = Self.dashboardIDs.filter { $0 != 34 }
+        if dashboardOrder == oldDefault || dashboardOrder == previousDefault { dashboardOrder = Self.dashboardIDs }
         dashboardOrder = Self.order(dashboardOrder, known: Self.dashboardIDs)
         dashboardHidden = dashboardOrder.filter { dashboardHidden.contains($0) }
         dashboardPinned = dashboardOrder.filter { dashboardPinned.contains($0) && !dashboardHidden.contains($0) }
@@ -68,7 +69,7 @@ private final class GoldgramLayoutScreen: UITableViewController {
     private var preferences: GoldgramLayoutPreferences
 
     private static let names: [Int: String] = [
-        29: "Расширенный поиск", 30: "Личное избранное", 31: "Карточки контактов", 33: "Единый медиацентр",
+        29: "Расширенный поиск", 30: "Личное избранное", 31: "Карточки контактов", 33: "Единый медиацентр", 34: "Плагины",
         0: "Режим невидимки", 20: "Изменённые", 24: "Удалённые",
         27: "Личные сообщения", 28: "Группы и чаты", 25: "Каналы и комментарии",
         21: "Приватность", 22: "Медиа", 4: "Геопозиция", 23: "Другие функции",
@@ -216,6 +217,16 @@ public final class GoldgramAuthorSearchBridge: NSObject {
     public static func presentMediaCenterFromController(_ controller: UIViewController) {
         guard let context = primaryContext, isCurrentAccount(context) else { return }
         presentPersonal(GoldgramMediaCenter(context: context), from: controller)
+    }
+
+    @objc(presentPluginsFromController:)
+    public static func presentPluginsFromController(_ controller: UIViewController) {
+        guard let context = primaryContext, isCurrentAccount(context) else { return }
+        let account = String(context.account.peerId.id._internalGetInt64Value())
+        presentPersonal(GoldgramPluginManager(account: account, isCurrent: { [weak context] in
+            guard let context else { return false }
+            return GoldgramAuthorSearchBridge.isCurrentAccount(context)
+        }), from: controller)
     }
 
     @objc(presentLayoutFromController:)
