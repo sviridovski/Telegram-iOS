@@ -202,3 +202,7 @@ Imported plugin source is authoritative for UI schema, profiles, commands and ca
 ## #270 candidate — native confirmation preferences
 
 Reusable engine-level account/plugin policy governs repeated DeepSeek request and draft-preview prompts independently, default on and explicit user opt-out; no plugin-side policy mutation. Code/grant lifecycle reset, action scoping, existing permission/context validation and manual Telegram send preserved. See CURRENT_STATUS/DECISIONS_LOG. iOS validation pending.
+
+
+## #270 checkpoint
+Confirmation policy opt-out verified on device; see CURRENT_STATUS and DECISIONS_LOG. Next: independent multi-plugin execution.

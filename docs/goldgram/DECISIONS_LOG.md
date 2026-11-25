@@ -316,3 +316,8 @@ User explicitly approved prioritizing the universal plugin engine until mature, 
 ## 2026-11-25 — утверждён технический план Plugin Engine 2.0
 
 Пользователь одобрил предложенный подробный план и попросил после #270 работать именно по нему. Создан [PLUGIN_ENGINE_2_ROADMAP.md](./PLUGIN_ENGINE_2_ROADMAP.md), детализация P0. Следующий шаг после подтверждения #270 — независимая работа нескольких плагинов, а не AICC 3.0. Проверено при сохранении: HEAD кода `7d96dc20291fe09993dad7ed4273bf75711eb026`, CI #270 in_progress. Приёмка #270 на устройстве пока не сообщена. Только документационный коммит, сборка не запрашивалась.
+
+
+## #270 — CI green and confirmation opt-out verified on device (2026-11-25)
+
+User installed #270 and reported that confirmation dialogs are no longer requested when switched off. Screenshot shows both AI Commander 2.1.8 toggles disabled in the shared confirmations page. This confirms the requested usability behavior; independent re-enable/reset, restart persistence, account isolation and code-update reset were not separately reported. CI #270 [45652311197](https://github.com/sviridovski/Telegram-iOS/actions/runs/45652311197) completed successfully, wall time 28m36s; jobs: native: success, mx: success, build: success. Source 7d96dc20291fe09993dad7ed4273bf75711eb026. #270 is the latest green/user-confirmed baseline for the tested flow. Next P0 stage: multi-plugin registry and independent actions/execution (target #271), following [PLUGIN_ENGINE_2_ROADMAP.md](./PLUGIN_ENGINE_2_ROADMAP.md). No app source changes or new build requested in this documentation checkpoint.

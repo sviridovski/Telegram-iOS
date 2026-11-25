@@ -61,3 +61,7 @@ GET/POST для разрешённых адресов и методов, пер�
 - Комплексные проверки на iPhone, а не только mock/CI. Стабильный baseline и явная приёмка пользователем.
 
 После приёмки — две согласуемые линии: AI Commander 3.0 и другие самостоятельные плагины, а также нативные функции Goldgram. AI Commander 3.0: динамические модели, адаптивный выбор, кнопка AI 2.0, streaming, расширяемые профили, память, конструктор команд, документы/изображения/речь/веб при наличии разрешённых сервисов, расходы и новый JS-интерфейс. Это будущие задачи, не повод сейчас менять приоритет P0.
+
+
+### #270 checkpoint — confirmed
+CI green, user confirms both disabled confirmation dialogs no longer interrupt the workflow. Proceed to multi-plugin stage next; remaining lifecycle/persistence tests stay in regression matrix. No source changes at this checkpoint.

@@ -26,3 +26,7 @@ Original AICC request and generated response confirmed by user on iPhone. #270 c
 ## Approved detailed execution plan
 
 **Подробный утверждённый технический план:** [PLUGIN_ENGINE_2_ROADMAP.md](./PLUGIN_ENGINE_2_ROADMAP.md). После проверки #270 следующий этап — многоплагинность (ориентир #271), затем сетевой API, SSE, UI, lifecycle, GGAPI/GoldAPI, обновления, диагностика и SDK. Номера ориентировочные; критерии приёмки обязательны.
+
+
+### #270 checkpoint — confirmed
+CI green, user confirms both disabled confirmation dialogs no longer interrupt the workflow. Proceed to multi-plugin stage next; remaining lifecycle/persistence tests stay in regression matrix. No source changes at this checkpoint.
