@@ -1,6 +1,7 @@
 import Foundation
 import UIKit
 import Security
+import UniformTypeIdentifiers
 
 // #268: a built-in native AI command. Imported JavaScript receives no network,
 // credentials, chat objects or send capability. User approves each request.
@@ -10,7 +11,7 @@ public struct GoldgramAIDraft: Equatable {
     public init(identity: String, text: String) { self.identity = identity; self.text = text }
 }
 
-private struct GoldgramAIConfig {
+struct GoldgramAIConfig {
     let account: String
     private var prefix: String { "goldgram.ai.v1." + account + "." }
     var enabled: Bool {
@@ -62,7 +63,7 @@ private struct GoldgramAIConfig {
     }
 }
 
-private final class GoldgramAINoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+final class GoldgramAINoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
 }
 
@@ -105,7 +106,7 @@ final class GoldgramAISettings: UITableViewController {
     override func viewDidLoad() { super.viewDidLoad(); title = "AI Command Center" }
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { 6 }
     override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
-        "Включите AI и вернитесь в чат. Вставьте текст в черновик, нажмите AI и подтвердите отправку текста и промпта в DeepSeek. Ответ вставляется только после подтверждения. Ключ хранится в Keychain, не в JS. Импортированный 2.1.8 пока не совместим."
+        "Включите AI и вернитесь в чат. Вставьте текст в черновик, нажмите AI и подтвердите отправку текста и промпта в DeepSeek. Ответ вставляется только после подтверждения. Ключ хранится в Keychain, не в JS. Это резервный нативный помощник. Для AI Commander 2.1.8 откройте сам импортированный плагин и его настройки."
     }
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
@@ -211,15 +212,21 @@ public final class GoldgramAIButton: UIButton {
     private var token = UUID()
     private weak var activeAlert: UIAlertController?
     private var dragStart = CGPoint.zero
+    private var pluginRun: GoldgramPluginChatRun?
+    private let pluginContext: (() -> [String: Any])?
+    private let idleTitle: String
+    private var selectedAction: (String, [String: Any])?
 
     public static func isEnabled(account: String) -> Bool {
-        GoldgramAIConfig(account: account).enabled && goldgramAIAllowed(account: account)
+        goldgramAIAllowed(account: account) && (GoldgramPluginChatRun.selected(account: account) != nil || GoldgramAIConfig(account: account).enabled)
     }
-    public init(account: String, presenter: UIViewController, snapshot: @escaping () -> GoldgramAIDraft?, insert: @escaping (GoldgramAIDraft, String) -> Bool) {
+    public init(account: String, presenter: UIViewController, snapshot: @escaping () -> GoldgramAIDraft?, pluginContext: (() -> [String: Any])? = nil, insert: @escaping (GoldgramAIDraft, String) -> Bool) {
+        self.pluginContext = pluginContext
+        self.idleTitle = GoldgramPluginChatRun.selected(account: account)?.1 ?? "AI"
         config = GoldgramAIConfig(account: account); self.presenter = presenter; self.snapshot = snapshot; self.insert = insert
         super.init(frame: CGRect(x: 0, y: 0, width: 46, height: 38))
         backgroundColor = .systemBlue; layer.cornerRadius = 19
-        setTitle("AI", for: .normal); setTitleColor(.white, for: .normal); titleLabel?.font = .boldSystemFont(ofSize: 15)
+        setTitle(idleTitle, for: .normal); setTitleColor(.white, for: .normal); titleLabel?.font = .boldSystemFont(ofSize: 15)
         accessibilityLabel = "Goldgram AI"; accessibilityHint = "Сгенерировать ответ на текст черновика"
         addTarget(self, action: #selector(tapped), for: .touchUpInside)
         addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(drag(_:))))
@@ -229,8 +236,9 @@ public final class GoldgramAIButton: UIButton {
     deinit { NotificationCenter.default.removeObserver(self); task?.cancel(); session?.invalidateAndCancel() }
     @objc private func background() { cancel() }
     public func cancel() {
-        token = UUID(); task?.cancel(); task = nil; session?.invalidateAndCancel(); session = nil
-        setTitle("AI", for: .normal)
+        guard task != nil || pluginRun != nil || activeAlert != nil else { return }
+        token = UUID(); let oldPlugin = pluginRun; pluginRun = nil; oldPlugin?.cancel(); task?.cancel(); task = nil; session?.invalidateAndCancel(); session = nil
+        setTitle(idleTitle, for: .normal)
         if let alert = activeAlert, alert.presentingViewController != nil { alert.dismiss(animated: false) }
         activeAlert = nil
     }
@@ -267,9 +275,34 @@ public final class GoldgramAIButton: UIButton {
         let alert = UIAlertController(title: "Goldgram AI", message: text, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "OK", style: .default)); presentAlert(alert)
     }
+    public static func pluginMenu(account: String) -> [[String: String]] { GoldgramPluginChatRun.menu(account: account) }
+    public func invokePluginAction(key: String, message: [String: Any]) {
+        guard task == nil, pluginRun == nil, GoldgramPluginChatRun.selected(account: config.account) != nil else { return }
+        selectedAction = (key, message); tapped(); selectedAction = nil
+    }
     @objc private func tapped() {
-        if task != nil { cancel(); return }
+        if task != nil || pluginRun != nil { cancel(); return }
         guard Self.isEnabled(account: config.account), let draft = snapshot() else { return }
+        if let (id, _) = GoldgramPluginChatRun.selected(account: config.account), let presenter {
+            let current = UUID(); token = current
+            let runner = GoldgramPluginChatRun(); pluginRun = runner; setTitle("×", for: .normal)
+            var context = pluginContext?() ?? [:]; context["draft"] = draft.text
+            let action = selectedAction
+            if let action { context["selectedMessage"] = action.1 }
+            runner.start(account: config.account, presenter: presenter, id: id, context: context, event: action == nil ? "floating.tap" : "context.tap", key: action?.0, valid: { [weak self] in self?.token == current && self?.snapshot() == draft }, completion: { [weak self] output, error in
+                guard let self, self.token == current else { return }
+                self.pluginRun = nil; self.setTitle(self.idleTitle, for: .normal)
+                guard self.snapshot() == draft else { return }
+                if let output, let kind = output["kind"] as? String, let text = output["text"] as? String {
+                    if kind == "draft" { self.preview(text, draft: draft, token: current) }
+                    else if kind == "clipboard" {
+                        let alert = UIAlertController(title: "Копировать результат?", message: text, preferredStyle: .alert)
+                        alert.addAction(UIAlertAction(title: "Копировать", style: .default) { [weak self] _ in guard let self, self.snapshot() == draft, self.token == current else { return }; UIPasteboard.general.string = text })
+                        alert.addAction(UIAlertAction(title: "Отмена", style: .cancel)); self.presentAlert(alert)
+                    } else { self.notice((output["title"] as? String ?? "AI") + "\n\n" + text) }
+                } else if let error { self.notice(error) }
+            }); return
+        }
         guard let key = config.readKey() else { notice("Задайте ключ в Goldgram → Плагины → AI Command Center."); return }
         let prompt = config.prompt, model = config.model
         guard let request = GoldgramAIProtocol.request(key: key, model: model, prompt: prompt, draft: draft.text) else {
@@ -306,12 +339,116 @@ public final class GoldgramAIButton: UIButton {
         self.task = task; task.resume()
     }
     private func preview(_ answer: String, draft: GoldgramAIDraft, token: UUID) {
-        let alert = UIAlertController(title: "Ответ DeepSeek", message: answer, preferredStyle: .alert)
+        let alert = UIAlertController(title: "Результат AI", message: answer, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Вставить в черновик", style: .default) { [weak self] _ in
             guard let self, self.token == token, self.snapshot() == draft, Self.isEnabled(account: self.config.account) else { return }
             self.activeAlert = nil
             _ = self.insert(draft, answer)
         })
         alert.addAction(UIAlertAction(title: "Отмена", style: .cancel)); presentAlert(alert)
+    }
+}
+
+
+// Native request broker. No arbitrary URLs, no raw credentials in the worker,
+// no automatic request: user approves the exact model and payload each time.
+@MainActor
+final class GoldgramPluginNetwork: NSObject, UIDocumentPickerDelegate {
+    private let config: GoldgramAIConfig
+    private weak var presenter: UIViewController?
+    private let valid: () -> Bool
+    private var task: URLSessionDataTask?
+    private var session: URLSession?
+    private weak var alert: UIAlertController?
+    private var cancelled = false
+    private var busy = false
+    private var count = 0
+    private weak var fileUI: UIViewController?
+    private var fileReply: (([String: Any]) -> Void)?
+    private var exportDirectory: URL?
+    init(config: GoldgramAIConfig, presenter: UIViewController, valid: @escaping () -> Bool) { self.config = config; self.presenter = presenter; self.valid = valid; super.init() }
+    func cancel() {
+        cancelled = true; task?.cancel(); session?.invalidateAndCancel(); task = nil; session = nil
+        if let alert, alert.presentingViewController != nil { alert.dismiss(animated: false) }
+        if let fileUI, fileUI.presentingViewController != nil { fileUI.dismiss(animated: false) }
+        fileReply = nil; cleanExport()
+    }
+    private func cleanExport() { if let exportDirectory { try? FileManager.default.removeItem(at: exportDirectory) }; exportDirectory = nil }
+    func pickJSON(completion: @escaping ([String: Any]) -> Void) {
+        guard !cancelled, !busy, valid(), let presenter, presenter.presentedViewController == nil else { completion(["error":"Файл недоступен"]); return }
+        busy = true; fileReply = completion
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.json], asCopy: true); picker.delegate = self; picker.allowsMultipleSelection = false; picker.modalPresentationStyle = .formSheet; fileUI = picker; presenter.present(picker, animated: true)
+    }
+    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) { completeFile(["value":NSNull()]) }
+    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        guard !cancelled, valid(), let url = urls.first else { completeFile(["error":"request_cancelled"]); return }
+        let access = url.startAccessingSecurityScopedResource(); defer { if access { url.stopAccessingSecurityScopedResource() } }
+        guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= 65536, let data = try? Data(contentsOf: url), data.count <= 65536, let value = try? JSONSerialization.jsonObject(with: data) else { completeFile(["error":"Некорректный JSON (лимит 64 КБ)"]); return }
+        completeFile(["value":value])
+    }
+    private func completeFile(_ result: [String: Any]) { let reply = fileReply; fileReply = nil; busy = false; fileUI = nil; if !cancelled { reply?(result) } }
+    func shareJSON(_ args: [String: Any], completion: @escaping ([String: Any]) -> Void) {
+        guard !cancelled, !busy, valid(), let presenter, presenter.presentedViewController == nil, let name = args["name"] as? String, name.count <= 100, name.hasSuffix(".json"), !name.contains("/"), !name.contains("\\"), let raw = args["body"] as? String, raw.utf8.count <= 65536, (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) != nil else { completion(["error":"Invalid JSON export"]); return }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        do { try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: nil); exportDirectory = directory; let url = directory.appendingPathComponent(name); try Data(raw.utf8).write(to: url, options: .atomic)
+            busy = true; let activity = UIActivityViewController(activityItems: [url], applicationActivities: nil); activity.popoverPresentationController?.sourceView = presenter.view; activity.popoverPresentationController?.sourceRect = CGRect(x: presenter.view.bounds.midX, y: presenter.view.bounds.midY, width: 1, height: 1); fileUI = activity
+            activity.completionWithItemsHandler = { [weak self] _, completed, _, _ in DispatchQueue.main.async { guard let self else { return }; self.busy = false; self.fileUI = nil; self.cleanExport(); if !self.cancelled { completion(["value":completed]) } } }; presenter.present(activity, animated: true)
+        } catch { cleanExport(); completion(["error":"Не удалось экспортировать JSON"]) }
+    }
+    func select(_ args: [String: Any], completion: @escaping ([String: Any]) -> Void) {
+        guard !cancelled, !busy, valid(), let title = args["title"] as? String, let choices = args["choices"] as? [[String: String]], !choices.isEmpty, choices.count <= 24 else { completion(["error":"Invalid selection"]); return }
+        busy = true
+        DispatchQueue.main.asyncAfter(deadline: .now()+0.35) { [weak self] in
+            guard let self, !self.cancelled, self.valid(), let presenter = self.presenter, presenter.viewIfLoaded?.window != nil, presenter.presentedViewController == nil else { self?.busy = false; completion(["error":"request_cancelled"]); return }
+            let alert = UIAlertController(title: String(title.prefix(160)), message: nil, preferredStyle: .alert); self.alert = alert
+            for item in choices { guard let value = item["value"], let label = item["title"], value.count <= 200 else { continue }; alert.addAction(UIAlertAction(title: String(label.prefix(160)), style: .default) { [weak self] _ in self?.busy = false; self?.alert = nil; completion(["value":value]) }) }
+            alert.addAction(UIAlertAction(title: "Отмена", style: .cancel) { [weak self] _ in self?.busy = false; self?.alert = nil; completion(["value":NSNull()]) }); presenter.present(alert, animated: true)
+        }
+    }
+    func fetch(_ args: [String: Any], completion: @escaping ([String: Any]) -> Void) {
+        guard !cancelled, !busy, valid(), count < 3, let key = config.readKey(),
+              args["url"] as? String == "https://api.deepseek.com/chat/completions", args["method"] as? String == "POST",
+              let raw = args["body"] as? String, raw.utf8.count <= 48000,
+              let body = try? JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any],
+              let model = body["model"] as? String, !model.isEmpty, model.count <= 100,
+              let messages = body["messages"] as? [[String: Any]], messages.count == 2,
+              messages[0]["role"] as? String == "system", messages[1]["role"] as? String == "user",
+              let prompt = messages[0]["content"] as? String, let text = messages[1]["content"] as? String,
+              prompt.utf8.count <= 16000, text.utf8.count <= 28000 else { completion(["error": "Нужен ключ и корректный запрос к DeepSeek. Другие адреса не разрешены."]); return }
+        var clean: [String: Any] = ["model":model,"messages":[["role":"system","content":prompt],["role":"user","content":text]],"stream":false,"max_tokens":max(1,min(2048,body["max_tokens"] as? Int ?? 900))]
+        if let t = body["temperature"] as? Double, t.isFinite { clean["temperature"] = max(0,min(2,t)) }
+        if let t = body["thinking"] as? [String: Any], let type = t["type"] as? String, ["enabled","disabled"].contains(type) { clean["thinking"] = ["type":type] }
+        if let effort = body["reasoning_effort"] as? String, ["high","max"].contains(effort) { clean["reasoning_effort"] = effort }
+        guard let url = URL(string: "https://api.deepseek.com/chat/completions"), let data = try? JSONSerialization.data(withJSONObject: clean) else { completion(["error":"Invalid request"]); return }
+        let ms = max(1000,min(240000,args["timeoutMs"] as? Int ?? 75000))
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: Double(ms)/1000)
+        request.httpMethod = "POST"; request.httpBody = data
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type"); request.setValue("Bearer " + key, forHTTPHeaderField: "Authorization")
+        busy = true; count += 1
+        DispatchQueue.main.asyncAfter(deadline: .now()+0.35) { [weak self] in
+            guard let self, !self.cancelled, self.valid(), let presenter = self.presenter, presenter.viewIfLoaded?.window != nil, presenter.presentedViewController == nil else { self?.busy = false; completion(["error":"Запрос отменён"]); return }
+            let alert = UIAlertController(title: "Передать данные плагина в DeepSeek?", message: "Модель: "+model+"\n\nПромпт:\n"+prompt+"\n\nТекст:\n"+text, preferredStyle: .alert)
+            self.alert = alert
+            alert.addAction(UIAlertAction(title: "Отправить запрос", style: .default) { [weak self] _ in
+                guard let self, !self.cancelled, self.valid() else { completion(["error":"request_cancelled"]); return }
+                self.alert = nil
+                let cfg = URLSessionConfiguration.ephemeral
+                cfg.httpShouldSetCookies = false; cfg.httpCookieStorage = nil; cfg.urlCache = nil; cfg.urlCredentialStorage = nil
+                cfg.timeoutIntervalForRequest = Double(ms)/1000; cfg.timeoutIntervalForResource = Double(ms)/1000
+                let session = URLSession(configuration: cfg, delegate: GoldgramAINoRedirect(), delegateQueue: nil)
+                self.session = session
+                let task = session.dataTask(with: request) { [weak self] data, response, error in
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self, !self.cancelled else { return }
+                        self.busy = false; self.task = nil; self.session?.finishTasksAndInvalidate(); self.session = nil
+                        guard self.valid(), error == nil, let http = response as? HTTPURLResponse, let data, data.count <= 512*1024, let text = String(data: data, encoding: .utf8) else { completion(["error":"Network error or invalid response"]); return }
+                        completion(["status":http.statusCode,"body":text])
+                    }
+                }
+                self.task = task; task.resume()
+            })
+            alert.addAction(UIAlertAction(title: "Отмена", style: .cancel) { [weak self] _ in self?.busy = false; completion(["error":"request_cancelled"]) })
+            presenter.present(alert, animated: true)
+        }
     }
 }

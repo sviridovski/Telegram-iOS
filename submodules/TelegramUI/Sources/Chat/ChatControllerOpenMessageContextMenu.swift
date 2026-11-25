@@ -69,6 +69,24 @@ extension ChatControllerImpl {
                     if itemList.isEmpty {
                         return
                     }
+                    // Plugin-defined context actions on currently authorized ordinary messages.
+                    let pluginActions = self.goldgramPluginMessageMenu(message)
+                    if !pluginActions.isEmpty {
+                        var list = itemList
+                        for entry in pluginActions {
+                            guard let key = entry["id"], let title = entry["title"] else { continue }
+                            list.append(.action(ContextMenuActionItem(text: title, icon: { theme in
+                                UIImage(systemName: "sparkles")?.withTintColor(theme.actionSheet.primaryTextColor, renderingMode: .alwaysOriginal)
+                            }, action: { [weak self = self] _, f in
+                                f(.dismissWithoutContent)
+                                Queue.mainQueue().after(0.35, { [weak self = self] in
+                                    guard let self, self.viewIfLoaded?.window != nil, self.presentedViewController == nil else { return }
+                                    self.goldgramInvokePluginMessageAction(key, message: message)
+                                })
+                            })))
+                        }
+                        actions.content = .list(list)
+                    }
                     // Goldgram: only ordinary, non-protected cloud messages.
                     // Keep the existing native menu and exact tapped identity.
                     if !self.presentationInterfaceState.copyProtectionEnabled &&
@@ -79,6 +97,7 @@ extension ChatControllerImpl {
                         !topMessage.media.contains(where: { $0 is TelegramMediaAction || $0 is TelegramMediaExpiredContent }) &&
                         GoldgramAuthorSearchBridge.canBookmark(context: self.context, message: message) {
                         var list = itemList
+                        if case let .list(updatedItems) = actions.content { list = updatedItems }
                         for actionId in GoldgramAuthorSearchBridge.menuActionIDs() {
                             let title: String
                             let symbol: String

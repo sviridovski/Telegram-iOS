@@ -8079,6 +8079,17 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
         let button = GoldgramAIButton(account: account, presenter: self, snapshot: { [weak self = self] in
             guard let self, let identity = self.goldgramAIIdentity() else { return nil }
             return GoldgramAIDraft(identity: identity, text: self.presentationInterfaceState.interfaceState.effectiveInputState.inputText.string)
+        }, pluginContext: { [weak self = self] in
+            guard let self, self.goldgramAIIdentity() != nil, let peer = self.chatLocation.peerId else { return [:] }
+            var rows: [[String: Any]] = []; var seen = Set<MessageId>()
+            self.chatDisplayNode.historyNode.forEachVisibleMessageItemNode { item in
+                guard let message = item.item?.message, message.id.peerId == peer, message.id.namespace == Namespaces.Message.Cloud,
+                      !message.isCopyProtected(), message.media.isEmpty, !message.text.isEmpty,
+                      !message.attributes.contains(where: { $0 is AutoremoveTimeoutMessageAttribute || $0 is AutoclearTimeoutMessageAttribute || $0 is RestrictedContentMessageAttribute || $0 is EphemeralMessageAttribute }), seen.insert(message.id).inserted else { return }
+                rows.append(["id": String(describing: message.id), "id_num": message.id.id, "timestamp": message.timestamp, "outgoing": !message.flags.contains(.Incoming), "text": String(message.text.prefix(1000)), "authorPeerId": String(describing: message.author?.id)])
+            }
+            rows.sort { ($0["timestamp"] as? Int32 ?? 0) < ($1["timestamp"] as? Int32 ?? 0) }
+            return ["peerId": String(describing: peer) + ":" + String(describing: self.chatLocation.threadId), "type": peer.namespace == Namespaces.Peer.CloudUser ? "user" : "group", "messages": Array(rows.suffix(36))]
         }, insert: { [weak self = self] original, answer in
             guard let self, self.goldgramAIIdentity() == original.identity,
                   self.presentationInterfaceState.interfaceState.effectiveInputState.inputText.string == original.text else { return false }
@@ -8092,6 +8103,18 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
         self.goldgramAIButton = button
         self.view.addSubview(button)
         button.reposition()
+    }
+
+    func goldgramPluginMessageMenu(_ message: EngineMessage) -> [[String: String]] {
+        guard self.goldgramAIIdentity() != nil, self.goldgramAIButton != nil, let peer = self.chatLocation.peerId, peer == message.id.peerId,
+              message.id.namespace == Namespaces.Message.Cloud, !message._asMessage().isCopyProtected(), !message.containsSecretMedia,
+              !message.text.isEmpty, message.media.isEmpty, !message.attributes.contains(where: { $0 is AutoremoveTimeoutMessageAttribute || $0 is AutoclearTimeoutMessageAttribute || $0 is RestrictedContentMessageAttribute || $0 is EphemeralMessageAttribute }) else { return [] }
+        return GoldgramAIButton.pluginMenu(account: String(self.context.account.peerId.id._internalGetInt64Value()))
+    }
+    func goldgramInvokePluginMessageAction(_ key: String, message: EngineMessage) {
+        guard self.goldgramPluginMessageMenu(message).contains(where: { $0["id"] == key }) else { return }
+        let snapshot = ["id":String(describing:message.id),"id_num":message.id.id,"timestamp":message.timestamp,"outgoing":!message._asMessage().flags.contains(.Incoming),"text":String(message.text.prefix(6000)),"authorPeerId":String(describing:message.author?.id)] as [String:Any]
+        self.goldgramAIButton?.invokePluginAction(key: key, message: snapshot)
     }
 
     private func goldgramRefreshAI() {
