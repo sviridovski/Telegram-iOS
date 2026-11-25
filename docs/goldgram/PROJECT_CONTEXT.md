@@ -186,3 +186,8 @@ GoldgramPlugins.swift owns account-scoped atomic plugin JSON and native manager/
 ## #268 candidate — native AI service and scoped composer
 
 GoldgramAI.swift implements an opt-in, per-account native AI service under Plugins. ChatController supplies only the currently visible writable ordinary cloud draft snapshot and guarded native insertion callback. Request confirmation exposes exact prompt/draft and fixed DeepSeek destination; Keychain secret stays outside JS, cancel/preview/insert require current identity. This is not yet the full GGAPI chat/network bridge and the imported 2.1.8 remains incompatible. Existing #267 JS runtime remains isolated. See current status and decisions for limitations/test matrix. CI/device validation pending.
+
+
+## #269 candidate — plugin-owned AI and scoped GGAPI
+
+Imported plugin source is authoritative for UI schema, profiles, commands and callback logic; native Swift provides narrow, user-approved bridges. Disposable worker registers floating button/context actions, runs original callbacks on demand; account/plugin-specific secure credential is not exposed to JavaScript. Native broker restricts requests to DeepSeek with payload confirmation and current chat/draft validity. Selected/visible currently authorized ordinary text only; no Telegram session, raw archive, send or typing access. First enabled floating plugin selected. See current status and decisions for tested subset and outstanding gaps. #269 CI/device pending.

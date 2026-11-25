@@ -1,9 +1,5 @@
-# AI Command Center — native candidate #268
+# AI Command Center 2.1.8 — #269 compatibility candidate
 
-1. Goldgram → Плагины → Встроенные сервисы → AI Command Center.
-2. Enable floating AI button; enter DeepSeek key in secure Keychain field. Select a model ID and edit system prompt.
-3. Open a normal writable cloud chat/group/comment thread. Paste text into composer, tap AI, confirm exact text and prompt sent to api.deepseek.com.
-4. Tap × to cancel while generating; preview response and explicitly insert into same unchanged draft. Send manually if desired.
-5. Drag button to preferred position; reset in settings. Safe mode blocks AI. Secrets are never exposed to imported JavaScript. Old AI Commander 2.1.8 remains unsupported; keep its source unchanged for migration.
+Open Goldgram → Plugins → your imported AI Командный центр 2.1.8 → enable and approve. The original code declares 57 settings, seven context actions and its AI button. Open its own API key field (secure Keychain), select model and profile, set custom prompts. The native assistant remains a separate fallback. Do not enter keys into generic JavaScript or send them in chat.
 
-Models offered from old source: deepseek-v4-pro, deepseek-flash; legacy aliases and custom ID are configurable; live API support must be verified. Keychain availability, UIKit positioning and full iOS build pending verification. No streaming, history ingestion, voice or arbitrary JS network access yet.
+In ordinary writable cloud chats, paste text and tap the plugin-declared AI button. Commands and prompt generation are executed by original JS. Confirm the exact DeepSeek payload and preview/insert response; send manually. Long press ordinary eligible text to access the plugin-defined menu. Use native JSON picker/share for settings import/export. No full message history, Telegram proxy, secret/protected/timed media, automatic send, or full GGAPI v5.1 yet. Settings actions outside chat cannot access chat. Clipboard copy requires confirmation. Only one floating plugin selected for now. JS mock tests passed; iOS/real API pending.
