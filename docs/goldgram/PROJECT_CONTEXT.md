@@ -4,6 +4,10 @@
 
 **Other parts:** [CURRENT_STATUS](./CURRENT_STATUS.md) · [DECISIONS_LOG](./DECISIONS_LOG.md). **Read all three before continuing the project in a new chat.** The live repository, CI and device tests are always more authoritative than a stale status snapshot.
 
+## P0 development priority (user-approved 2026-11-25)
+
+**Universal Goldgram Plugin Engine first.** [PRIORITY_ROADMAP.md](./PRIORITY_ROADMAP.md) is the controlling forward plan: finish reusable GGAPI/GoldAPI, plugin-owned UI/settings and callbacks, multi-plugin lifecycle, hot reload/import, secure scoped services, diagnostics, SDK and real-device tests before optional new plugin or native Goldgram features. AI Commander 2.1.8 is the first reference plugin, not a hardcoded replacement. After user-confirmed engine acceptance, resume both independent plugins and native Goldgram development. Critical regressions/security/privacy and CI fixes remain allowed. Preserve Ghost, SQLite, Collector, Live Bridge and target 15–20 min builds.
+
 ## 1. Mission and supported environments
 
 Swiftgram Gold is a modified Telegram iOS client based on the Telegram iOS **13.2** code line (ported from the older 12.9.2 line), with Mx and a Goldgram SQLite history system. The purpose is to **capture real originals, actually observed intermediate edits, deletions and their metadata**, display and navigate their history in chats, groups, channels and linked discussions.

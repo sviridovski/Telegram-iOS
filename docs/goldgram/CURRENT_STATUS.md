@@ -1,17 +1,21 @@
 # CURRENT_STATUS — verified checkpoint
 
- > **2026-11-25 local user date — #268 green; imported AICC still blocked; #269 original JS compatibility candidate queued.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
+ > **2026-11-25 local user date — #269 CI green; original AICC device acceptance pending; universal plugin engine P0.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
+
+## P0 development priority (user-approved 2026-11-25)
+
+**Universal Goldgram Plugin Engine first.** [PRIORITY_ROADMAP.md](./PRIORITY_ROADMAP.md) is the controlling forward plan: finish reusable GGAPI/GoldAPI, plugin-owned UI/settings and callbacks, multi-plugin lifecycle, hot reload/import, secure scoped services, diagnostics, SDK and real-device tests before optional new plugin or native Goldgram features. AI Commander 2.1.8 is the first reference plugin, not a hardcoded replacement. After user-confirmed engine acceptance, resume both independent plugins and native Goldgram development. Critical regressions/security/privacy and CI fixes remain allowed. Preserve Ghost, SQLite, Collector, Live Bridge and target 15–20 min builds.
 
 ## Current code / CI / device state
 
 | Item | Latest confirmed status |
 | --- | --- |
 | Feature branch | `gold-next-243-author-search` |
-| HEAD | `50594ba09b140f26023d060c98dd479e8ab45c8f` (#269 candidate), direct parent #268 |
-| Last green CI | [#268](https://github.com/sviridovski/Telegram-iOS/actions/runs/45538435622), Native/Mx/Build success |
+| HEAD | `50594ba09b140f26023d060c98dd479e8ab45c8f` (#269 CI green), direct parent #268 |
+| Last green CI | [#269](https://github.com/sviridovski/Telegram-iOS/actions/runs/45553382538), native: success, mx: success, build: success |
 | Last installed | #268 — imported AICC permission denial reported; #267 local JS/settings verified. |
 | Failed candidate | #263 attempt 1: Native/Mx success, Build cancelled, logs unavailable; #261 earlier compile error resolved in #262. |
-| Next task | Verify #269 CI and original AICC settings, plugin-owned commands and real network on device; then remaining compatibility gaps. |
+| Next task | **P0 universal Plugin Engine**: verify #269 on device and execute [priority roadmap](./PRIORITY_ROADMAP.md). Defer optional new features until acceptance. |
 | Recovery | #263 green and swipe confirmed, media completeness issue open. #260 earlier broadly user-confirmed baseline; original port/telegram-13.2 unchanged. |
 
 ## #252 corrections retained in #253
@@ -262,3 +266,8 @@
 - Actual original JS (not copied into repo or rewritten) was run with candidate worker in isolated JS test harness and mocked native RPC. Confirmed 57 settings, 7 context actions, floating aicc_button_v2 registration, custom profile prompt included in outbound payload, mock response draft proposal, selected context action, chat-specific profile storage, API diagnostics, settings export (no apiKey), settings import. These are JS contract tests, not iOS, network or security validation. Updated CI fixture for registration, secret schema and async callback; prior local tests retained.
 - Required chat.read/chat.write/messages.read/network.fetch/ui.mutate now supported as scoped subset: explicit current writable cloud chat only, current draft, ordinary visible text and selected native menu message (no secret/protected/timer-bound/restricted/media messages), draft proposal with confirmation, native local UI registration and user-approved DeepSeek only. Optional clipboard supports confirmed result copy. Telegram proxy optional grant remains unsupported; no arbitrary hosts or send/typing RPC. Worker uses original code for settings, prompt, command dispatch and callback. Native managed API-key field from plugin schema stores real key per account/plugin UUID in Keychain; JS receives nonsecret compatibility handle only. User must enter key again for imported plugin; previous native service key separate. Settings import/export via user-selected bounded JSON / system share sheet; no arbitrary filesystem access. Safe mode preserved. First enabled registered floating plugin owns the button; not multiple simultaneous buttons. Settings action execution without open chat has no current-chat context; use original profile command/context menu in chat. Full history, broadcast read-only context actions, proxy, rich spoiler entities, full GGAPI v5.1 compatibility and separate AI chat/speech still pending. Legacy local typing/header badge calls do not transmit status; button uses local busy indicator. No source changes to archive or collector.
 - Device acceptance: open imported AICC (not native service), enable and approve; verify all 57 entries, configure plugin-specific key, select model/profile, edit custom prompt; diagnostics, floating button on ordinary writable chat/comment, test pasted text, confirmation payload and output insertion, 7 context actions, profile selection, export/import, disable/safe mode and account/draft switch; verify #267 sample and #266 media regression. Full iOS build and actual DeepSeek availability pending; do not claim complete compatibility.
+
+
+## Engine-first priority decision and #269 CI update (2026-11-25)
+
+User explicitly approved prioritizing the universal plugin engine until mature, then continuing both independent plugins and native Goldgram features. See [PRIORITY_ROADMAP.md](./PRIORITY_ROADMAP.md). #269 CI run 45553382538 completed successfully; jobs: native: success, mx: success, build: success; artifacts: goldgram-ci-native-45553382538 (14995907092, expired=false); Swiftgram-dSYMs-50594ba09b140f26023d060c98dd479e8ab45c8f (14995807132, expired=false); Swiftgram-13.2-gold-next-Mx-1.0.0 (14995213023, expired=false); goldgram-ci-mx-45553382538 (14994124063, expired=false). Device acceptance of original AICC remains unreported, so no claim that the plugin works on iPhone yet. No source changes or additional app CI requested for this decision.
