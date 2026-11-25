@@ -1,17 +1,17 @@
 # CURRENT_STATUS — verified checkpoint
 
- > **2026-11-25 local user date — #266 accepted; #267 Plugins local MVP in CI.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
+ > **2026-11-25 local user date — #267 CI green; manager and import confirmed, local execution tests pending.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
 
 ## Current code / CI / device state
 
 | Item | Latest confirmed status |
 | --- | --- |
 | Feature branch | `gold-next-243-author-search` |
-| HEAD | `ccdb78d54cd638a27de8ecc96a1501ef6466c5c2` (#267 candidate), direct parent #266 |
-| Last green CI | [#266](https://github.com/sviridovski/Telegram-iOS/actions/runs/45528271246), Native/Mx/Build success, IPA 14984628608 |
-| Last installed | #266 — user reports media works; detailed protection/expiry device matrix not separately reported. |
+| HEAD | `ccdb78d54cd638a27de8ecc96a1501ef6466c5c2` (#267 green), direct parent #266 |
+| Last green CI | [#267](https://github.com/sviridovski/Telegram-iOS/actions/runs/45534201805), Native/Mx/Build success |
+| Last installed | #267 — manager, AICC import and required-permission denial confirmed by user screenshots; local execution untested. |
 | Failed candidate | #263 attempt 1: Native/Mx success, Build cancelled, logs unavailable; #261 earlier compile error resolved in #262. |
-| Next task | Verify #267 CI and device tests; then chat UI bridge and explicit AI networking. |
+| Next task | Verify bundled local plugin on device; implement scoped chat UI and native AI networking in next development stage. |
 | Recovery | #263 green and swipe confirmed, media completeness issue open. #260 earlier broadly user-confirmed baseline; original port/telegram-13.2 unchanged. |
 
 ## #252 corrections retained in #253
@@ -231,3 +231,11 @@
 - Inspected supplied AI Commander 2.1.8 and Ghostgram documentation, in particular settings.addSection, getPlugin/setPlugin, settings.action/changed and manifest permissions. Did not embed user plugin or secrets. Implemented new ChatListUI/Sources/GoldgramPlugins.swift and dashboard bridge/tile 34 through prepare_mx.py, updated existing layout migration tests and new worker contract test. No TelegramCore, archive schema, Ghost, Collector or Live Bridge changes. Existing cache keys retained; Mx recipe changed for tile, thus one Mx cache miss expected; no speed guarantee.
 - Design adjustment: use disposable nonpersistent WebKit worker (JavaScript execution through WebKit's JS engine), instead of in-process JSContext without a reliable public termination mechanism. On-demand runs only, no startup/background polling, 8-second host deadline, cancel on departure/background. CSP restricts external connections; no native bridge except bounded result; not a complete security audit. Store code/settings/schema/local KV per account in separate atomic JSON, not a second SQLite. Install disabled, explicit approval of supported manifest grants, block unsupported required permissions, safe mode, code rollback and deletion. Import UTF-8 .js up to 512 KiB from Files or paste/edit. Settings support text/textarea/toggle/select/slider and stepper as numeric input/button, event callbacks, log output; schema and values survive reopening. Console is session-local. No actual chat integration, network, Keychain, automatic execution, or full GGAPI compatibility yet; unmodified AICC 2.1.8 cannot run because mandatory chat/network grants unsupported. Never enter API keys into generic settings. Imported code should be trusted; runtime integration/security testing pending.
 - Five standalone worker checks executed against source in JS runtime: schema/defaults, settings button with persisted values, missing grants, secret-key setting denied, chat send unavailable. CI adds Swift parse and Node worker smoke test plus migration tests; iOS SDK compile, actual WebKit/CSP/import/timeout/permissions behavior on device not verified yet. Acceptance: enable bundled test plugin, change name, toggle, choose option, change prompt and numeric setting, press test button; exit/reopen and verify persistence; paste and import independent trusted JS; edit/re-enable, rollback, safe mode, cancel long run, unsupported permission rejected, account switch isolation; verify #266 regression. Next: native chat bridge and safe explicit AI network/key handling, then AICC and movable AI button. Do not claim arbitrary Ghostgram plugin support until implemented.
+
+
+## #267 green; initial device test (2026-11-25)
+
+- [CI #267](https://github.com/sviridovski/Telegram-iOS/actions/runs/45534201805), source ccdb78d54cd638a27de8ecc96a1501ef6466c5c2: Native/Mx/Build success, run wall 22m36s, Native 20m24s, compile 935s, cache restore 75s/save 55s, Mx parallel 7m18s. Compared with #266 31m21s, faster; 15–20 min total target still not fully reached.
+- User installed #267 and opened manager, imported AI Command Center 2.1.8. Screenshots confirm manifest name/version, disabled install, detail UI, and expected denial of unsupported required chat.read, chat.write, messages.read, network.fetch, ui.mutate. This is intentional fail-closed behavior in local MVP, not a syntax failure. Actual bundled sample execution, settings rendering/persistence, timeout, rollback and account isolation on device remain unconfirmed. Ask user to test bundled local sample separately. Do not bypass manifest gate or claim original AICC compatibility.
+- Next phase: scoped native chat/draft bridge, explicit selection of currently authorized messages, movable AI button and local UI, native DeepSeek networking with explicit payload approval, Keychain managed outside plugin JS, no auto-send or typing, account/chat/thread/revision binding. Keep old plugin file; adapt for supported APIs rather than granting broad permissions. #266 remains prior media-tested fallback.
+- Separate public discussion concept: user demonstrated official Telegram Discussion Widget can render public comments without sign-in; no code change requested here. Consider only publicly available discussion UI, respecting access boundaries, independent of plugin work.
