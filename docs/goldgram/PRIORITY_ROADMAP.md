@@ -21,3 +21,8 @@ Read this roadmap at the start of future project chats along with the three cano
 
 ### #269 device checkpoint / #270 usability step
 Original AICC request and generated response confirmed by user on iPhone. #270 candidate adds native engine-level per-plugin request/preview confirmation preferences with explicit scoped opt-out, reset and manual sending preserved. Verify on device before continuing broader GGAPI/multi-plugin work. This is part of Stage A, not engine acceptance.
+
+
+## Approved detailed execution plan
+
+**Подробный утверждённый технический план:** [PLUGIN_ENGINE_2_ROADMAP.md](./PLUGIN_ENGINE_2_ROADMAP.md). После проверки #270 следующий этап — многоплагинность (ориентир #271), затем сетевой API, SSE, UI, lifecycle, GGAPI/GoldAPI, обновления, диагностика и SDK. Номера ориентировочные; критерии приёмки обязательны.

@@ -6,6 +6,8 @@
 
 **Universal Goldgram Plugin Engine first.** [PRIORITY_ROADMAP.md](./PRIORITY_ROADMAP.md) is the controlling forward plan: finish reusable GGAPI/GoldAPI, plugin-owned UI/settings and callbacks, multi-plugin lifecycle, hot reload/import, secure scoped services, diagnostics, SDK and real-device tests before optional new plugin or native Goldgram features. AI Commander 2.1.8 is the first reference plugin, not a hardcoded replacement. After user-confirmed engine acceptance, resume both independent plugins and native Goldgram development. Critical regressions/security/privacy and CI fixes remain allowed. Preserve Ghost, SQLite, Collector, Live Bridge and target 15–20 min builds.
 
+**Подробный утверждённый технический план:** [PLUGIN_ENGINE_2_ROADMAP.md](./PLUGIN_ENGINE_2_ROADMAP.md). После проверки #270 следующий этап — многоплагинность (ориентир #271), затем сетевой API, SSE, UI, lifecycle, GGAPI/GoldAPI, обновления, диагностика и SDK. Номера ориентировочные; критерии приёмки обязательны.
+
 ## Current code / CI / device state
 
 | Item | Latest confirmed status |
@@ -15,7 +17,7 @@
 | Last green CI | [#269](https://github.com/sviridovski/Telegram-iOS/actions/runs/45553382538), native: success, mx: success, build: success |
 | Last installed | #269 — original imported AICC real request/response and preview shown by user; remaining device tests pending. |
 | Failed candidate | #263 attempt 1: Native/Mx success, Build cancelled, logs unavailable; #261 earlier compile error resolved in #262. |
-| Next task | **P0 universal Plugin Engine**: verify #270 confirmation preferences and original AICC workflow on device; then reusable API/lifecycle gaps. |
+| Next task | **P0 Engine 2.0**: проверить #270 CI и переключатели на iPhone; затем многоплагинность (ориентир #271) по [PLUGIN_ENGINE_2_ROADMAP.md](./PLUGIN_ENGINE_2_ROADMAP.md). |
 | Recovery | #263 green and swipe confirmed, media completeness issue open. #260 earlier broadly user-confirmed baseline; original port/telegram-13.2 unchanged. |
 
 ## #252 corrections retained in #253
@@ -279,3 +281,8 @@ User explicitly approved prioritizing the universal plugin engine until mature, 
 - User requests independent switches for repeated request and draft-preview dialogs in a shared settings page for all plugins. Published source 7d96dc20291fe09993dad7ed4273bf75711eb026, direct #269 parent, verified branch HEAD; CI #270, run 45652311197, in_progress. Only GoldgramPlugins.swift, GoldgramAI.swift and existing test_goldgram_ai.py changed. No TelegramCore, ChatController, Mx, cache keys, Ghost, SQLite, Collector or Live Bridge changes. Build duration target 15–20 min remains unverified.
 - Native-only account/plugin confirmation policy in existing plugin JSON, optional field for migration. Defaults always ask. Management → Подтверждения плагинов lists each installed plugin, separate DeepSeek request and draft preview toggles, restore all. Turning a confirmation off requires native explicit consent describing data/context, destination and paid API use or draft replacement. No JS API can alter policy. Disable/re-enable, code edit and rollback clear overrides. No blanket bypass, no automatic sending, no arbitrary network or background access. Skip network confirmation only for explicit floating/context action, fixed previously supported DeepSeek destination, unchanged code/grants, valid account/chat/draft, existing permission and limits. Settings actions still require network confirmation. Skip preview only for valid same draft, selected enabled plugin with chat.write, bounded answer and explicit preference; safe mode remains enforced. File/clipboard dialogs and native fallback unchanged.
 - Ten standalone Swift policy/migration checks passed on Linux against equivalent extracted policy code; CI fixture added for defaults, event and grant gates, serialization, legacy migration, reset/validity source contracts. Full iOS compile and device acceptance pending. Test both toggles independently, reset all, restart, switch chats/accounts, disable/re-enable/edit code, safe mode, verify no automatic Telegram send and original plugin settings retained. Universal engine P0 remains controlling roadmap.
+
+
+## 2026-11-25 — утверждён технический план Plugin Engine 2.0
+
+Пользователь одобрил предложенный подробный план и попросил после #270 работать именно по нему. Создан [PLUGIN_ENGINE_2_ROADMAP.md](./PLUGIN_ENGINE_2_ROADMAP.md), детализация P0. Следующий шаг после подтверждения #270 — независимая работа нескольких плагинов, а не AICC 3.0. Проверено при сохранении: HEAD кода `7d96dc20291fe09993dad7ed4273bf75711eb026`, CI #270 in_progress. Приёмка #270 на устройстве пока не сообщена. Только документационный коммит, сборка не запрашивалась.
