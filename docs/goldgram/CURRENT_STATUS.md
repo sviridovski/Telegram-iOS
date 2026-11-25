@@ -1,17 +1,17 @@
 # CURRENT_STATUS — verified checkpoint
 
- > **2026-11-25 local user date — #265 green/installed with media freshness issue; #266 TTL candidate in CI.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
+ > **2026-11-25 local user date — #266 green and user reports media working; Plugins next.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
 
 ## Current code / CI / device state
 
 | Item | Latest confirmed status |
 | --- | --- |
 | Feature branch | `gold-next-243-author-search` |
-| HEAD | `9ed27532ab3576fe7a9b82a503f36116a6deea28` (#266 candidate), direct parent #265 |
-| Last green CI | [#265](https://github.com/sviridovski/Telegram-iOS/actions/runs/45513761277), Native/Mx/Build success, IPA 14980045559 |
-| Last installed | #265 — fresh native and remote history confirmed by screenshot; custom media rows still old in group with one-week auto-delete. |
+| HEAD | `9ed27532ab3576fe7a9b82a503f36116a6deea28` (#266 green and accepted), direct parent #265 |
+| Last green CI | [#266](https://github.com/sviridovski/Telegram-iOS/actions/runs/45528271246), Native/Mx/Build success, IPA 14984628608 |
+| Last installed | #266 — user reports media works; detailed protection/expiry device matrix not separately reported. |
 | Failed candidate | #263 attempt 1: Native/Mx success, Build cancelled, logs unavailable; #261 earlier compile error resolved in #262. |
-| Next task | Verify #266 CI/IPA, build timing and media acceptance; then Plugins and AI. |
+| Next task | Goldgram Plugin Engine and manager; inspect existing AI Commander and GGAPI references first. |
 | Recovery | #263 green and swipe confirmed, media completeness issue open. #260 earlier broadly user-confirmed baseline; original port/telegram-13.2 unchanged. |
 
 ## #252 corrections retained in #253
@@ -216,3 +216,10 @@
 - Media policy: currently available ordinary cloud group messages with exactly one AutoremoveTimeoutMessageAttribute, timeout >60s and below view-once sentinel, countdown equal to sent timestamp, known group peer, unexpired, may enter transient search rows; all original other protection/secret/autoclear/ephemeral/spoiler/restriction guards retained. Mark auto-delete rows; use native exact-message navigation after revalidation, not custom download, Quick Look or bookmark. No new persistence or media copy. Batched existing EngineData Messages subscription removes missing/changed timed rows; single cancellable deadline prunes expired rows; clear/deinit disposes subscription/deadline, cancelled swipe still preserves normal results. Runtime behavior not yet confirmed. Group-wide eligibility limited to ordinary legacy/supergroups (not all peer types). Native local message availability is required for continued display; remote-only results may be omitted. Six standalone Swift TTL fixtures and dictionary/set pruning check passed on Linux; CI preflight extended; full iOS SDK compile/device checks pending.
 - #265 verified Native 45m42s, final packaging 2m, combined wall from Native start 47m45s, Mx parallel 26s. Native checkout 70s, submodules 82s, canonical copy 39s, preflight 79s, cache restore 101s, cache save 80s, build step 2247s; Bazel elapsed 2239.313s, critical path 1944.91s, 8220 disk hits/10103 processes (1773 internal, 58 local, 52 worker). Restored #264 and saved #265 key. Logs show broad Swift dependency recompilation including TelegramUI ~400s after TelegramCore change. 3 logical CPUs / 7 GiB RAM. Avoid touching TelegramCore for #266, preserve branch/cache keys/GC and Mx inputs. Native checkout now uses filter: blob:none with fetch-depth: 0 to keep full commit history/build number while skipping historical blobs; checkout benefit and actual cache reuse unverified. Target 15–20 min, not guaranteed; measure real #266 stage timings, hit counts and critical path before further tuning. No disabling preflight/symbol/IPA checks.
 - Acceptance: compare current available photo/video in same one-week group to native gallery; ordinary group unaffected; verify native jump/back, canceled swipe, native deletion/expiry removes rows, no custom download or bookmark for timer rows, one-time/protected remains excluded. #265 last green/installed with known media freshness issue, #263 swipe-confirmed fallback. No claim #266 is green until jobs and IPA verified. Plugins/AI remains next planned feature.
+
+
+## #266 verified green and user accepted; Plugins next (2026-11-25)
+
+- [CI #266](https://github.com/sviridovski/Telegram-iOS/actions/runs/45528271246), SHA 9ed27532ab3576fe7a9b82a503f36116a6deea28: Native, Mx and Build completed successfully; final IPA artifact 14984628608 present and not expired. User reports media now works and explicitly moves to Plugins. This confirms reported media freshness acceptance, not every individual expiry/protection regression on device. CI log confirms #266 group TTL native-only/expiry/deletion/export source contract passed. #266 is current green and user-tested baseline.
+- Total run 31m21s vs prior 47m45s from Native start (#265); #266 Native 28m59s, compile step 1412s, Bazel elapsed 1402.976s, critical path 1191.39s, 8223 disk hits/10103 processes. Root checkout 24s vs 70s, submodules 22s vs 82s, restore 73s, save 71s. Restored #265 key and saved #266 key. Target 15–20 min not yet reached; keep cache and same branch, avoid broad core changes.
+- User supplied two screenshot sets of prior Plugins/AI design and asked if original files need reattachment. Library search found AI_Command_Center_Ghostgram_2.1.8.js and plugins.md; exact contents must be opened before implementation. No key or user message contents stored in GitHub. Prioritize hybrid native services and restricted plugin recipes, configurable dashboard Plugins and AI entries, manager/editor/import/permissions/console/safe mode/rollback, limited verified GGAPI compatibility and GoldAPI docs. First functional AI release MUST include movable floating AI composer button, explicit payload confirmation, selected prompt/profile, native cancel and preview/insert bound to original account/chat/thread/draft revision; no auto-send or typing signal. Later phases: voice/video-circle transcription, separate AI chat, selectable models, explicit selected-context analysis, document text extraction, local contact notes by consent, usage/budget, command builder. No direct plugin access to secrets/archive/Telegram sessions/Collector. No source implementation or new app CI initiated in this handoff.

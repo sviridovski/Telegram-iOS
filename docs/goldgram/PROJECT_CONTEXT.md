@@ -171,3 +171,8 @@ Media-only picker adds known peer type, scoped ID, username, available tiny avat
 ## #266 candidate — group auto-delete search presentation
 
 Ordinary still-live group-wide TTL is treated separately from short/view-once/Autoclear/secret/protected media. Timed search rows remain transient and are tied to current native messages, with batched native observation and expiry deadline; native exact jump only after revalidation. No independent timed-media download, bookmark, archive copy or persistent store. All other eligibility gates and account boundaries retained. Source 9ed27532ab3576fe7a9b82a503f36116a6deea28, CI/device verification pending. See CURRENT_STATUS and DECISIONS_LOG for test conditions and limitations.
+
+
+## #266 acceptance / Plugins direction
+
+#266 group TTL search candidate is CI-green and user reports media freshness fixed. Native expiry/protection regression matrix remains a separate test. Next product phase is the hybrid Plugins platform; prior design is in CURRENT_STATUS and DECISIONS_LOG, not yet implemented. Do not alter existing archive, Ghost, Collector or account boundaries for plugin work.
