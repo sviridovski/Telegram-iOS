@@ -34,6 +34,15 @@ await self.onmessage({data:{source:script,grants:compat,event:'floating.tap',man
 assert.equal(result.output.text,'mock answer');assert.equal(JSON.parse(requests.at(-1).args.body).prompt,'changed');
 assert.equal(JSON.parse(requests.at(-1).args.body).draft,'hello');
 console.log('Goldgram #269 plugin-owned registration, secret schema, async callback and custom prompt OK');
+const multi = label => 'function hit(){const n=Number(GGAPI.storage.get("count")||0)+1; GGAPI.storage.set("count",n); GGAPI.ui.showSheet({title:"'+label+'",text:String(n)});} GGAPI.ui.addFloatingButton({id:"shared",title:"'+label+'"},hit); GGAPI.ui.addMessageContextAction({id:"shared",title:"'+label+'"},hit);';
+const run = async (label,event,storage,key) => { await self.onmessage({data:{source:multi(label),grants:compat,event,storage,key,context:{draft:"",peerId:"p",selectedMessage:{text:"test"}}}}); assert.ok(!result.error); return result; };
+const a1=await run('A','floating.tap',{}), b1=await run('B','floating.tap',{});
+assert.equal(a1.floating.id,b1.floating.id); assert.equal(a1.contextActions[0].id,b1.contextActions[0].id);
+assert.equal(a1.storage.count,1); assert.equal(b1.storage.count,1); assert.equal(a1.output.title,'A'); assert.equal(b1.output.title,'B');
+const a2=await run('A','context.tap',a1.storage,'shared'); assert.equal(a2.storage.count,2); assert.equal(b1.storage.count,1);
+await self.onmessage({data:{source:'throw Error("test failure")',grants:compat,event:'plugin.start'}}); assert.ok(result.error);
+const b2=await run('B','floating.tap',b1.storage); assert.equal(b2.storage.count,2);
+console.log('Goldgram #271 equal local IDs, independent counters and failure isolation OK');
 })().catch(e=>{console.error(e);process.exit(1)});
 """
 with tempfile.TemporaryDirectory() as tmp:

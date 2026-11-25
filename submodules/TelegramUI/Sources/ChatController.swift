@@ -314,7 +314,7 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
     var leftNavigationButton: ChatNavigationButton?
     var rightNavigationButton: ChatNavigationButton?
     private var goldgramSearchNavigationItem: UIBarButtonItem?
-    private var goldgramAIButton: GoldgramAIButton?
+    private var goldgramAIButton: GoldgramAIButtonGroup?
     private var goldgramAIVisible = false
     private var goldgramAIEnabled = false
     private var goldgramAIEpoch: UInt64 = 0
@@ -8076,7 +8076,7 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
     private func goldgramInstallAI() {
         guard self.goldgramAIEnabled, self.goldgramAIButton == nil, self.goldgramAIIdentity() != nil else { return }
         let account = String(self.context.account.peerId.id._internalGetInt64Value())
-        let button = GoldgramAIButton(account: account, presenter: self, snapshot: { [weak self = self] in
+        let button = GoldgramAIButtonGroup(account: account, presenter: self, snapshot: { [weak self = self] in
             guard let self, let identity = self.goldgramAIIdentity() else { return nil }
             return GoldgramAIDraft(identity: identity, text: self.presentationInterfaceState.interfaceState.effectiveInputState.inputText.string)
         }, pluginContext: { [weak self = self] in
@@ -8109,7 +8109,7 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
         guard self.goldgramAIIdentity() != nil, self.goldgramAIButton != nil, let peer = self.chatLocation.peerId, peer == message.id.peerId,
               message.id.namespace == Namespaces.Message.Cloud, !message._asMessage().isCopyProtected(), !message.containsSecretMedia,
               !message.text.isEmpty, message.media.isEmpty, !message.attributes.contains(where: { $0 is AutoremoveTimeoutMessageAttribute || $0 is AutoclearTimeoutMessageAttribute || $0 is RestrictedContentMessageAttribute || $0 is EphemeralMessageAttribute }) else { return [] }
-        return GoldgramAIButton.pluginMenu(account: String(self.context.account.peerId.id._internalGetInt64Value()))
+        return GoldgramAIButtonGroup.pluginMenu(account: String(self.context.account.peerId.id._internalGetInt64Value()))
     }
     func goldgramInvokePluginMessageAction(_ key: String, message: EngineMessage) {
         guard self.goldgramPluginMessageMenu(message).contains(where: { $0["id"] == key }) else { return }
@@ -8144,7 +8144,7 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
     override public func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         self.goldgramAIVisible = true
-        self.goldgramAIEnabled = GoldgramAIButton.isEnabled(account: String(self.context.account.peerId.id._internalGetInt64Value()))
+        self.goldgramAIEnabled = GoldgramAIButtonGroup.isEnabled(account: String(self.context.account.peerId.id._internalGetInt64Value()))
         self.goldgramAIButton?.cancel()
         self.goldgramAIButton?.removeFromSuperview()
         self.goldgramAIButton = nil

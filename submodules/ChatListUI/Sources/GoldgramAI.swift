@@ -215,19 +215,24 @@ public final class GoldgramAIButton: UIButton {
     private var pluginRun: GoldgramPluginChatRun?
     private let pluginContext: (() -> [String: Any])?
     private let idleTitle: String
+    private let registration: GoldgramPluginRegistration?
+    private var pendingAlert: UIAlertController?
+    fileprivate var moveGroup: ((UIPanGestureRecognizer) -> Void)?
+    fileprivate var isBusy: Bool { task != nil || pluginRun != nil || pendingAlert != nil }
     private var selectedAction: (String, [String: Any])?
 
     public static func isEnabled(account: String) -> Bool {
-        goldgramAIAllowed(account: account) && (GoldgramPluginChatRun.selected(account: account) != nil || GoldgramAIConfig(account: account).enabled)
+        goldgramAIAllowed(account: account) && (!GoldgramPluginChatRun.registrations(account: account).isEmpty || GoldgramAIConfig(account: account).enabled)
     }
-    public init(account: String, presenter: UIViewController, snapshot: @escaping () -> GoldgramAIDraft?, pluginContext: (() -> [String: Any])? = nil, insert: @escaping (GoldgramAIDraft, String) -> Bool) {
+    fileprivate init(account: String, registration: GoldgramPluginRegistration?, presenter: UIViewController, snapshot: @escaping () -> GoldgramAIDraft?, pluginContext: (() -> [String: Any])? = nil, insert: @escaping (GoldgramAIDraft, String) -> Bool) {
         self.pluginContext = pluginContext
-        self.idleTitle = GoldgramPluginChatRun.selected(account: account)?.1 ?? "AI"
+        self.registration = registration
+        self.idleTitle = registration?.title ?? "AI"
         config = GoldgramAIConfig(account: account); self.presenter = presenter; self.snapshot = snapshot; self.insert = insert
         super.init(frame: CGRect(x: 0, y: 0, width: 46, height: 38))
         backgroundColor = .systemBlue; layer.cornerRadius = 19
         setTitle(idleTitle, for: .normal); setTitleColor(.white, for: .normal); titleLabel?.font = .boldSystemFont(ofSize: 15)
-        accessibilityLabel = "Goldgram AI"; accessibilityHint = "Сгенерировать ответ на текст черновика"
+        accessibilityLabel = registration?.name ?? "Goldgram AI"; accessibilityHint = "Сгенерировать ответ на текст черновика"
         addTarget(self, action: #selector(tapped), for: .touchUpInside)
         addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(drag(_:))))
         NotificationCenter.default.addObserver(self, selector: #selector(background), name: UIApplication.didEnterBackgroundNotification, object: nil)
@@ -236,7 +241,8 @@ public final class GoldgramAIButton: UIButton {
     deinit { NotificationCenter.default.removeObserver(self); task?.cancel(); session?.invalidateAndCancel() }
     @objc private func background() { cancel() }
     public func cancel() {
-        guard task != nil || pluginRun != nil || activeAlert != nil else { return }
+        guard task != nil || pluginRun != nil || activeAlert != nil || pendingAlert != nil else { return }
+        pendingAlert = nil
         token = UUID(); let oldPlugin = pluginRun; pluginRun = nil; oldPlugin?.cancel(); task?.cancel(); task = nil; session?.invalidateAndCancel(); session = nil
         setTitle(idleTitle, for: .normal)
         if let alert = activeAlert, alert.presentingViewController != nil { alert.dismiss(animated: false) }
@@ -257,6 +263,7 @@ public final class GoldgramAIButton: UIButton {
         host.bringSubviewToFront(self)
     }
     @objc private func drag(_ gesture: UIPanGestureRecognizer) {
+        if let moveGroup { moveGroup(gesture); return }
         guard let host = superview, let rect = usable() else { return }
         if gesture.state == .began { dragStart = center }
         let delta = gesture.translation(in: host)
@@ -268,7 +275,9 @@ public final class GoldgramAIButton: UIButton {
         }
     }
     private func presentAlert(_ alert: UIAlertController) {
-        guard let presenter, presenter.viewIfLoaded?.window != nil, presenter.presentedViewController == nil else { return }
+        guard let presenter, presenter.viewIfLoaded?.window != nil else { return }
+        if presenter.presentedViewController != nil { pendingAlert = alert; setTitle("✓", for: .normal); return }
+        pendingAlert = nil; setTitle(idleTitle, for: .normal)
         activeAlert = alert; presenter.present(alert, animated: true)
     }
     private func notice(_ text: String) {
@@ -277,32 +286,44 @@ public final class GoldgramAIButton: UIButton {
     }
     public static func pluginMenu(account: String) -> [[String: String]] { GoldgramPluginChatRun.menu(account: account) }
     public func invokePluginAction(key: String, message: [String: Any]) {
-        guard task == nil, pluginRun == nil, GoldgramPluginChatRun.selected(account: config.account) != nil else { return }
+        guard let registration, registration.actions.contains(where: { $0["id"] == key }) else { return }
+        if pendingAlert != nil { tapped(); return }
+        guard !isBusy else { return }
         selectedAction = (key, message); tapped(); selectedAction = nil
     }
+    fileprivate func trigger() { tapped() }
+    private func authorized() -> Bool {
+        if let registration { return GoldgramPluginChatRun.authorized(account: config.account, registration: registration) }
+        return GoldgramAIConfig(account: config.account).enabled && GoldgramPluginChatRun.registrations(account: config.account).isEmpty && goldgramAIAllowed(account: config.account)
+    }
     @objc private func tapped() {
+        if let pendingAlert { if authorized(), snapshot() != nil { presentAlert(pendingAlert) } else { cancel() }; return }
         if task != nil || pluginRun != nil { cancel(); return }
-        guard Self.isEnabled(account: config.account), let draft = snapshot() else { return }
-        if let (id, _) = GoldgramPluginChatRun.selected(account: config.account), let presenter {
+        guard authorized(), let draft = snapshot() else { return }
+        if let registration, let presenter {
+            let id = registration.id
             let current = UUID(); token = current
             let runner = GoldgramPluginChatRun(); pluginRun = runner; setTitle("×", for: .normal)
             var context = pluginContext?() ?? [:]; context["draft"] = draft.text
             let action = selectedAction
             if let action { context["selectedMessage"] = action.1 }
-            runner.start(account: config.account, presenter: presenter, id: id, context: context, event: action == nil ? "floating.tap" : "context.tap", key: action?.0, valid: { [weak self] in self?.token == current && self?.snapshot() == draft }, completion: { [weak self] output, error in
+            runner.start(account: config.account, presenter: presenter, id: id, context: context, event: action == nil ? "floating.tap" : "context.tap", key: action?.0, valid: { [weak self] in
+                guard let self else { return false }; return self.token == current && self.snapshot() == draft && self.authorized()
+            }, completion: { [weak self] output, error in
                 guard let self, self.token == current else { return }
                 self.pluginRun = nil; self.setTitle(self.idleTitle, for: .normal)
-                guard self.snapshot() == draft else { return }
+                guard self.snapshot() == draft, self.authorized() else { return }
                 if let output, let kind = output["kind"] as? String, let text = output["text"] as? String {
                     if kind == "draft" { self.preview(text, draft: draft, token: current, pluginId: id) }
                     else if kind == "clipboard" {
                         let alert = UIAlertController(title: "Копировать результат?", message: text, preferredStyle: .alert)
-                        alert.addAction(UIAlertAction(title: "Копировать", style: .default) { [weak self] _ in guard let self, self.snapshot() == draft, self.token == current else { return }; UIPasteboard.general.string = text })
+                        alert.addAction(UIAlertAction(title: "Копировать", style: .default) { [weak self] _ in guard let self, self.snapshot() == draft, self.token == current, self.authorized() else { return }; UIPasteboard.general.string = text })
                         alert.addAction(UIAlertAction(title: "Отмена", style: .cancel)); self.presentAlert(alert)
                     } else { self.notice((output["title"] as? String ?? "AI") + "\n\n" + text) }
                 } else if let error { self.notice(error) }
             }); return
         }
+        guard registration == nil else { return }
         guard let key = config.readKey() else { notice("Задайте ключ в Goldgram → Плагины → AI Command Center."); return }
         let prompt = config.prompt, model = config.model
         guard let request = GoldgramAIProtocol.request(key: key, model: model, prompt: prompt, draft: draft.text) else {
@@ -310,7 +331,7 @@ public final class GoldgramAIButton: UIButton {
         }
         let alert = UIAlertController(title: "Передать текст в DeepSeek?", message: "Модель: " + model + "\n\nПромпт:\n" + prompt + "\n\nТекст:\n" + draft.text, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Сгенерировать", style: .default) { [weak self] _ in
-            guard let self, self.snapshot() == draft, Self.isEnabled(account: self.config.account) else { return }
+            guard let self, self.snapshot() == draft, self.authorized() else { return }
             self.activeAlert = nil; self.start(request, draft: draft)
         })
         alert.addAction(UIAlertAction(title: "Отмена", style: .cancel)); presentAlert(alert)
@@ -329,7 +350,7 @@ public final class GoldgramAIButton: UIButton {
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.token == current else { return }
                 self.task = nil; self.session?.finishTasksAndInvalidate(); self.session = nil; self.setTitle("AI", for: .normal)
-                guard self.snapshot() == draft, Self.isEnabled(account: self.config.account) else { return }
+                guard self.snapshot() == draft, self.authorized() else { return }
                 guard error == nil, let http = response as? HTTPURLResponse else { self.notice("Сетевая ошибка или тайм-аут."); return }
                 guard http.statusCode == 200 else { self.notice("DeepSeek HTTP " + String(http.statusCode) + ". Проверьте ключ, баланс и ID модели."); return }
                 guard let data, let answer = GoldgramAIProtocol.answer(data) else { self.notice("Нет ответа или ответ превышает 4096 символов."); return }
@@ -339,7 +360,7 @@ public final class GoldgramAIButton: UIButton {
         self.task = task; task.resume()
     }
     private func preview(_ answer: String, draft: GoldgramAIDraft, token: UUID, pluginId: UUID? = nil) {
-        guard self.token == token, snapshot() == draft, Self.isEnabled(account: config.account), !answer.isEmpty, answer.utf16.count <= 4096 else { return }
+        guard self.token == token, snapshot() == draft, authorized(), !answer.isEmpty, answer.utf16.count <= 4096 else { return }
         if let pluginId {
             let policy = GoldgramPluginChatRun.draftPolicy(account: config.account, id: pluginId)
             guard policy.allowed else { return }
@@ -347,7 +368,7 @@ public final class GoldgramAIButton: UIButton {
         }
         let alert = UIAlertController(title: "Результат AI", message: answer, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Вставить в черновик", style: .default) { [weak self] _ in
-            guard let self, self.token == token, self.snapshot() == draft, Self.isEnabled(account: self.config.account) else { return }
+            guard let self, self.token == token, self.snapshot() == draft, self.authorized() else { return }
             if let pluginId, !GoldgramPluginChatRun.draftPolicy(account: self.config.account, id: pluginId).allowed { return }
             self.activeAlert = nil
             _ = self.insert(draft, answer)
@@ -356,6 +377,146 @@ public final class GoldgramAIButton: UIButton {
     }
 }
 
+
+// One host for all registered plugins. Each button owns its own request,
+// cancellation token and result; non-button registrations are still routable.
+public final class GoldgramAIButtonGroup: UIView {
+    private let account: String
+    private weak var presenter: UIViewController?
+    private let snapshot: () -> GoldgramAIDraft?
+    private let pluginContext: (() -> [String: Any])?
+    private let insert: (GoldgramAIDraft, String) -> Bool
+    private var registrations: [GoldgramPluginRegistration] = []
+    private var buttons: [UUID: GoldgramAIButton] = [:]
+    private var fallback: GoldgramAIButton?
+    private let overflow = UIButton(type: .system)
+    private var overflowItems: [GoldgramPluginRegistration] = []
+    private var dragOrigin = CGPoint.zero
+    private var dragAnchor: CGPoint?
+    public static func isEnabled(account: String) -> Bool { GoldgramAIButton.isEnabled(account: account) }
+    public static func pluginMenu(account: String) -> [[String: String]] { GoldgramPluginChatRun.menu(account: account) }
+    public init(account: String, presenter: UIViewController, snapshot: @escaping () -> GoldgramAIDraft?, pluginContext: (() -> [String: Any])? = nil, insert: @escaping (GoldgramAIDraft, String) -> Bool) {
+        self.account = account; self.presenter = presenter; self.snapshot = snapshot; self.pluginContext = pluginContext; self.insert = insert
+        super.init(frame: .zero)
+        backgroundColor = .clear
+        overflow.backgroundColor = .systemBlue; overflow.tintColor = .white; overflow.layer.cornerRadius = 19
+        overflow.addTarget(self, action: #selector(showOverflow), for: .touchUpInside); addSubview(overflow)
+        overflow.isHidden = true
+        NotificationCenter.default.addObserver(self, selector: #selector(registryChanged(_:)), name: .goldgramPluginsChanged, object: nil)
+        sync()
+    }
+    required init?(coder: NSCoder) { return nil }
+    deinit { NotificationCenter.default.removeObserver(self) }
+    @objc private func registryChanged(_ note: Notification) {
+        guard note.object as? String == account else { return }
+        sync(); reposition()
+    }
+    private func make(_ registration: GoldgramPluginRegistration?) -> GoldgramAIButton? {
+        guard let presenter else { return nil }
+        let button = GoldgramAIButton(account: account, registration: registration, presenter: presenter, snapshot: snapshot, pluginContext: pluginContext, insert: insert)
+        button.moveGroup = { [weak self] gesture in self?.drag(gesture) }
+        addSubview(button); return button
+    }
+    private func sync() {
+        let next = GoldgramPluginChatRun.registrations(account: account)
+        for old in registrations {
+            if !next.contains(old) { if let button = buttons.removeValue(forKey: old.id) { button.cancel(); button.removeFromSuperview() } }
+        }
+        registrations = next
+        for registration in next where buttons[registration.id] == nil { buttons[registration.id] = make(registration) }
+        let needsFallback = next.isEmpty && GoldgramAIConfig(account: account).enabled && goldgramAIAllowed(account: account)
+        if needsFallback && fallback == nil { fallback = make(nil) }
+        if !needsFallback, let old = fallback { old.cancel(); old.removeFromSuperview(); fallback = nil }
+    }
+    public func cancel() {
+        for button in Array(buttons.values) { button.cancel() }
+        fallback?.cancel()
+    }
+    public func invokePluginAction(key: String, message: [String: Any]) {
+        guard let (id, local) = GoldgramPluginRouting.splitAction(key), let button = buttons[id],
+              registrations.contains(where: { $0.id == id && $0.actions.contains(where: { $0["id"] == local }) }) else { return }
+        button.invokePluginAction(key: local, message: message)
+    }
+    override public func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        let hit = super.hitTest(point, with: event)
+        return hit === self ? nil : hit
+    }
+    private func area() -> CGRect? {
+        guard let parent = superview else { return nil }
+        let safe = parent.bounds.inset(by: parent.safeAreaInsets)
+        let keyboard = parent.keyboardLayoutGuide.layoutFrame.minY
+        let bottom = keyboard > safe.minY + 100 ? min(safe.maxY, keyboard) : safe.maxY
+        let rect = CGRect(x: safe.minX + 30, y: safe.minY + 60, width: safe.width - 60, height: bottom - safe.minY - 125)
+        return rect.width > 0 && rect.height > 0 ? rect : nil
+    }
+    public func reposition() {
+        guard let parent = superview else { return }
+        frame = parent.bounds
+        guard let rect = area() else { for button in buttons.values { button.isHidden = true }; fallback?.isHidden = true; overflow.isHidden = true; return }
+        let shown = registrations.filter { $0.title != nil }
+        for button in buttons.values { button.isHidden = true }
+        fallback?.isHidden = true
+        let columns = max(1, min(3, Int(rect.width / 54) + 1))
+        let rows = max(1, min(2, Int(rect.height / 46) + 1))
+        let capacity = columns * rows
+        let limit = shown.count > capacity ? max(0, capacity - 1) : capacity
+        var visible: [UIButton] = shown.prefix(limit).compactMap { buttons[$0.id] }
+        overflowItems = Array(shown.dropFirst(limit))
+        overflow.isHidden = overflowItems.isEmpty
+        if !overflowItems.isEmpty { overflow.setTitle("+" + String(overflowItems.count), for: .normal); visible.append(overflow) }
+        if let fallback { visible.append(fallback) }
+        let usedColumns = min(columns, max(1, visible.count))
+        let usedRows = max(1, (visible.count + columns - 1) / columns)
+        let width = CGFloat(usedColumns - 1) * 54, height = CGFloat(usedRows - 1) * 46
+        let config = GoldgramAIConfig(account: account)
+        let availableX = max(0, rect.width - width), availableY = max(0, rect.height - height)
+        let x = rect.minX + availableX * CGFloat(max(0,min(1,config.horizontal)))
+        let y = rect.minY + availableY * CGFloat(max(0,min(1,config.vertical)))
+        let anchor = dragAnchor ?? CGPoint(x: x, y: y)
+        let origin = CGPoint(x: max(rect.minX,min(rect.minX+availableX,anchor.x)), y: max(rect.minY,min(rect.minY+availableY,anchor.y)))
+        for (index, button) in visible.enumerated() {
+            button.isHidden = false
+            button.bounds = CGRect(x: 0, y: 0, width: 46, height: 38)
+            button.center = CGPoint(x: origin.x + CGFloat(index % columns) * 54, y: origin.y + CGFloat(index / columns) * 46)
+        }
+        parent.bringSubviewToFront(self)
+    }
+    private func drag(_ gesture: UIPanGestureRecognizer) {
+        guard let rect = area() else { return }
+        let visible = registrations.filter { $0.title != nil }.compactMap { buttons[$0.id] }.filter { !$0.isHidden }
+        var controls: [UIButton] = visible.map { $0 as UIButton }
+        if !overflow.isHidden { controls.append(overflow) }
+        if let fallback, !fallback.isHidden { controls.append(fallback) }
+        guard !controls.isEmpty else { return }
+        let minX = controls.map { $0.center.x }.min() ?? rect.minX, maxX = controls.map { $0.center.x }.max() ?? rect.minX
+        let minY = controls.map { $0.center.y }.min() ?? rect.minY, maxY = controls.map { $0.center.y }.max() ?? rect.minY
+        let availableX = max(0, rect.width - (maxX-minX)), availableY = max(0, rect.height - (maxY-minY))
+        if gesture.state == .began { dragOrigin = CGPoint(x: minX,y: minY) }
+        let delta = gesture.translation(in: self)
+        let x = max(rect.minX,min(rect.minX+availableX,dragOrigin.x+delta.x)), y = max(rect.minY,min(rect.minY+availableY,dragOrigin.y+delta.y))
+        dragAnchor = CGPoint(x:x,y:y)
+        if gesture.state == .ended || gesture.state == .cancelled || gesture.state == .failed {
+            let config = GoldgramAIConfig(account: account)
+            if availableX > 0 { config.horizontal = Double((x-rect.minX)/availableX) }
+            if availableY > 0 { config.vertical = Double((y-rect.minY)/availableY) }
+            dragAnchor = nil
+        }
+        reposition()
+    }
+    @objc private func showOverflow() {
+        guard let presenter, presenter.presentedViewController == nil, snapshot() != nil else { return }
+        let alert = UIAlertController(title: "Плагины", message: nil, preferredStyle: .actionSheet)
+        for item in overflowItems {
+            guard let button = buttons[item.id] else { continue }
+            alert.addAction(UIAlertAction(title: item.name + (button.isBusy ? " · выполняется / результат" : ""), style: .default) { [weak self] _ in
+                DispatchQueue.main.asyncAfter(deadline: .now()+0.35) { [weak self] in self?.buttons[item.id]?.trigger() }
+            })
+        }
+        alert.addAction(UIAlertAction(title: "Отмена", style: .cancel))
+        alert.popoverPresentationController?.sourceView = overflow; alert.popoverPresentationController?.sourceRect = overflow.bounds
+        presenter.present(alert, animated: true)
+    }
+}
 
 // Native request broker. No arbitrary URLs, no raw credentials in the worker,
 // no automatic request: user approves the exact model and payload each time.
@@ -434,7 +595,7 @@ final class GoldgramPluginNetwork: NSObject, UIDocumentPickerDelegate {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type"); request.setValue("Bearer " + key, forHTTPHeaderField: "Authorization")
         busy = true; count += 1
         DispatchQueue.main.asyncAfter(deadline: .now()+0.35) { [weak self] in
-            guard let self, !self.cancelled, self.valid(), let presenter = self.presenter, presenter.viewIfLoaded?.window != nil, presenter.presentedViewController == nil else { self?.busy = false; completion(["error":"Запрос отменён"]); return }
+            guard let self, !self.cancelled, self.valid(), let presenter = self.presenter, presenter.viewIfLoaded?.window != nil else { self?.busy = false; completion(["error":"Запрос отменён"]); return }
             let send: () -> Void = { [weak self] in
                 guard let self, !self.cancelled, self.valid() else { completion(["error":"request_cancelled"]); return }
                 self.alert = nil
@@ -454,6 +615,7 @@ final class GoldgramPluginNetwork: NSObject, UIDocumentPickerDelegate {
                 self.task = task; task.resume()
             }
             if self.skipRequestConfirmation() { send(); return }
+            guard presenter.presentedViewController == nil else { self.busy = false; completion(["error":"Закройте открытое окно и повторите запрос."]); return }
             let alert = UIAlertController(title: "Передать данные плагина в DeepSeek?", message: "Модель: "+model+"\n\nПромпт:\n"+prompt+"\n\nТекст:\n"+text, preferredStyle: .alert)
             self.alert = alert
             alert.addAction(UIAlertAction(title: "Отправить запрос", style: .default) { _ in send() })
