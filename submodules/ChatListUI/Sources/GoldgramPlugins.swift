@@ -40,6 +40,18 @@ private struct GoldgramPluginManifest {
     }
 }
 
+private struct GoldgramPluginConfirmationPolicy: Codable, Equatable {
+    var allowRequestWithoutPrompt = false
+    var allowDraftWithoutPreview = false
+    static func skipRequest(_ policy: Self?, grants: [String], event: String) -> Bool {
+        policy?.allowRequestWithoutPrompt == true && grants.contains("network.fetch") &&
+            (event == "floating.tap" || event == "context.tap")
+    }
+    static func skipDraft(_ policy: Self?, grants: [String]) -> Bool {
+        policy?.allowDraftWithoutPreview == true && grants.contains("chat.write")
+    }
+}
+
 private struct GoldgramPluginRecord: Codable {
     var id = UUID()
     var code: String
@@ -52,6 +64,8 @@ private struct GoldgramPluginRecord: Codable {
     var settingsSchema: Data?
     var floatingTitle: String?
     var contextActions: [[String: String]]?
+    // Native-only consent policy; absent on older installs means always ask.
+    var confirmationPolicy: GoldgramPluginConfirmationPolicy?
     var manifest: GoldgramPluginManifest { GoldgramPluginManifest(code) }
 }
 
@@ -163,7 +177,16 @@ private final class GoldgramPluginRun: NSObject, WKNavigationDelegate, WKScriptM
         payload = (try? JSONSerialization.data(withJSONObject: input, options: [.fragmentsAllowed])).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
         self.completion = completion
         super.init()
-        if let presenter, interactive { broker = GoldgramPluginNetwork(config: credential, presenter: presenter, valid: valid) }
+        if let presenter, interactive {
+            let skipRequest = GoldgramPluginConfirmationPolicy.skipRequest(record.confirmationPolicy, grants: record.grants, event: event)
+            broker = GoldgramPluginNetwork(config: credential, presenter: presenter, valid: valid, skipRequestConfirmation: {
+                guard skipRequest, valid() else { return false }
+                let latest = GoldgramPluginStore(account: account, isCurrent: valid)
+                guard latest.failure == nil, !latest.state.safe, let current = latest.record(record.id),
+                      current.enabled, current.code == record.code, current.grants == record.grants else { return false }
+                return GoldgramPluginConfirmationPolicy.skipRequest(current.confirmationPolicy, grants: current.grants, event: event)
+            })
+        }
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent()
         config.userContentController.add(self, name: "goldgramResult")
@@ -375,9 +398,9 @@ final class GoldgramPluginManager: UITableViewController, UIDocumentPickerDelega
     override func numberOfSections(in tableView: UITableView) -> Int { 3 }
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? { section == 0 ? "Установленные" : (section == 1 ? "Управление" : "Встроенные сервисы") }
     override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
-        section == 0 ? (store.failure ?? "GGAPI: открытый чат и локальные настройки; DeepSeek только с подтверждением. Не все методы Ghostgram поддерживаются.") : "Импортируйте только доверенный код. Не вводите API-ключи в обычные настройки."
+        section == 0 ? (store.failure ?? "GGAPI: открытый чат и локальные настройки; подтверждения управляются для каждого плагина. Не все методы Ghostgram поддерживаются.") : "Импортируйте только доверенный код. Не вводите API-ключи в обычные настройки."
     }
-    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? (store.isCurrent() ? store.state.plugins.count : 0) : (section == 1 ? 4 : 1) }
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? (store.isCurrent() ? store.state.plugins.count : 0) : (section == 1 ? 5 : 1) }
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
         if indexPath.section == 0 {
@@ -390,8 +413,9 @@ final class GoldgramPluginManager: UITableViewController, UIDocumentPickerDelega
             cell.detailTextLabel?.text = "DeepSeek · промпт и плавающая кнопка"
             cell.imageView?.image = UIImage(systemName: "sparkles")
         } else {
-            cell.textLabel?.text = ["Вставить JavaScript", "Импортировать .js из файлов", "Установить тестовый плагин", "Безопасный режим"][indexPath.row]
+            cell.textLabel?.text = ["Вставить JavaScript", "Импортировать .js из файлов", "Установить тестовый плагин", "Безопасный режим", "Подтверждения плагинов"][indexPath.row]
             if indexPath.row == 3 { cell.detailTextLabel?.text = store.state.safe ? "Включён — выполнение заблокировано" : "Выключен" }
+            if indexPath.row == 4 { cell.detailTextLabel?.text = "Запросы к сервисам и вставка ответа" }
         }
         cell.accessoryType = .disclosureIndicator
         return cell
@@ -420,6 +444,7 @@ final class GoldgramPluginManager: UITableViewController, UIDocumentPickerDelega
             let picker = UIDocumentPickerViewController(forOpeningContentTypes: [UTType(filenameExtension: "js") ?? .plainText], asCopy: true)
             picker.delegate = self; picker.allowsMultipleSelection = false; present(picker, animated: true)
         case 2: if !install(Self.example) { notice("Не удалось установить пример.") }
+        case 4: navigationController?.pushViewController(GoldgramPluginConfirmations(store: store), animated: true)
         default:
             var next = store.state; next.safe.toggle()
             if !store.save(next) { notice("Не удалось сохранить режим.") }
@@ -461,6 +486,82 @@ GGAPI.events.on("settings.action", function(p) {
 });
 GGAPI.events.on("plugin.start",function(){ GGAPI.log("Плагин запущен"); });
 """#
+}
+
+private final class GoldgramPluginConfirmations: UITableViewController {
+    private let store: GoldgramPluginStore
+    init(store: GoldgramPluginStore) { self.store = store; super.init(style: .insetGrouped) }
+    required init?(coder: NSCoder) { return nil }
+    override func viewDidLoad() { super.viewDidLoad(); title = "Подтверждения плагинов" }
+    override func viewWillAppear(_ animated: Bool) { super.viewWillAppear(animated); tableView.reloadData() }
+    override func numberOfSections(in tableView: UITableView) -> Int { store.isCurrent() ? store.state.plugins.count + 1 : 1 }
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? 1 : 2 }
+    override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
+        guard store.isCurrent(), section > 0, section <= store.state.plugins.count else { return nil }
+        return store.state.plugins[section - 1].manifest.name
+    }
+    override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
+        section == 0 ? "По умолчанию все запросы подтверждаются. Настройки действуют только для этого аккаунта и версии установленного кода. После изменения кода или повторного включения подтверждения возвращаются. Отправка сообщений в Telegram остаётся ручной." : nil
+    }
+    override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
+        cell.textLabel?.numberOfLines = 0; cell.detailTextLabel?.numberOfLines = 0
+        if indexPath.section == 0 {
+            cell.textLabel?.text = "Восстановить все подтверждения"
+            cell.detailTextLabel?.text = "Для всех плагинов этого аккаунта"
+            cell.accessoryType = .disclosureIndicator
+            return cell
+        }
+        guard store.isCurrent(), indexPath.section <= store.state.plugins.count else { return cell }
+        let p = store.state.plugins[indexPath.section - 1]
+        let network = indexPath.row == 0
+        let allowed = p.enabled && p.grants.contains(network ? "network.fetch" : "chat.write")
+        let skipped = network ? p.confirmationPolicy?.allowRequestWithoutPrompt == true : p.confirmationPolicy?.allowDraftWithoutPreview == true
+        cell.textLabel?.text = network ? "Подтверждать запрос к DeepSeek" : "Предпросмотр перед вставкой"
+        cell.detailTextLabel?.text = allowed ? (skipped ? "Выключено" : "Включено") : "Нет разрешения или плагин выключен"
+        let toggle = UISwitch(); toggle.isOn = !skipped; toggle.isEnabled = allowed
+        toggle.accessibilityLabel = cell.textLabel?.text
+        toggle.addAction(UIAction { [weak self, weak toggle] _ in
+            toggle?.setOn(!skipped, animated: false)
+            guard let self, let index = self.store.state.plugins.firstIndex(where: { $0.id == p.id }) else { return }
+            self.tableView(self.tableView, didSelectRowAt: IndexPath(row: network ? 0 : 1, section: index + 1))
+        }, for: .valueChanged)
+        cell.accessoryView = toggle
+        cell.selectionStyle = allowed ? .default : .none
+        return cell
+    }
+    override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        guard store.isCurrent(), store.failure == nil else { return }
+        if indexPath.section == 0 {
+            var next = store.state
+            for i in next.plugins.indices { next.plugins[i].confirmationPolicy = nil }
+            if !store.save(next) { showPluginError("Не удалось сохранить настройки.") }
+            tableView.reloadData(); return
+        }
+        guard indexPath.section <= store.state.plugins.count else { return }
+        let p = store.state.plugins[indexPath.section - 1]
+        let network = indexPath.row == 0, grant = network ? "network.fetch" : "chat.write"
+        guard p.enabled, p.grants.contains(grant) else { return }
+        let skipped = network ? p.confirmationPolicy?.allowRequestWithoutPrompt == true : p.confirmationPolicy?.allowDraftWithoutPreview == true
+        let apply: (Bool) -> Void = { [weak self] skip in
+            guard let self, self.store.isCurrent(), var current = self.store.record(p.id),
+                  current.enabled, current.code == p.code, current.grants == p.grants else { return }
+            var policy = current.confirmationPolicy ?? GoldgramPluginConfirmationPolicy()
+            if network { policy.allowRequestWithoutPrompt = skip } else { policy.allowDraftWithoutPreview = skip }
+            current.confirmationPolicy = policy
+            if !self.store.put(current) { self.showPluginError("Не удалось сохранить настройки.") }
+            self.tableView.reloadData()
+        }
+        if skipped { apply(false); return }
+        let message = network
+            ? "Разрешить этому плагину при нажатии его кнопки или команды отправлять промпт, текст и доступный контекст переписки в api.deepseek.com без повторного окна? Запросы могут расходовать баланс. Фоновые запросы, другие адреса и запросы из настроек не разрешаются автоматически."
+            : "Разрешить этому плагину заменять текущий неизменённый черновик без предпросмотра? Текст останется в поле ввода, а отправку сообщения вы выполните сами."
+        let alert = UIAlertController(title: "Отключить подтверждение?", message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Разрешить", style: .default) { _ in apply(true) })
+        alert.addAction(UIAlertAction(title: "Отмена", style: .cancel))
+        present(alert, animated: true)
+    }
 }
 
 private extension UIViewController {
@@ -526,14 +627,14 @@ private final class GoldgramPluginDetail: UITableViewController {
         guard run == nil else { return }
         switch indexPath.row {
         case 0:
-            if p.enabled { p.enabled = false; p.grants = []; p.floatingTitle = nil; p.contextActions = nil; if store.put(p) { sections = []; status = "Выключен" }; tableView.reloadData(); return }
+            if p.enabled { p.enabled = false; p.grants = []; p.floatingTitle = nil; p.contextActions = nil; p.confirmationPolicy = nil; if store.put(p) { sections = []; status = "Выключен" }; tableView.reloadData(); return }
             let unsupported = p.manifest.required.subtracting(GoldgramPluginManifest.supported)
             guard unsupported.isEmpty else { showPluginError("Не поддерживаются обязательные разрешения: " + unsupported.sorted().joined(separator: ", ")); return }
             let grants = p.manifest.required.union(p.manifest.optional.intersection(GoldgramPluginManifest.supported)).sorted()
             let alert = UIAlertController(title: "Разрешить выполнение плагина?", message: (grants.isEmpty ? "Без нативных разрешений" : grants.joined(separator: "\n")) + "\nТолько открытый разрешённый чат, локальный черновик и подтверждённый запрос к DeepSeek. Без автоотправки и доступа к секретам.", preferredStyle: .alert)
             alert.addAction(UIAlertAction(title: "Разрешить", style: .default) { [weak self] _ in
                 guard let self, !self.store.state.safe else { return }
-                p.enabled = true; p.grants = grants
+                p.enabled = true; p.grants = grants; p.confirmationPolicy = nil
                 if self.store.put(p) { self.execute(event: "plugin.start") } else { self.showPluginError("Не удалось сохранить.") }
             })
             alert.addAction(UIAlertAction(title: "Отмена", style: .cancel)); present(alert, animated: true)
@@ -541,7 +642,7 @@ private final class GoldgramPluginDetail: UITableViewController {
         case 2:
             navigationController?.pushViewController(GoldgramPluginEditor(title: "JavaScript", text: p.code) { [weak self] code in
                 guard let self, var current = self.store.record(self.id), !code.isEmpty, code.utf8.count <= GoldgramPluginStore.maxCode else { return }
-                current.previousCode = current.code; current.code = code; current.enabled = false; current.grants = []; current.settingsSchema = nil; current.floatingTitle = nil; current.contextActions = nil
+                current.previousCode = current.code; current.code = code; current.enabled = false; current.grants = []; current.settingsSchema = nil; current.floatingTitle = nil; current.contextActions = nil; current.confirmationPolicy = nil
                 if self.store.put(current) { self.sections = []; self.status = "Код обновлён; разрешите заново."; self.title = current.manifest.name; self.navigationController?.popViewController(animated: true); self.tableView.reloadData() }
                 else { (self.navigationController?.topViewController)?.showPluginError("Не удалось сохранить.") }
             }, animated: true)
@@ -549,7 +650,7 @@ private final class GoldgramPluginDetail: UITableViewController {
         case 4: showPluginError(logs.isEmpty ? "Нет записей." : logs.joined(separator: "\n"))
         case 5:
             guard let previous = p.previousCode else { showPluginError("Нет предыдущей версии."); return }
-            p.previousCode = p.code; p.code = previous; p.enabled = false; p.grants = []; p.settingsSchema = nil; p.floatingTitle = nil; p.contextActions = nil
+            p.previousCode = p.code; p.code = previous; p.enabled = false; p.grants = []; p.settingsSchema = nil; p.floatingTitle = nil; p.contextActions = nil; p.confirmationPolicy = nil
             if store.put(p) { sections = []; status = "Код восстановлен; разрешите заново."; title = p.manifest.name; tableView.reloadData() }
         default:
             let alert = UIAlertController(title: "Удалить плагин?", message: "Удалятся код и его локальные настройки.", preferredStyle: .alert)
@@ -664,6 +765,12 @@ final class GoldgramPluginChatRun {
         guard let list = raw as? [[String: String]] else { return [] }
         var seen = Set<String>()
         return Array(list.filter { item in guard let id = item["id"], let title = item["title"], !id.isEmpty, id.count <= 100, !title.isEmpty, title.count <= 160 else { return false }; return seen.insert(id).inserted }.prefix(24))
+    }
+    static func draftPolicy(account: String, id: UUID) -> (allowed: Bool, skip: Bool) {
+        let store = GoldgramPluginStore(account: account, isCurrent: { true })
+        guard store.failure == nil, !store.state.safe, let current = store.record(id), current.enabled,
+              current.grants.contains("chat.write"), selected(account: account)?.0 == id else { return (false, false) }
+        return (true, GoldgramPluginConfirmationPolicy.skipDraft(current.confirmationPolicy, grants: current.grants))
     }
     static func menu(account: String) -> [[String: String]] {
         guard let (id, _) = selected(account: account) else { return [] }

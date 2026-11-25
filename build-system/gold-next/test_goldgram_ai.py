@@ -27,3 +27,35 @@ assert "session?.invalidateAndCancel()" in s and "Передать текст в
 assert "self.goldgramAIEpoch &+= 1" in chat and "interactive: false" in chat
 assert "self.presentationInterfaceState.copyProtectionEnabled" in chat
 print("Goldgram #268 privacy/lifecycle source contracts passed")
+
+# #270 confirmation policy is native, opt-in, scoped to the installed plugin.
+plugins = (root / "submodules/ChatListUI/Sources/GoldgramPlugins.swift").read_text()
+policy = plugins.split("private struct GoldgramPluginConfirmationPolicy:",1)[1].split("\nprivate struct GoldgramPluginRecord",1)[0]
+fixture = '''
+let grants = ["network.fetch", "chat.write"]
+precondition(!GoldgramPluginConfirmationPolicy.skipRequest(nil, grants: grants, event: "floating.tap"))
+precondition(!GoldgramPluginConfirmationPolicy.skipDraft(nil, grants: grants))
+let p = GoldgramPluginConfirmationPolicy(allowRequestWithoutPrompt: true, allowDraftWithoutPreview: true)
+precondition(GoldgramPluginConfirmationPolicy.skipRequest(p, grants: grants, event: "floating.tap"))
+precondition(GoldgramPluginConfirmationPolicy.skipRequest(p, grants: grants, event: "context.tap"))
+precondition(!GoldgramPluginConfirmationPolicy.skipRequest(p, grants: grants, event: "settings.action"))
+precondition(!GoldgramPluginConfirmationPolicy.skipRequest(p, grants: [], event: "floating.tap"))
+precondition(GoldgramPluginConfirmationPolicy.skipDraft(p, grants: grants))
+precondition(!GoldgramPluginConfirmationPolicy.skipDraft(p, grants: []))
+let decoded = try! JSONDecoder().decode(GoldgramPluginConfirmationPolicy.self, from: JSONEncoder().encode(p))
+precondition(decoded == p)
+private struct LegacyRecord: Codable { var confirmationPolicy: GoldgramPluginConfirmationPolicy? }
+private let legacy = try! JSONDecoder().decode(LegacyRecord.self, from: Data("{}".utf8))
+precondition(legacy.confirmationPolicy == nil)
+print("Goldgram #270 confirmation policy fixtures passed")
+'''
+with tempfile.TemporaryDirectory() as tmp:
+    path = pathlib.Path(tmp)/"main.swift"
+    path.write_text("import Foundation\nprivate struct GoldgramPluginConfirmationPolicy:"+policy+fixture.replace("let p =", "private let p =").replace("let decoded =", "private let decoded ="))
+    subprocess.run(["swift",str(path)],check=True)
+assert "current.confirmationPolicy = nil" in plugins and "p.confirmationPolicy = nil" in plugins
+assert "current.code == record.code" in plugins and "current.grants == record.grants" in plugins
+assert "if self.skipRequestConfirmation() { send(); return }" in s
+assert "if policy.skip { _ = insert(draft, answer); return }" in s
+assert "snapshot() == draft" in s and "completionHandler(nil)" in s
+print("Goldgram #270 confirmation consent source contracts passed")

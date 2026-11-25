@@ -294,7 +294,7 @@ public final class GoldgramAIButton: UIButton {
                 self.pluginRun = nil; self.setTitle(self.idleTitle, for: .normal)
                 guard self.snapshot() == draft else { return }
                 if let output, let kind = output["kind"] as? String, let text = output["text"] as? String {
-                    if kind == "draft" { self.preview(text, draft: draft, token: current) }
+                    if kind == "draft" { self.preview(text, draft: draft, token: current, pluginId: id) }
                     else if kind == "clipboard" {
                         let alert = UIAlertController(title: "Копировать результат?", message: text, preferredStyle: .alert)
                         alert.addAction(UIAlertAction(title: "Копировать", style: .default) { [weak self] _ in guard let self, self.snapshot() == draft, self.token == current else { return }; UIPasteboard.general.string = text })
@@ -338,10 +338,17 @@ public final class GoldgramAIButton: UIButton {
         }
         self.task = task; task.resume()
     }
-    private func preview(_ answer: String, draft: GoldgramAIDraft, token: UUID) {
+    private func preview(_ answer: String, draft: GoldgramAIDraft, token: UUID, pluginId: UUID? = nil) {
+        guard self.token == token, snapshot() == draft, Self.isEnabled(account: config.account), !answer.isEmpty, answer.utf16.count <= 4096 else { return }
+        if let pluginId {
+            let policy = GoldgramPluginChatRun.draftPolicy(account: config.account, id: pluginId)
+            guard policy.allowed else { return }
+            if policy.skip { _ = insert(draft, answer); return }
+        }
         let alert = UIAlertController(title: "Результат AI", message: answer, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Вставить в черновик", style: .default) { [weak self] _ in
             guard let self, self.token == token, self.snapshot() == draft, Self.isEnabled(account: self.config.account) else { return }
+            if let pluginId, !GoldgramPluginChatRun.draftPolicy(account: self.config.account, id: pluginId).allowed { return }
             self.activeAlert = nil
             _ = self.insert(draft, answer)
         })
@@ -366,7 +373,8 @@ final class GoldgramPluginNetwork: NSObject, UIDocumentPickerDelegate {
     private weak var fileUI: UIViewController?
     private var fileReply: (([String: Any]) -> Void)?
     private var exportDirectory: URL?
-    init(config: GoldgramAIConfig, presenter: UIViewController, valid: @escaping () -> Bool) { self.config = config; self.presenter = presenter; self.valid = valid; super.init() }
+    private let skipRequestConfirmation: () -> Bool
+    init(config: GoldgramAIConfig, presenter: UIViewController, valid: @escaping () -> Bool, skipRequestConfirmation: @escaping () -> Bool = { false }) { self.config = config; self.presenter = presenter; self.valid = valid; self.skipRequestConfirmation = skipRequestConfirmation; super.init() }
     func cancel() {
         cancelled = true; task?.cancel(); session?.invalidateAndCancel(); task = nil; session = nil
         if let alert, alert.presentingViewController != nil { alert.dismiss(animated: false) }
@@ -427,9 +435,7 @@ final class GoldgramPluginNetwork: NSObject, UIDocumentPickerDelegate {
         busy = true; count += 1
         DispatchQueue.main.asyncAfter(deadline: .now()+0.35) { [weak self] in
             guard let self, !self.cancelled, self.valid(), let presenter = self.presenter, presenter.viewIfLoaded?.window != nil, presenter.presentedViewController == nil else { self?.busy = false; completion(["error":"Запрос отменён"]); return }
-            let alert = UIAlertController(title: "Передать данные плагина в DeepSeek?", message: "Модель: "+model+"\n\nПромпт:\n"+prompt+"\n\nТекст:\n"+text, preferredStyle: .alert)
-            self.alert = alert
-            alert.addAction(UIAlertAction(title: "Отправить запрос", style: .default) { [weak self] _ in
+            let send: () -> Void = { [weak self] in
                 guard let self, !self.cancelled, self.valid() else { completion(["error":"request_cancelled"]); return }
                 self.alert = nil
                 let cfg = URLSessionConfiguration.ephemeral
@@ -446,7 +452,11 @@ final class GoldgramPluginNetwork: NSObject, UIDocumentPickerDelegate {
                     }
                 }
                 self.task = task; task.resume()
-            })
+            }
+            if self.skipRequestConfirmation() { send(); return }
+            let alert = UIAlertController(title: "Передать данные плагина в DeepSeek?", message: "Модель: "+model+"\n\nПромпт:\n"+prompt+"\n\nТекст:\n"+text, preferredStyle: .alert)
+            self.alert = alert
+            alert.addAction(UIAlertAction(title: "Отправить запрос", style: .default) { _ in send() })
             alert.addAction(UIAlertAction(title: "Отмена", style: .cancel) { [weak self] _ in self?.busy = false; completion(["error":"request_cancelled"]) })
             presenter.present(alert, animated: true)
         }
