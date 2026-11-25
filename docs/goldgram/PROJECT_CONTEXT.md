@@ -195,3 +195,8 @@ GoldgramAI.swift implements an opt-in, per-account native AI service under Plugi
 ## #269 candidate — plugin-owned AI and scoped GGAPI
 
 Imported plugin source is authoritative for UI schema, profiles, commands and callback logic; native Swift provides narrow, user-approved bridges. Disposable worker registers floating button/context actions, runs original callbacks on demand; account/plugin-specific secure credential is not exposed to JavaScript. Native broker restricts requests to DeepSeek with payload confirmation and current chat/draft validity. Selected/visible currently authorized ordinary text only; no Telegram session, raw archive, send or typing access. First enabled floating plugin selected. See current status and decisions for tested subset and outstanding gaps. #269 CI/device pending.
+
+
+## #270 candidate — native confirmation preferences
+
+Reusable engine-level account/plugin policy governs repeated DeepSeek request and draft-preview prompts independently, default on and explicit user opt-out; no plugin-side policy mutation. Code/grant lifecycle reset, action scoping, existing permission/context validation and manual Telegram send preserved. See CURRENT_STATUS/DECISIONS_LOG. iOS validation pending.

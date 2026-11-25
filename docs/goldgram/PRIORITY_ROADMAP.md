@@ -17,3 +17,7 @@ Resume both development tracks, choosing next features with the user:
 - Expand native APIs when justified by reusable requirements, with scoped permissions, tests and docs.
 
 Read this roadmap at the start of future project chats along with the three canonical project docs. The user explicitly approved engine-first priority. Update milestones and decisions after each verified stage; never trigger an IPA build for documentation-only changes.
+
+
+### #269 device checkpoint / #270 usability step
+Original AICC request and generated response confirmed by user on iPhone. #270 candidate adds native engine-level per-plugin request/preview confirmation preferences with explicit scoped opt-out, reset and manual sending preserved. Verify on device before continuing broader GGAPI/multi-plugin work. This is part of Stage A, not engine acceptance.

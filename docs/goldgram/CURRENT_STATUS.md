@@ -1,6 +1,6 @@
 # CURRENT_STATUS — verified checkpoint
 
- > **2026-11-25 local user date — #269 CI green; original AICC device acceptance pending; universal plugin engine P0.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
+ > **2026-11-25 local user date — #269 original AICC request/response confirmed on device; #270 confirmation preferences candidate.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
 
 ## P0 development priority (user-approved 2026-11-25)
 
@@ -11,11 +11,11 @@
 | Item | Latest confirmed status |
 | --- | --- |
 | Feature branch | `gold-next-243-author-search` |
-| HEAD | `50594ba09b140f26023d060c98dd479e8ab45c8f` (#269 CI green), direct parent #268 |
+| HEAD | `7d96dc20291fe09993dad7ed4273bf75711eb026` (#270 candidate), direct parent #269 |
 | Last green CI | [#269](https://github.com/sviridovski/Telegram-iOS/actions/runs/45553382538), native: success, mx: success, build: success |
-| Last installed | #268 — imported AICC permission denial reported; #267 local JS/settings verified. |
+| Last installed | #269 — original imported AICC real request/response and preview shown by user; remaining device tests pending. |
 | Failed candidate | #263 attempt 1: Native/Mx success, Build cancelled, logs unavailable; #261 earlier compile error resolved in #262. |
-| Next task | **P0 universal Plugin Engine**: verify #269 on device and execute [priority roadmap](./PRIORITY_ROADMAP.md). Defer optional new features until acceptance. |
+| Next task | **P0 universal Plugin Engine**: verify #270 confirmation preferences and original AICC workflow on device; then reusable API/lifecycle gaps. |
 | Recovery | #263 green and swipe confirmed, media completeness issue open. #260 earlier broadly user-confirmed baseline; original port/telegram-13.2 unchanged. |
 
 ## #252 corrections retained in #253
@@ -271,3 +271,11 @@
 ## Engine-first priority decision and #269 CI update (2026-11-25)
 
 User explicitly approved prioritizing the universal plugin engine until mature, then continuing both independent plugins and native Goldgram features. See [PRIORITY_ROADMAP.md](./PRIORITY_ROADMAP.md). #269 CI run 45553382538 completed successfully; jobs: native: success, mx: success, build: success; artifacts: goldgram-ci-native-45553382538 (14995907092, expired=false); Swiftgram-dSYMs-50594ba09b140f26023d060c98dd479e8ab45c8f (14995807132, expired=false); Swiftgram-13.2-gold-next-Mx-1.0.0 (14995213023, expired=false); goldgram-ci-mx-45553382538 (14994124063, expired=false). Device acceptance of original AICC remains unreported, so no claim that the plugin works on iPhone yet. No source changes or additional app CI requested for this decision.
+
+
+## #270 candidate — engine-level per-plugin confirmations (2026-11-25)
+
+- User reported original imported AI Commander working on installed #269. Screenshots confirm plugin-owned prompt/profile and deepseek-flash request confirmation, followed by generated AI response and insert-preview dialog. This is real device evidence of request/response; actual insertion, other commands, settings persistence and broader compatibility remain to be checked. Do not retain private screenshot content in repository. #269 CI green (24m06s workflow wall time).
+- User requests independent switches for repeated request and draft-preview dialogs in a shared settings page for all plugins. Published source 7d96dc20291fe09993dad7ed4273bf75711eb026, direct #269 parent, verified branch HEAD; CI #270, run 45652311197, in_progress. Only GoldgramPlugins.swift, GoldgramAI.swift and existing test_goldgram_ai.py changed. No TelegramCore, ChatController, Mx, cache keys, Ghost, SQLite, Collector or Live Bridge changes. Build duration target 15–20 min remains unverified.
+- Native-only account/plugin confirmation policy in existing plugin JSON, optional field for migration. Defaults always ask. Management → Подтверждения плагинов lists each installed plugin, separate DeepSeek request and draft preview toggles, restore all. Turning a confirmation off requires native explicit consent describing data/context, destination and paid API use or draft replacement. No JS API can alter policy. Disable/re-enable, code edit and rollback clear overrides. No blanket bypass, no automatic sending, no arbitrary network or background access. Skip network confirmation only for explicit floating/context action, fixed previously supported DeepSeek destination, unchanged code/grants, valid account/chat/draft, existing permission and limits. Settings actions still require network confirmation. Skip preview only for valid same draft, selected enabled plugin with chat.write, bounded answer and explicit preference; safe mode remains enforced. File/clipboard dialogs and native fallback unchanged.
+- Ten standalone Swift policy/migration checks passed on Linux against equivalent extracted policy code; CI fixture added for defaults, event and grant gates, serialization, legacy migration, reset/validity source contracts. Full iOS compile and device acceptance pending. Test both toggles independently, reset all, restart, switch chats/accounts, disable/re-enable/edit code, safe mode, verify no automatic Telegram send and original plugin settings retained. Universal engine P0 remains controlling roadmap.
