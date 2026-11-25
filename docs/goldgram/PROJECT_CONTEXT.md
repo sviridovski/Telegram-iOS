@@ -176,3 +176,8 @@ Ordinary still-live group-wide TTL is treated separately from short/view-once/Au
 ## #266 acceptance / Plugins direction
 
 #266 group TTL search candidate is CI-green and user reports media freshness fixed. Native expiry/protection regression matrix remains a separate test. Next product phase is the hybrid Plugins platform; prior design is in CURRENT_STATUS and DECISIONS_LOG, not yet implemented. Do not alter existing archive, Ghost, Collector or account boundaries for plugin work.
+
+
+## #267 candidate — local plugin architecture
+
+GoldgramPlugins.swift owns account-scoped atomic plugin JSON and native manager/settings UI. Dashboard ID 34 is configurable. Imported JS is disabled until approved, executes on-demand in disposable local nonpersistent WebKit worker with restricted bridge and timeout, not persistent JSContext. Native settings are rendered from validated plugin-declared sections. No archive/Telegram/session access or network in MVP. This is a deliberate staged compatibility subset; see current status for exact boundaries and test gates. Source ccdb78d54cd638a27de8ecc96a1501ef6466c5c2, CI/device validation pending.
