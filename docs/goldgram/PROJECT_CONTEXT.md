@@ -211,3 +211,7 @@ Confirmation policy opt-out verified on device; see CURRENT_STATUS and DECISIONS
 ## #271 candidate — registry / multi-plugin controls
 
 GoldgramAIButtonGroup hosts per-plugin buttons with independent execution and shared movable layout; UUID-qualified context action routes, safe registration revocation, max four disposable workers, per-account/plugin execution lease, merge-on-commit of settings/storage. Shared draft snapshot remains authoritative. See CURRENT_STATUS and DECISIONS_LOG for limits, CI and device acceptance.
+
+
+## #272 candidate — provider network policy and model catalog
+Scoped native route dispatcher, sanitized provider metadata, key-scoped cache, explicit foreground refresh, plugin-defined dynamic model select; see CURRENT_STATUS and compatibility guide. No new database, no changes to archive/Collector/Ghost.

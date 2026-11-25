@@ -10,3 +10,13 @@ Engine management UI only: per-plugin/account switches for repeated DeepSeek req
 ## #271 multi-plugin candidate
 
 All enabled eligible plugins can register their individual floating control and context actions. Composite native identity does not change plugin-local IDs. Per-plugin state, independent execution, hide button without removing context actions, safe mode and cancellation. Max four simultaneous workers, one per account/plugin; shared draft guards and modal confirmation constraints. GGAPI method set otherwise unchanged. CI/device tests pending.
+
+## #272 provider catalog API (candidate)
+
+Requires `network.fetch`. Supported exact routes are GET `https://api.deepseek.com/models` (no body) and POST `https://api.deepseek.com/chat/completions` (existing scoped schema). No arbitrary URLs, redirects or custom authorization. The worker receives only a managed alias, never the native key.
+
+- `GGAPI.network.models()`: copy of cached `{models, updatedAt, stale}`, updatedAt in UNIX seconds; missing returns empty/stale.
+- `await GGAPI.network.refreshModels(force=false)`: return fresh cached list or retrieve through interactive broker. Force true explicitly refreshes. Rejection leaves cached snapshot unchanged. Call on user-invoked settings/floating/context action; not automatically on plugin.start.
+- `GGAPI.network.fetch("https://api.deepseek.com/models",{method:"GET"})`: request, response object with status/ok/text/json; sanitized list. No request body, no messages.
+- Plugin-owned select item may include `modelSource:"deepseek"`; still use a plugin-owned key/default/options and read the setting normally. Picker shows actual cached models or declared fallback and allows explicit manual ID; selection invokes existing settings.changed callback. Do not hardcode normalized model IDs if dynamic choice desired.
+- Native catalog available for any enabled plugin with network.fetch. Opens stale catalog refresh (24h), no background poll. Legacy AICC select is unchanged. [Example](examples/model_catalog.js). Full iOS and live provider validation pending.
