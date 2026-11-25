@@ -308,19 +308,21 @@ private final class GoldgramPluginEditor: UIViewController {
 
 final class GoldgramPluginManager: UITableViewController, UIDocumentPickerDelegate {
     private let store: GoldgramPluginStore
+    private let aiAccount: String
     init(account: String, isCurrent: @escaping () -> Bool) {
+        self.aiAccount = account
         store = GoldgramPluginStore(account: account, isCurrent: isCurrent)
         super.init(style: .insetGrouped)
     }
     required init?(coder: NSCoder) { return nil }
     override func viewDidLoad() { super.viewDidLoad(); title = "Goldgram Plugins" }
     override func viewWillAppear(_ animated: Bool) { super.viewWillAppear(animated); tableView.reloadData() }
-    override func numberOfSections(in tableView: UITableView) -> Int { 2 }
-    override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? { section == 0 ? "Установленные" : "Управление" }
+    override func numberOfSections(in tableView: UITableView) -> Int { 3 }
+    override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? { section == 0 ? "Установленные" : (section == 1 ? "Управление" : "Встроенные сервисы") }
     override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
         section == 0 ? (store.failure ?? "Версия 1.0: локальные плагины запускаются вручную, без фоновой работы и сети.") : "Импортируйте только доверенный код. Не вводите API-ключи в обычные настройки."
     }
-    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? (store.isCurrent() ? store.state.plugins.count : 0) : 4 }
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? (store.isCurrent() ? store.state.plugins.count : 0) : (section == 1 ? 4 : 1) }
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
         if indexPath.section == 0 {
@@ -328,6 +330,10 @@ final class GoldgramPluginManager: UITableViewController, UIDocumentPickerDelega
             cell.textLabel?.text = p.manifest.name
             cell.detailTextLabel?.text = p.manifest.version + " · " + (p.enabled ? "Разрешён" : "Выключен")
             cell.imageView?.image = UIImage(systemName: "puzzlepiece.extension")
+        } else if indexPath.section == 2 {
+            cell.textLabel?.text = "AI Command Center · Native"
+            cell.detailTextLabel?.text = "DeepSeek · промпт и плавающая кнопка"
+            cell.imageView?.image = UIImage(systemName: "sparkles")
         } else {
             cell.textLabel?.text = ["Вставить JavaScript", "Импортировать .js из файлов", "Установить тестовый плагин", "Безопасный режим"][indexPath.row]
             if indexPath.row == 3 { cell.detailTextLabel?.text = store.state.safe ? "Включён — выполнение заблокировано" : "Выключен" }
@@ -341,6 +347,10 @@ final class GoldgramPluginManager: UITableViewController, UIDocumentPickerDelega
         if indexPath.section == 0 {
             let id = store.state.plugins[indexPath.row].id
             navigationController?.pushViewController(GoldgramPluginDetail(store: store, id: id), animated: true)
+            return
+        }
+        if indexPath.section == 2 {
+            navigationController?.pushViewController(GoldgramAISettings(account: aiAccount, isCurrent: store.isCurrent), animated: true)
             return
         }
         switch indexPath.row {
@@ -552,4 +562,10 @@ private final class GoldgramPluginDetail: UITableViewController {
         }
         alert.addAction(UIAlertAction(title: "Отмена", style: .cancel)); present(alert, animated: true)
     }
+}
+
+// Native AI is opt-in, and the manager's account-specific safe mode applies to it as well.
+func goldgramAIAllowed(account: String) -> Bool {
+    let store = GoldgramPluginStore(account: account, isCurrent: { true })
+    return store.failure == nil && !store.state.safe
 }

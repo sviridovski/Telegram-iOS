@@ -196,7 +196,7 @@ public final class GoldgramAuthorSearchBridge: NSObject {
         self.primaryContext = context
     }
 
-    fileprivate static func isCurrentAccount(_ context: AccountContext) -> Bool {
+    public static func isCurrentAccount(_ context: AccountContext) -> Bool {
         return primaryContext?.account.id == context.account.id
     }
 

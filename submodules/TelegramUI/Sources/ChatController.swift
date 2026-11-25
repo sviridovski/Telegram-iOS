@@ -314,6 +314,10 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
     var leftNavigationButton: ChatNavigationButton?
     var rightNavigationButton: ChatNavigationButton?
     private var goldgramSearchNavigationItem: UIBarButtonItem?
+    private var goldgramAIButton: GoldgramAIButton?
+    private var goldgramAIVisible = false
+    private var goldgramAIEnabled = false
+    private var goldgramAIEpoch: UInt64 = 0
     var secondaryRightNavigationButton: ChatNavigationButton?
     var chatInfoNavigationButton: ChatNavigationButton?
     
@@ -8055,6 +8059,50 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
         }
     }
 
+    private func goldgramAIIdentity() -> String? {
+        guard self.goldgramAIVisible, self.isNodeLoaded, self.view.window != nil,
+              self.isApplicationInForegroundValue, !self.isPreviewingMode,
+              GoldgramAuthorSearchBridge.isCurrentAccount(self.context),
+              let peer = self.chatLocation.peerId,
+              peer.namespace == Namespaces.Peer.CloudUser || peer.namespace == Namespaces.Peer.CloudGroup || peer.namespace == Namespaces.Peer.CloudChannel,
+              !self.presentationInterfaceState.copyProtectionEnabled, !self.presentationInterfaceState.myCopyProtectionEnabled,
+              self.presentationInterfaceState.interfaceState.editMessage == nil,
+              self.presentationInterfaceState.interfaceState.forwardMessageIds == nil,
+              self.presentationInterfaceState.interfaceState.selectionState == nil,
+              canSendMessagesToChat(self.presentationInterfaceState) else { return nil }
+        return String(describing: peer) + ":" + String(describing: self.chatLocation.threadId) + ":" + String(self.goldgramAIEpoch)
+    }
+
+    private func goldgramInstallAI() {
+        guard self.goldgramAIEnabled, self.goldgramAIButton == nil, self.goldgramAIIdentity() != nil else { return }
+        let account = String(self.context.account.peerId.id._internalGetInt64Value())
+        let button = GoldgramAIButton(account: account, presenter: self, snapshot: { [weak self = self] in
+            guard let self, let identity = self.goldgramAIIdentity() else { return nil }
+            return GoldgramAIDraft(identity: identity, text: self.presentationInterfaceState.interfaceState.effectiveInputState.inputText.string)
+        }, insert: { [weak self = self] original, answer in
+            guard let self, self.goldgramAIIdentity() == original.identity,
+                  self.presentationInterfaceState.interfaceState.effectiveInputState.inputText.string == original.text else { return false }
+            self.updateChatPresentationInterfaceState(animated: false, interactive: false, { state in
+                state.updatedInterfaceState { interfaceState in
+                    interfaceState.withUpdatedEffectiveInputState(ChatTextInputState(inputText: NSAttributedString(string: answer)))
+                }
+            })
+            return true
+        })
+        self.goldgramAIButton = button
+        self.view.addSubview(button)
+        button.reposition()
+    }
+
+    private func goldgramRefreshAI() {
+        guard self.goldgramAIVisible, self.goldgramAIEnabled else { return }
+        if self.goldgramAIButton == nil { self.goldgramInstallAI() }
+        guard let button = self.goldgramAIButton else { return }
+        button.isHidden = self.goldgramAIIdentity() == nil
+        if button.isHidden { button.cancel() }
+        button.reposition()
+    }
+
     @objc private func goldgramOpenAuthorSearch() {
         GoldgramAuthorSearchBridge.open(from: self, context: self.context, chatId: self.chatLocation.peerId)
     }
@@ -8072,6 +8120,12 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
 
     override public func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        self.goldgramAIVisible = true
+        self.goldgramAIEnabled = GoldgramAIButton.isEnabled(account: String(self.context.account.peerId.id._internalGetInt64Value()))
+        self.goldgramAIButton?.cancel()
+        self.goldgramAIButton?.removeFromSuperview()
+        self.goldgramAIButton = nil
+        self.goldgramInstallAI()
         self.forwardSideListAppearance(.didAppear, animated: animated)
         
         self.didAppear = true
@@ -8524,6 +8578,12 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
     
     override public func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        self.goldgramAIVisible = false
+        self.goldgramAIEnabled = false
+        self.goldgramAIEpoch &+= 1
+        self.goldgramAIButton?.cancel()
+        self.goldgramAIButton?.removeFromSuperview()
+        self.goldgramAIButton = nil
         self.forwardSideListAppearance(.willDisappear, animated: animated)
 
         self.walletTransferAnimationsVisible = false
@@ -8736,6 +8796,7 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
         }
         self.navigationBar?.additionalContentNode.hitTestSlop = UIEdgeInsets(top: 0.0, left: 0.0, bottom: self.additionalNavigationBarHitTestSlop, right: 0.0)
         
+        self.goldgramRefreshAI()
         self.updateSideListLayout(transition: transition)
         // The strip is chosen per layout; keep the button in step when the width class or the flag changed.
         if self.currentSideListKind(presentationInterfaceState: self.presentationInterfaceState) != self.sideListButtonKind {
@@ -8748,6 +8809,8 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
     }
     
     func updateChatPresentationInterfaceState(transition: ContainedViewLayoutTransition, interactive: Bool, force: Bool = false, saveInterfaceState: Bool = false, _ f: (ChatPresentationInterfaceState) -> ChatPresentationInterfaceState, completion: @escaping (ContainedViewLayoutTransition) -> Void = { _ in }) {
+        let oldAIInput = self.goldgramAIEnabled ? self.presentationInterfaceState.interfaceState.effectiveInputState.inputText : nil
+        let oldAIReply = self.goldgramAIEnabled ? self.presentationInterfaceState.interfaceState.replyMessageSubject : nil
         updateChatPresentationInterfaceStateImpl(
             selfController: self,
             transition: transition,
@@ -8757,6 +8820,11 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
             f,
             completion: completion
         )
+        if let oldAIInput, !oldAIInput.isEqual(self.presentationInterfaceState.interfaceState.effectiveInputState.inputText) || oldAIReply != self.presentationInterfaceState.interfaceState.replyMessageSubject {
+            self.goldgramAIEpoch &+= 1
+            self.goldgramAIButton?.cancel()
+        }
+        self.goldgramRefreshAI()
     }
     
     func updateItemNodesSelectionStates(animated: Bool) {

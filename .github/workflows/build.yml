@@ -222,6 +222,8 @@ jobs:
           python3 build-system/gold-next/test_personal_metadata.py
           swiftc -frontend -parse submodules/ChatListUI/Sources/GoldgramPlugins.swift
           python3 build-system/gold-next/test_plugin_engine.py
+          swiftc -frontend -parse submodules/ChatListUI/Sources/GoldgramAI.swift
+          python3 build-system/gold-next/test_goldgram_ai.py
           python3 build-system/gold-next/test_sqlite_browser.py
           python3 build-system/gold-next/test_sqlite_public_capture.py
           python3 build-system/gold-next/test_sqlite_public_edits.py
