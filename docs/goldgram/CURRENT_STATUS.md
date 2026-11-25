@@ -1,6 +1,6 @@
 # CURRENT_STATUS — verified checkpoint
 
- > **2026-11-25 local user date — #267 CI green; manager and import confirmed, local execution tests pending.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
+ > **2026-11-25 local user date — #267 green; bundled plugin runtime and settings rendering confirmed on device.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
 
 ## Current code / CI / device state
 
@@ -9,9 +9,9 @@
 | Feature branch | `gold-next-243-author-search` |
 | HEAD | `ccdb78d54cd638a27de8ecc96a1501ef6466c5c2` (#267 green), direct parent #266 |
 | Last green CI | [#267](https://github.com/sviridovski/Telegram-iOS/actions/runs/45534201805), Native/Mx/Build success |
-| Last installed | #267 — manager, AICC import and required-permission denial confirmed by user screenshots; local execution untested. |
+| Last installed | #267 — manager, AICC import, permission gate, bundled JS execution and dynamic settings confirmed; persistence/callback tests pending. |
 | Failed candidate | #263 attempt 1: Native/Mx success, Build cancelled, logs unavailable; #261 earlier compile error resolved in #262. |
-| Next task | Verify bundled local plugin on device; implement scoped chat UI and native AI networking in next development stage. |
+| Next task | Verify sample action and persistence; #268 scoped chat UI and native AI service. |
 | Recovery | #263 green and swipe confirmed, media completeness issue open. #260 earlier broadly user-confirmed baseline; original port/telegram-13.2 unchanged. |
 
 ## #252 corrections retained in #253
@@ -239,3 +239,9 @@
 - User installed #267 and opened manager, imported AI Command Center 2.1.8. Screenshots confirm manifest name/version, disabled install, detail UI, and expected denial of unsupported required chat.read, chat.write, messages.read, network.fetch, ui.mutate. This is intentional fail-closed behavior in local MVP, not a syntax failure. Actual bundled sample execution, settings rendering/persistence, timeout, rollback and account isolation on device remain unconfirmed. Ask user to test bundled local sample separately. Do not bypass manifest gate or claim original AICC compatibility.
 - Next phase: scoped native chat/draft bridge, explicit selection of currently authorized messages, movable AI button and local UI, native DeepSeek networking with explicit payload approval, Keychain managed outside plugin JS, no auto-send or typing, account/chat/thread/revision binding. Keep old plugin file; adapt for supported APIs rather than granting broad permissions. #266 remains prior media-tested fallback.
 - Separate public discussion concept: user demonstrated official Telegram Discussion Widget can render public comments without sign-in; no code change requested here. Consider only publicly available discussion UI, respecting access boundaries, independent of plugin work.
+
+
+## #267 bundled plugin runtime confirmed on device (2026-11-25)
+
+- User screenshots show local permission dialog (events/settings.read/ui.read), successful execution status «Выполнено», dynamically rendered six sample settings (name, greeting toggle, mode, level, prompt, test button), and opened multiline prompt editor with Save. This confirms on-device runtime and initial schema rendering, in addition to earlier AICC import/manifest checks. Button callback, modified value persistence after full restart, rollback, safe mode, and account isolation not yet independently confirmed on device.
+- Next #268: scoped current-draft and chat UI integration, explicit AI request approval and native DeepSeek service/Keychain; do not grant unimplemented permissions or silently enable background access. Keep #267 as green runtime-tested baseline. No source change or build triggered by this test record.
