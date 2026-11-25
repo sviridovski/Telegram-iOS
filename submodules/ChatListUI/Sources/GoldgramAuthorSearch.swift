@@ -1825,6 +1825,13 @@ private enum GoldgramMediaRules {
         return term.isEmpty || name.range(of: term, options: [.caseInsensitive, .diacriticInsensitive]) != nil ||
             caption.range(of: term, options: [.caseInsensitive, .diacriticInsensitive]) != nil
     }
+    // Ordinary chat-wide TTL uses the send timestamp; fail closed for short,
+    // one-time, unknown or already expired media.
+    static func liveExpiry(timeout: Int32, began: Int32?, sent: Int32, now: Int64) -> Int64? {
+        guard timeout > 60, timeout < Int32.max, let began, began == sent, began > 0 else { return nil }
+        let expiry = Int64(began) + Int64(timeout)
+        return expiry > now ? expiry : nil
+    }
     static func extensionFor(_ name: String, fallback: String) -> String {
         let ext = (name as NSString).pathExtension.lowercased()
         return !ext.isEmpty && ext.count <= 10 && ext.unicodeScalars.allSatisfy {
@@ -1877,7 +1884,25 @@ private struct GoldgramMediaEntry {
         return String(message.text.prefix(400))
     }
 
-    // Only ordinary cloud messages with known source peer and no protection/expiry.
+    static func autoRemoveAttributes(_ message: EngineMessage) -> [AutoremoveTimeoutMessageAttribute] {
+        message.attributes.compactMap { $0 as? AutoremoveTimeoutMessageAttribute }
+    }
+    static func liveExpiry(_ message: EngineMessage) -> Int64? {
+        let timers = autoRemoveAttributes(message)
+        guard timers.count == 1, let timer = timers.first,
+              let peer = message.enginePeers[message.id.peerId] else { return nil }
+        switch peer {
+        case .legacyGroup: break
+        case let .channel(channel): guard case .group = channel.info else { return nil }
+        default: return nil
+        }
+        return GoldgramMediaRules.liveExpiry(timeout: timer.timeout, began: timer.countdownBeginTime,
+            sent: message.timestamp, now: Int64(Date().timeIntervalSince1970))
+    }
+    var nativeOnly: Bool { !Self.autoRemoveAttributes(message).isEmpty }
+
+    // Ordinary live group-wide TTL is visible only as a temporary search row.
+    // Other protection and expiry classes retain the original exclusion.
     static func eligible(_ message: EngineMessage) -> Bool {
         guard message.id.namespace == Namespaces.Message.Cloud, message.id.id > 0,
               GoldgramUnifiedIdentity.sources(message.id.peerId) != nil,
@@ -1886,13 +1911,14 @@ private struct GoldgramMediaEntry {
               !message.flags.isSending, !message.flags.contains(.Failed),
               message.adAttribute == nil,
               !message.attributes.contains(where: {
-                  $0 is AutoremoveTimeoutMessageAttribute || $0 is AutoclearTimeoutMessageAttribute ||
+                  $0 is AutoclearTimeoutMessageAttribute ||
                   $0 is EphemeralMessageAttribute || $0 is EphemeralReplacementMessageAttribute ||
                   $0 is EphemeralOutgoingMessageAttribute || $0 is MediaSpoilerMessageAttribute ||
                   $0 is RestrictedContentMessageAttribute
               }),
               !message.media.contains(where: { $0 is TelegramMediaAction || $0 is TelegramMediaExpiredContent }) else { return false }
-        return acceptsPeer(peer)
+        guard acceptsPeer(peer) else { return false }
+        return autoRemoveAttributes(message).isEmpty || liveExpiry(message) != nil
     }
 
     static func from(_ message: EngineMessage, category: GoldgramMediaCategory?) -> Self? {
@@ -1922,6 +1948,7 @@ private struct GoldgramMediaEntry {
     }
 
     func previewResource() -> (EngineMediaResource, MediaResourceReference, MediaResourceUserContentType, String)? {
+        guard !nativeOnly else { return nil }
         let reference = MessageReference(message._asMessage())
         for media in message.media {
             if category == .photo, let image = media as? TelegramMediaImage,
@@ -2002,7 +2029,7 @@ private final class GoldgramMediaCell: UICollectionViewCell {
         listWidth?.isActive = !grid
         column.axis = grid ? .vertical : .horizontal
         name.text = row.name.isEmpty ? row.category.title : row.name
-        details.text = row.chat + " · " + row.date + (cached ? " · Локально" : "") + (grid ? "" : " · " + row.sizeText)
+        details.text = row.chat + " · " + row.date + (row.nativeOnly ? " · Автоудаление" : "") + (cached ? " · Локально" : "") + (grid ? "" : " · " + row.sizeText)
         let decoded = row.thumbnail.flatMap { $0.count <= 65536 ? decodeTinyThumbnail(data: $0) : nil }.flatMap { UIImage(data: $0) }
         image.image = decoded ?? UIImage(systemName: row.category.symbol)
         image.contentMode = decoded == nil ? .scaleAspectFit : .scaleAspectFill
@@ -2024,6 +2051,9 @@ private final class GoldgramMediaCenter: UIViewController, UICollectionViewDataS
     private let queryTask = MetaDisposable()
     private let dialogsTask = MetaDisposable()
     private let cacheTask = MetaDisposable()
+    private let timedRowsTask = MetaDisposable()
+    private var watchedTimedIds = Set<EngineMessage.Id>()
+    private var expiryWork: DispatchWorkItem?
     private let previewTask = MetaDisposable()
     private let downloadTask = MetaDisposable()
     private var category: GoldgramMediaCategory?
@@ -2064,7 +2094,7 @@ private final class GoldgramMediaCenter: UIViewController, UICollectionViewDataS
 
     init(context: AccountContext) { self.context = context; super.init(nibName: nil, bundle: nil) }
     required init?(coder: NSCoder) { return nil }
-    deinit { queryTask.dispose(); dialogsTask.dispose(); cacheTask.dispose(); previewTask.dispose(); downloadTask.dispose() }
+    deinit { queryTask.dispose(); dialogsTask.dispose(); cacheTask.dispose(); timedRowsTask.dispose(); expiryWork?.cancel(); previewTask.dispose(); downloadTask.dispose() }
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -2131,6 +2161,7 @@ private final class GoldgramMediaCenter: UIViewController, UICollectionViewDataS
             return
         }
         if !started { restart() }
+        else if !watchedTimedIds.isEmpty { rebuild() }
         else { updateStatus() }
     }
 
@@ -2166,6 +2197,7 @@ private final class GoldgramMediaCenter: UIViewController, UICollectionViewDataS
 
     private func clear() {
         generation += 1; busy = false; activeFamily = nil; queryTask.set(nil); dialogsTask.set(nil); cacheTask.set(nil)
+        timedRowsTask.set(nil); watchedTimedIds.removeAll(); expiryWork?.cancel(); expiryWork = nil
         cacheIds.removeAll(); remoteUnavailable = false; remoteResponded = false
         cachedHistoryLatest = nil; remoteHistoryLatest = nil
         cachedHistoryCount = 0; remoteHistoryCount = 0; cachedHistoryPending = false
@@ -2357,7 +2389,43 @@ private final class GoldgramMediaCenter: UIViewController, UICollectionViewDataS
         }
     }
 
+    private func watchTimedRows() {
+        let ids = Set(found.values.filter { $0.nativeOnly }.map { $0.message.id })
+        guard ids != watchedTimedIds else { return }
+        watchedTimedIds = ids
+        timedRowsTask.set(nil)
+        guard !ids.isEmpty else { return }
+        let token = generation
+        timedRowsTask.set((context.engine.data.subscribe(TelegramEngine.EngineData.Item.Messages.Messages(ids: ids))
+            |> deliverOnMainQueue).start(next: { [weak self = self] messages in
+            guard let self, self.accountOK, self.generation == token, self.watchedTimedIds == ids else { return }
+            for id in ids {
+                guard self.found[id]?.nativeOnly == true else { continue }
+                guard let message = messages[id], let row = GoldgramMediaEntry.from(message, category: self.category),
+                      row.nativeOnly, self.allowed[id.peerId] != nil,
+                      self.author == nil || message.author?.id == self.author?.id,
+                      self.from == nil || message.timestamp >= (self.from ?? 0),
+                      self.through == nil || message.timestamp <= (self.through ?? Int32.max),
+                      GoldgramMediaRules.acceptsSize(row.size, minimum: self.minSize),
+                      GoldgramMediaRules.matches(self.query, name: row.name, caption: message.text) else {
+                    self.found.removeValue(forKey: id); self.cacheIds.remove(id); continue
+                }
+                self.found[id] = row
+            }
+            self.rebuild()
+        }))
+    }
+
     private func rebuild() {
+        // No persisted copy: prune timed rows at expiry and on native deletion.
+        found = found.filter { !$0.value.nativeOnly || GoldgramMediaEntry.liveExpiry($0.value.message) != nil }
+        cacheIds.formIntersection(found.keys)
+        expiryWork?.cancel(); expiryWork = nil
+        if let expiry = found.values.compactMap({ GoldgramMediaEntry.liveExpiry($0.message) }).min() {
+            let work = DispatchWorkItem { [weak self = self] in self?.rebuild() }
+            expiryWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + max(0.1, Double(expiry) - Date().timeIntervalSince1970), execute: work)
+        }
         rows = found.values.sorted {
             switch sort {
             case 1: if $0.message.timestamp != $1.message.timestamp { return $0.message.timestamp < $1.message.timestamp }
@@ -2374,7 +2442,7 @@ private final class GoldgramMediaCenter: UIViewController, UICollectionViewDataS
             }
             return $0.message.id.id > $1.message.id.id
         }
-        collection.reloadData(); updateStatus()
+        collection.reloadData(); updateStatus(); watchTimedRows()
     }
     private func updateStatus() {
         filterButton.setTitle("Фильтры", for: .normal)
@@ -2493,6 +2561,14 @@ private final class GoldgramMediaCenter: UIViewController, UICollectionViewDataS
     }
     private func details(_ row: GoldgramMediaEntry) {
         guard accountOK, GoldgramMediaEntry.eligible(row.message) else { return }
+        if row.nativeOnly {
+            // Use Telegram's own message UI; no Quick Look, download or bookmark.
+            revalidate(row) { [weak self = self] current in
+                guard current.nativeOnly else { return }
+                self?.jump(current.message.id)
+            }
+            return
+        }
         let alert = UIAlertController(title: row.name.isEmpty ? row.category.title : row.name,
             message: "\(row.category.title) · \(row.sizeText)\n\(row.chat)\n\(row.author) · \(row.date)\n\n" + String(row.message.text.prefix(1000)),
             preferredStyle: .alert)
@@ -2503,6 +2579,7 @@ private final class GoldgramMediaCenter: UIViewController, UICollectionViewDataS
         alert.addAction(UIAlertAction(title: "В личное избранное", style: .default) { [weak self = self] _ in
             self?.revalidate(row) { [weak self = self] current in
                 guard let self else { return }
+                guard !current.nativeOnly else { return }
                 GoldgramAuthorSearchBridge.addBookmark(from: self, context: self.context, message: current.message)
             }
         })
@@ -2528,10 +2605,13 @@ private final class GoldgramMediaCenter: UIViewController, UICollectionViewDataS
         }))
     }
     private func open(_ row: GoldgramMediaEntry) {
-        revalidate(row) { [weak self = self] current in self?.checkCache(current, afterDownload: false) }
+        revalidate(row) { [weak self = self] current in
+            guard !current.nativeOnly else { return }
+            self?.checkCache(current, afterDownload: false)
+        }
     }
     private func checkCache(_ row: GoldgramMediaEntry, afterDownload: Bool) {
-        guard accountOK, let resource = row.previewResource() else { error("Откройте файл в исходном сообщении."); return }
+        guard accountOK, !row.nativeOnly, let resource = row.previewResource() else { error("Откройте файл в исходном сообщении."); return }
         previewGeneration += 1
         let token = previewGeneration
         previewTask.set((context.engine.resources.data(resource: resource.0, pathExtension: resource.3)
@@ -2556,7 +2636,7 @@ private final class GoldgramMediaCenter: UIViewController, UICollectionViewDataS
     }
     private func download(_ row: GoldgramMediaEntry) {
         revalidate(row) { [weak self = self] current in
-            guard let self, let resource = current.previewResource(), self.presentedViewController == nil else { return }
+            guard let self, !current.nativeOnly, let resource = current.previewResource(), self.presentedViewController == nil else { return }
             self.previewGeneration += 1
             let token = self.previewGeneration
             let alert = UIAlertController(title: "Загрузка", message: "Файл сохраняется в штатном медиакэше Telegram.", preferredStyle: .alert)

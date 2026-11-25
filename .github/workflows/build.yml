@@ -157,6 +157,8 @@ jobs:
         with:
           submodules: false
           fetch-depth: 0
+          # Keep commit history/build number, but avoid fetching historical file blobs.
+          filter: blob:none
       - name: Checkout pinned submodules efficiently
         shell: bash
         run: |

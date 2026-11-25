@@ -103,6 +103,12 @@ precondition(GoldgramMediaRules.matches("тест", name: "a", caption: "Тес�
 precondition(!GoldgramMediaRules.matches("abc", name: "def", caption: ""))
 precondition(GoldgramMediaRules.extensionFor("a.PDF", fallback: "bin") == "pdf")
 precondition(GoldgramMediaRules.extensionFor("a.bad/unsafe", fallback: "bin") == "bin")
+precondition(GoldgramMediaRules.liveExpiry(timeout: 604800, began: 100, sent: 100, now: 101) == 604900)
+precondition(GoldgramMediaRules.liveExpiry(timeout: 86400, began: 100, sent: 100, now: 86500) == nil)
+precondition(GoldgramMediaRules.liveExpiry(timeout: 60, began: 100, sent: 100, now: 101) == nil)
+precondition(GoldgramMediaRules.liveExpiry(timeout: Int32.max, began: 100, sent: 100, now: 101) == nil)
+precondition(GoldgramMediaRules.liveExpiry(timeout: 604800, began: nil, sent: 100, now: 101) == nil)
+precondition(GoldgramMediaRules.liveExpiry(timeout: 604800, began: 101, sent: 100, now: 102) == nil)
 print("Goldgram #261 media category, size, matching and extension rules OK")
 '''
 with tempfile.TemporaryDirectory() as tmp:
@@ -162,3 +168,15 @@ assert "cacheIds.remove(message.id)" in media_screen
 assert "self.remoteHistoryLatest = exact.map" in media_screen
 assert "let row = GoldgramMediaEntry.from(message, category: category)" in media_screen
 print("Goldgram #265 always merge bounded current-peer native history; preserve source labels and guards")
+
+# #266: active ordinary group TTL is native-view-only and expires in memory.
+entry = native.split("private struct GoldgramMediaEntry", 1)[1].split("private final class GoldgramMediaPreview", 1)[0]
+assert "autoRemoveAttributes(message).isEmpty || liveExpiry(message) != nil" in entry
+assert "guard !nativeOnly else { return nil }" in entry
+for guard in ("AutoclearTimeoutMessageAttribute", "EphemeralMessageAttribute", "MediaSpoilerMessageAttribute", "RestrictedContentMessageAttribute", "TelegramMediaExpiredContent", "isCopyProtected()", "containsSecretMedia"):
+    assert guard in entry
+assert "Messages.Messages(ids: ids)" in media_screen and "timedRowsTask.dispose()" in deinit_line
+assert "found = found.filter" in media_screen and "expiryWork?.cancel()" in media_screen
+assert "guard !current.nativeOnly else { return }" in media_screen
+assert "guard accountOK, !row.nativeOnly, let resource" in media_screen
+print("Goldgram #266 group TTL native-only, expiry, deletion and export gates OK")
