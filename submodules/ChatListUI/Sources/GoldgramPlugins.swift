@@ -132,6 +132,7 @@ private final class GoldgramPluginStore {
                 guard let key = item["key"] as? String, (safeKey(key) || (key == "apiKey" && item["type"] as? String == "secret")), seen.insert(key).inserted,
                       let title = item["title"] as? String, title.count <= 160,
                       let kind = item["type"] as? String, ["toggle", "text", "textarea", "select", "slider", "stepper", "button", "secret"].contains(kind) else { return nil }
+                if let source = item["modelSource"] as? String, kind != "select" || source != "deepseek" { return nil }
                 if kind == "select" {
                     guard let options = item["options"] as? [[String: Any]], options.count <= 50,
                           options.allSatisfy({ ($0["value"] as? String ?? "").count <= 200 && ($0["title"] as? String ?? "").count <= 160 }) else { return nil }
@@ -231,6 +232,9 @@ private final class GoldgramPluginRun: NSObject, WKNavigationDelegate, WKScriptM
         input["context"] = context
         input["pluginId"] = record.id.uuidString
         input["managedKey"] = !account.isEmpty && credential.readKey() != nil
+        if grants.contains("network.fetch"), !account.isEmpty, let cache = credential.modelCatalog {
+            input["modelCatalog"] = ["models": cache.models, "updatedAt": cache.updated, "stale": !GoldgramNetworkPolicy.fresh(updated: cache.updated, now: Date().timeIntervalSince1970)]
+        }
         if let key { input["key"] = key }
         if let value { input["value"] = value }
         payload = (try? JSONSerialization.data(withJSONObject: input, options: [.fragmentsAllowed])).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
@@ -370,8 +374,9 @@ function goldWorkerMain() {
         }
         if (it.type === "select") {
           i.options = (Array.isArray(it.options)?it.options:[]).slice(0,50).filter(o=>o && typeof o.value === "string").map(o=>({value:o.value.slice(0,200),title:String(o.title||o.value).slice(0,160)}));
-          if (!i.options.length) continue;
-          i.default = i.options.some(o=>o.value===it.default)?it.default:i.options[0].value;
+          if (it.modelSource === "deepseek" && allowed("network.fetch")) i.modelSource = "deepseek";
+          if (!i.options.length && i.modelSource !== "deepseek") continue;
+          i.default = i.modelSource === "deepseek" && typeof it.default === "string" ? it.default.slice(0,100) : (i.options.some(o=>o.value===it.default)?it.default:(i.options[0]?.value||""));
         }
         if (it.type !== "button" && !own(settings,i.key)) write(settings,i.key,i.default);
         items.push(i);
@@ -381,7 +386,7 @@ function goldWorkerMain() {
     };
     const logging = Object.freeze({log,info:log,warn:log,error:log});
     const base = {
-      runtime:Object.freeze({apiVersion:()=>5,features:()=>({scopedChat:!!ctx.peerId,localOnly:!allowed("network.fetch")}),pluginId:()=>p.pluginId||"",hasPermission:allowed,grants:()=>Array.from(grants)}),
+      runtime:Object.freeze({apiVersion:()=>5,features:()=>({scopedChat:!!ctx.peerId,localOnly:!allowed("network.fetch"),modelDiscovery:allowed("network.fetch")}),pluginId:()=>p.pluginId||"",hasPermission:allowed,grants:()=>Array.from(grants)}),
       settings:Object.freeze({addSection:section,define:section,getPlugin:(k,f)=>{need("settings.read");if(isSecret(k))return p.managedKey?keyAlias:f;return own(settings,k)?settings[k]:f;},setPlugin:(k,v)=>{need("settings.read");if(isSecret(k)){if(v===""||v===keyAlias)return true;throw Error("Use native secure field");}return write(settings,k,v);}}),
       storage:Object.freeze({get:k=>{need("storage");if(isSecret(k))return p.managedKey?keyAlias:null;return own(storage,k)?storage[k]:null;},set:(k,v)=>{need("storage");if(isSecret(k)){if(v===keyAlias&&p.managedKey)return true;throw Error("Use native secure field");}return write(storage,k,v);},getJSON:(k,f)=>{need("storage");return own(storage,k)?storage[k]:f;},setJSON:(k,v)=>{need("storage");return write(storage,k,v);},remove:k=>{need("storage");delete storage[k];}}),
       events:Object.freeze({on:(name,fn)=>{need("events");if (!["plugin.start","settings.changed","settings.action"].includes(name)||typeof fn!=="function")return null; const list=handlers[name]||(handlers[name]=[]);if(list.length<24)list.push(fn);return String(list.length);}}),
@@ -395,7 +400,26 @@ function goldWorkerMain() {
     if(allowed("messages.read")) {const rows=Array.isArray(ctx.messages)?ctx.messages:[];const visible=n=>rows.slice(-Math.max(1,Math.min(36,Number(n)||8)));base.messages=Object.freeze({visible,current:visible,get:id=>rows.find(m=>String(m.id)===String(id))||null,getSelectedMessage:()=>ctx.selectedMessage||null});}
     if(allowed("ui.mutate")||allowed("ui.read")) base.ui=Object.freeze({showToast:toast,showSheet:v=>localOutput(v.title||"AI",v.text||""),addFloatingButton:(cfg,fn)=>{need("ui.mutate");if(!cfg||typeof cfg.id!=="string"||typeof fn!=="function")throw Error("Invalid button");floating={id:cfg.id.slice(0,100),title:String(cfg.title||"AI").slice(0,12)};buttons[floating.id]=fn;return floating.id;},removeFloatingButton:id=>{need("ui.mutate");delete buttons[id];if(floating&&floating.id===id)floating=null;},addMessageContextAction:(cfg,fn)=>{need("ui.mutate");if(!cfg||typeof cfg.id!=="string"||typeof fn!=="function")throw Error("Invalid action");const id=cfg.id.slice(0,100);if(Object.keys(actions).length>=24&&!own(actions,id))throw Error("Too many actions");actions[id]=fn;actionTitles[id]=String(cfg.title||id).slice(0,160);return id;},removeMessageContextAction:id=>{need("ui.mutate");delete actions[id];delete actionTitles[id];},removeChatMenuButton:()=>{need("ui.mutate");},select:async(title,choices)=>{need("ui.mutate");const r=await rpc("ui.select",{title:String(title),choices});return r.value;},setChatHeaderBadge:()=>{need("ui.mutate");},clearChatHeaderBadge:()=>{need("ui.mutate");}});
     if(allowed("clipboard"))base.clipboard=Object.freeze({setText:t=>{output={kind:"clipboard",title:"Копировать результат",text:String(t).slice(0,16000)};return true;}});
-    if(allowed("network.fetch"))base.network=Object.freeze({fetch:async(url,opt)=>{if(!opt||opt.proxy)throw Error("Telegram proxy not supported");const r=await rpc("network.fetch",{url:String(url),method:String(opt.method||"GET"),body:opt.body,timeoutMs:opt.timeoutMs||opt.timeout||75000});return {status:r.status,ok:r.status>=200&&r.status<300,text:()=>Promise.resolve(r.body),json:()=>Promise.resolve(JSON.parse(r.body))};}});
+    if(allowed("network.fetch")){
+      let catalog=p.modelCatalog||{models:[],updatedAt:0,stale:true};
+      const copyCatalog=()=>JSON.parse(JSON.stringify(catalog));
+      const fetch=async(url,opt={})=>{
+        if(!opt||opt.proxy)throw Error("Telegram proxy not supported");
+        const u=String(url), method=String(opt.method||"GET").toUpperCase();
+        const r=await rpc("network.fetch",{url:u,method,body:opt.body,timeoutMs:opt.timeoutMs||opt.timeout||75000});
+        if(u==="https://api.deepseek.com/models"&&method==="GET"&&r.status===200){
+          const list=JSON.parse(r.body);
+          catalog={models:list.data,updatedAt:Date.now()/1000,stale:false};
+        }
+        return {status:r.status,ok:r.status>=200&&r.status<300,text:()=>Promise.resolve(r.body),json:()=>Promise.resolve(JSON.parse(r.body))};
+      };
+      base.network=Object.freeze({fetch,models:()=>copyCatalog(),refreshModels:async(force=false)=>{
+        if(!force&&!catalog.stale&&catalog.models.length)return copyCatalog();
+        const r=await fetch("https://api.deepseek.com/models",{method:"GET",timeoutMs:15000});
+        if(!r.ok)throw Error("Model discovery HTTP "+r.status);
+        return copyCatalog();
+      }});
+    }
     if(allowed("storage")){
       const files=Object.create(null);
       base.files=Object.freeze({writeJSON:(name,value)=>{if(typeof name!=="string"||!name.endsWith(".json")||name.length>100||/[\\/]/.test(name))throw Error("Invalid filename");const raw=JSON.stringify(value);if(typeof raw!=="string"||raw.length>65536)throw Error("File too large");files[name]=raw;return {name};},readJSON:name=>own(files,name)?JSON.parse(files[name]):null,pick:async()=>{const r=await rpc("files.pick",{});return r.value===null?null:{value:r.value};},share:async name=>{if(!own(files,name))throw Error("Unknown file");await rpc("files.share",{name,body:files[name]});return true;}});
@@ -691,15 +715,16 @@ private final class GoldgramPluginDetail: UITableViewController {
     override func numberOfSections(in tableView: UITableView) -> Int { 1 + sections.count }
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? { section == 0 ? "Управление" : sections[section-1]["title"] as? String }
     private func items(_ section: Int) -> [[String: Any]] { sections[section-1]["items"] as? [[String: Any]] ?? [] }
-    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? 8 : items(section).count }
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? (store.record(id)?.grants.contains("network.fetch") == true ? 9 : 8) : items(section).count }
     override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? { section == 0 ? status : nil }
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
         cell.textLabel?.numberOfLines = 0; cell.detailTextLabel?.numberOfLines = 2
         if indexPath.section == 0 {
             let enabled = store.record(id)?.enabled == true
-            cell.textLabel?.text = [enabled ? "Выключить" : "Включить и разрешить", run == nil ? "Запустить / обновить настройки" : "Остановить", "Редактор JavaScript", "Разрешения", "Консоль", "Откатить код", "Удалить плагин", "Показывать кнопку в чате"][indexPath.row]
+            cell.textLabel?.text = [enabled ? "Выключить" : "Включить и разрешить", run == nil ? "Запустить / обновить настройки" : "Остановить", "Редактор JavaScript", "Разрешения", "Консоль", "Откатить код", "Удалить плагин", "Показывать кнопку в чате", "Каталог моделей DeepSeek"][indexPath.row]
             if indexPath.row == 7 { cell.detailTextLabel?.text = store.record(id)?.chatButtonHidden == true ? "Выключено" : "Включено" }
+            if indexPath.row == 8 { cell.detailTextLabel?.text = "Доступные модели для ключа этого плагина" }
         } else {
             let item = items(indexPath.section)[indexPath.row]
             let key = item["key"] as? String ?? ""
@@ -751,6 +776,10 @@ private final class GoldgramPluginDetail: UITableViewController {
             guard let previous = p.previousCode else { showPluginError("Нет предыдущей версии."); return }
             p.previousCode = p.code; p.code = previous; p.enabled = false; p.grants = []; p.settingsSchema = nil; p.floatingTitle = nil; p.contextActions = nil; p.confirmationPolicy = nil
             if store.put(p) { sections = []; status = "Код восстановлен; разрешите заново."; title = p.manifest.name; tableView.reloadData() }
+        case 8:
+            guard p.enabled, !store.state.safe, p.grants.contains("network.fetch") else { return }
+            let screen = GoldgramModelCatalogScreen(config: GoldgramAIConfig(account: account + "." + id.uuidString), valid: catalogValidity(p))
+            navigationController?.pushViewController(screen, animated: true)
         case 7:
             p.chatButtonHidden = !(p.chatButtonHidden ?? false)
             if !store.put(p) { showPluginError("Не удалось сохранить.") }; tableView.reloadData()
@@ -759,7 +788,7 @@ private final class GoldgramPluginDetail: UITableViewController {
             alert.addAction(UIAlertAction(title: "Удалить", style: .destructive) { [weak self] _ in
                 guard let self else { return }; self.store.refresh(); var next = self.store.state
                 next.plugins.removeAll { $0.id == self.id }
-                if self.store.save(next) { self.navigationController?.popViewController(animated: true) }
+                if self.store.save(next) { GoldgramAIConfig(account: self.account + "." + self.id.uuidString).clearCatalog(); self.navigationController?.popViewController(animated: true) }
             })
             alert.addAction(UIAlertAction(title: "Отмена", style: .cancel)); present(alert, animated: true)
         }
@@ -802,6 +831,14 @@ private final class GoldgramPluginDetail: UITableViewController {
             }
         }
     }
+    private func catalogValidity(_ record: GoldgramPluginRecord) -> () -> Bool {
+        return { [weak self] in
+            guard let self, self.store.isCurrent() else { return false }
+            let latest = GoldgramPluginStore(account: self.account, isCurrent: self.store.isCurrent)
+            guard latest.failure == nil, !latest.state.safe, let current = latest.record(record.id), current.enabled, current.code == record.code, current.grants == record.grants, current.grants.contains("network.fetch") else { return false }
+            return true
+        }
+    }
     private func editSetting(_ item: [String: Any], record: GoldgramPluginRecord) {
         guard let key = item["key"] as? String, let kind = item["type"] as? String else { return }
         let credential = GoldgramAIConfig(account: account + "." + id.uuidString)
@@ -826,6 +863,15 @@ private final class GoldgramPluginDetail: UITableViewController {
             guard let encoded = GoldgramPluginStore.encodeValues(values) else { self.showPluginError("Слишком большое значение."); return }
             current.settings = encoded
             if self.store.put(current) { self.execute(event: "settings.changed", key: key, value: value) }
+        }
+        if kind == "select", item["modelSource"] as? String == "deepseek", record.grants.contains("network.fetch") {
+            let screen = GoldgramModelCatalogScreen(config: credential, valid: catalogValidity(record), fallback: item["options"] as? [[String: String]] ?? [], selected: old as? String, choose: { [weak self] model in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                    guard let self, self.navigationController?.topViewController === self else { return }
+                    apply(model)
+                }
+            })
+            navigationController?.pushViewController(screen, animated: true); return
         }
         if kind == "button" { execute(event: "settings.action", key: key); return }
         if kind == "toggle" { apply(!(old as? Bool ?? false)); return }

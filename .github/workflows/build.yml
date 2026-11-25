@@ -256,6 +256,11 @@ jobs:
           "$RUNNER_TEMP/goldgram-event-policy-test"
           xcrun swiftc -typecheck -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -target arm64-apple-ios15.0 build-system/gold-next/GoldgramHistoryStore.swift
 
+      - name: Resolve parent cache key
+        id: bazel_parent
+        shell: bash
+        run: echo "sha=$(git rev-parse HEAD^)" >> "$GITHUB_OUTPUT"
+
       - name: Restore bounded Bazel disk cache
         id: bazel_restore
         uses: actions/cache/restore@v4
@@ -263,6 +268,7 @@ jobs:
           path: /private/var/tmp/goldgram-bazel-action-cache
           key: gold-next-bazel-xcode27-${{ hashFiles('versions.json', '.bazelrc', 'MODULE.bazel.lock') }}-${{ github.sha }}
           restore-keys: |
+            gold-next-bazel-xcode27-${{ hashFiles('versions.json', '.bazelrc', 'MODULE.bazel.lock') }}-${{ steps.bazel_parent.outputs.sha }}
             gold-next-bazel-xcode27-${{ hashFiles('versions.json', '.bazelrc', 'MODULE.bazel.lock') }}-
 
       - name: Build clean Swiftgram

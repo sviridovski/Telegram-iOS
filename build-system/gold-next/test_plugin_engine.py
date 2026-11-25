@@ -8,8 +8,8 @@ example = source.split('static let example = #"""\n',1)[1].split('\n"""#',1)[0]
 import json
 harness = """
 const assert = require('node:assert/strict');
-let result, requests=[];
-global.self = {postMessage: raw => {const v=JSON.parse(raw);if(v.rpc!==undefined){requests.push(v);self.onmessage({data:{rpcResult:v.rpc,result:{status:200,body:'{"choices":[{"message":{"content":"mock answer"}}]}'}}});}else result=v;}};
+let result, requests=[], failModels=false;
+global.self = {postMessage: raw => {const v=JSON.parse(raw);if(v.rpc!==undefined){requests.push(v);const isModels=v.args.url==="https://api.deepseek.com/models";const response=isModels?{status:failModels?503:200,body:JSON.stringify({object:"list",data:[{id:"fresh-model",object:"model"}]})}:{status:200,body:'{"choices":[{"message":{"content":"mock answer"}}]}'};self.onmessage({data:{rpcResult:v.rpc,result:response}});}else result=v;}};
 """ + worker + """
 goldWorkerMain();
 const sample = """ + json.dumps(example) + """;
@@ -43,6 +43,24 @@ const a2=await run('A','context.tap',a1.storage,'shared'); assert.equal(a2.stora
 await self.onmessage({data:{source:'throw Error("test failure")',grants:compat,event:'plugin.start'}}); assert.ok(result.error);
 const b2=await run('B','floating.tap',b1.storage); assert.equal(b2.storage.count,2);
 console.log('Goldgram #271 equal local IDs, independent counters and failure isolation OK');
+const catalogScript='GGAPI.settings.addSection({title:"Models",items:[{type:"select",key:"model",title:"Model",default:"fallback",options:[],modelSource:"deepseek"}]}); GGAPI.events.on("settings.action",async()=>{const c=await GGAPI.network.refreshModels(true); GGAPI.storage.set("model",c.models[0].id);});';
+await self.onmessage({data:{source:catalogScript,grants:compat,event:'plugin.start'}});
+assert.equal(result.sections[0].items[0].modelSource,'deepseek'); assert.equal(result.settings.model,'fallback');
+const cached='GGAPI.events.on("settings.action",async()=>{const c=await GGAPI.network.refreshModels(); GGAPI.storage.set("model",c.models[0].id);});';
+const before=requests.length;
+await self.onmessage({data:{source:cached,grants:compat,event:'settings.action',modelCatalog:{models:[{id:'cached-model'}],updatedAt:100,stale:false}}});
+assert.equal(result.storage.model,'cached-model'); assert.equal(requests.length,before);
+await self.onmessage({data:{source:catalogScript,grants:compat,event:'settings.action',modelCatalog:{models:[{id:'cached-model'}],updatedAt:100,stale:false}}});
+assert.equal(result.storage.model,'fresh-model');
+assert.equal(requests.at(-1).args.url,'https://api.deepseek.com/models');
+assert.equal(requests.at(-1).args.method,'GET'); assert.equal(requests.at(-1).args.body,undefined);
+failModels=true;
+const failure='GGAPI.events.on("settings.action",async()=>{try{await GGAPI.network.refreshModels(true)}catch(e){GGAPI.storage.set("model",GGAPI.network.models().models[0].id)}});';
+await self.onmessage({data:{source:failure,grants:compat,event:'settings.action',modelCatalog:{models:[{id:'cached-model'}],updatedAt:100,stale:true}}});
+assert.equal(result.storage.model,'cached-model'); failModels=false;
+await self.onmessage({data:{source:catalogScript,grants:compat.filter(x=>x!=='network.fetch'),event:'plugin.start'}});
+assert.equal(result.sections[0].items.length,0);
+console.log('Goldgram #272 declarative model selector, cache hit and permission gating OK');
 })().catch(e=>{console.error(e);process.exit(1)});
 """
 with tempfile.TemporaryDirectory() as tmp:

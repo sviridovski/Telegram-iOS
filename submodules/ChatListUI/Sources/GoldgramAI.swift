@@ -11,6 +11,48 @@ public struct GoldgramAIDraft: Equatable {
     public init(identity: String, text: String) { self.identity = identity; self.text = text }
 }
 
+// #272: provider endpoint policy and sanitized model catalog; no credentials in JS.
+enum GoldgramNetworkPolicy {
+    enum Route: Equatable { case models, completion }
+    static func route(url: String?, method: String?, hasBody: Bool) -> Route? {
+        switch (url, method) {
+        case ("https://api.deepseek.com/models", "GET"): return hasBody ? nil : .models
+        case ("https://api.deepseek.com/chat/completions", "POST"): return hasBody ? .completion : nil
+        default: return nil
+        }
+    }
+    static func modelID(_ id: String) -> Bool {
+        !id.isEmpty && id.utf8.count <= 100 && id.utf8.allSatisfy { (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || $0 == 45 || $0 == 46 || $0 == 95 || $0 == 58 }
+    }
+    static func catalog(_ data: Data) -> [[String: Any]]? {
+        guard data.count <= 128 * 1024, let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              root["object"] as? String == "list", let rows = root["data"] as? [[String: Any]], rows.count <= 256 else { return nil }
+        var seen = Set<String>()
+        var result: [[String: Any]] = []
+        for row in rows {
+            guard let id = row["id"] as? String, modelID(id), row["object"] as? String == "model", seen.insert(id).inserted else { continue }
+            var model: [String: Any] = ["id": id, "object": "model", "owned_by": "deepseek"]
+            if let name = row["name"] as? String, !name.isEmpty { model["name"] = String(name.prefix(120)) }
+            for field in ["context_window", "max_output_tokens"] {
+                if let value = row[field] as? Int, value > 0, value <= 100_000_000 { model[field] = value }
+            }
+            for field in ["input_modalities", "output_modalities"] {
+                if let values = row[field] as? [String] { model[field] = Array(Set(values.filter { ["text","image","audio","video"].contains($0) })).sorted() }
+            }
+            if let effort = row["effort"] as? [String: Any], let levels = effort["supported_levels"] as? [String] {
+                let supported = Array(levels.filter { ["low","medium","high","max"].contains($0) }.prefix(4))
+                var clean: [String: Any] = ["supported_levels": supported]
+                if let level = effort["default_level"] as? String, supported.contains(level) { clean["default_level"] = level }
+                model["effort"] = clean
+            }
+            result.append(model)
+            if result.count == 50 { break }
+        }
+        return result.isEmpty ? nil : result
+    }
+    static func fresh(updated: Double, now: Double) -> Bool { updated > 0 && now >= updated && now - updated < 86400 }
+}
+
 struct GoldgramAIConfig {
     let account: String
     private var prefix: String { "goldgram.ai.v1." + account + "." }
@@ -34,6 +76,22 @@ struct GoldgramAIConfig {
         get { (UserDefaults.standard.object(forKey: prefix + "horizontal") as? NSNumber)?.doubleValue ?? 0.0 }
         nonmutating set { UserDefaults.standard.set(newValue, forKey: prefix + "horizontal") }
     }
+    private var catalogKey: String { prefix + "modelCatalog.v1" }
+    var modelCatalog: (models: [[String: Any]], updated: Double)? {
+        guard readKey() != nil,
+              let stored = UserDefaults.standard.data(forKey: catalogKey), stored.count <= 128 * 1024,
+              let envelope = try? JSONSerialization.jsonObject(with: stored) as? [String: Any],
+              let updated = envelope["updated"] as? Double, updated.isFinite, updated > 0,
+              let payload = try? JSONSerialization.data(withJSONObject: ["object":"list","data":envelope["data"] ?? []]),
+              let models = GoldgramNetworkPolicy.catalog(payload) else { return nil }
+        return (models, updated)
+    }
+    func saveCatalog(_ models: [[String: Any]]) {
+        if let data = try? JSONSerialization.data(withJSONObject: ["updated":Date().timeIntervalSince1970,"data":models]), data.count <= 128 * 1024 {
+            UserDefaults.standard.set(data, forKey: catalogKey)
+        }
+    }
+    func clearCatalog() { UserDefaults.standard.removeObject(forKey: catalogKey) }
     private var keyQuery: [String: Any] {
         [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "GoldgramAI.DeepSeek.v1", kSecAttrAccount as String: account]
     }
@@ -50,16 +108,18 @@ struct GoldgramAIConfig {
         guard !value.isEmpty, value.utf8.count <= 512, !value.contains("\n"), !value.contains("\r") else { return false }
         let data = Data(value.utf8)
         let update = SecItemUpdate(keyQuery as CFDictionary, [kSecValueData as String: data] as CFDictionary)
-        if update == errSecSuccess { return true }
+        if update == errSecSuccess { clearCatalog(); return true }
         guard update == errSecItemNotFound else { return false }
         var query = keyQuery
         query[kSecValueData as String] = data
         query[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-        return SecItemAdd(query as CFDictionary, nil) == errSecSuccess
+        let saved = SecItemAdd(query as CFDictionary, nil) == errSecSuccess
+        if saved { clearCatalog() }; return saved
     }
     func deleteKey() -> Bool {
         let status = SecItemDelete(keyQuery as CFDictionary)
-        return status == errSecSuccess || status == errSecItemNotFound
+        let deleted = status == errSecSuccess || status == errSecItemNotFound
+        if deleted { clearCatalog() }; return deleted
     }
 }
 
@@ -129,24 +189,13 @@ final class GoldgramAISettings: UITableViewController {
             if !self.config.saveKey(value) { self.notice("Не удалось сохранить ключ.") }
         }
         case 2:
-            let alert = UIAlertController(title: "Модель DeepSeek", message: "ID Pro/Flash взяты из AI Commander 2.1.8. Доступность зависит от API.", preferredStyle: .alert)
-            for model in ["deepseek-v4-pro", "deepseek-flash", "deepseek-chat", "deepseek-reasoner"] {
-                alert.addAction(UIAlertAction(title: model, style: .default) { [weak self] _ in
-                    guard let self, self.isCurrent() else { return }
-                    self.config.model = model; self.tableView.reloadData()
-                })
-            }
-            alert.addAction(UIAlertAction(title: "Другой ID", style: .default) { [weak self] _ in
-                guard let self else { return }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
-                    guard let self else { return }
-                    self.edit("ID модели DeepSeek", value: self.config.model, secure: false) { [weak self] value in
-                        let model = value.trimmingCharacters(in: .whitespacesAndNewlines)
-                        if !model.isEmpty && model.utf8.count <= 100 { self?.config.model = model }
-                    }
-                }
+            let screen = GoldgramModelCatalogScreen(config: config, valid: { [weak self] in
+                guard let self else { return false }; return self.isCurrent() && goldgramAIAllowed(account: self.config.account)
+            }, fallback: [["value":"deepseek-v4-pro","title":"deepseek-v4-pro"],["value":"deepseek-flash","title":"deepseek-flash"]], selected: config.model, choose: { [weak self] model in
+                guard let self, self.isCurrent(), GoldgramNetworkPolicy.modelID(model) else { return }
+                self.config.model = model; self.tableView.reloadData()
             })
-            alert.addAction(UIAlertAction(title: "Отмена", style: .cancel)); present(alert, animated: true)
+            navigationController?.pushViewController(screen, animated: true)
         case 3:
             let editor = GoldgramAIPromptEditor(prompt: config.prompt) { [weak self] value in
                 guard let self, self.isCurrent(), !value.isEmpty, value.utf8.count <= 12000 else { return }
@@ -518,8 +567,8 @@ public final class GoldgramAIButtonGroup: UIView {
     }
 }
 
-// Native request broker. No arbitrary URLs, no raw credentials in the worker,
-// no automatic request: user approves the exact model and payload each time.
+// Native request broker. Fixed provider routes, managed credentials, and explicit
+// user actions; chat payload confirmation follows the per-plugin consent policy.
 @MainActor
 final class GoldgramPluginNetwork: NSObject, UIDocumentPickerDelegate {
     private let config: GoldgramAIConfig
@@ -575,29 +624,50 @@ final class GoldgramPluginNetwork: NSObject, UIDocumentPickerDelegate {
         }
     }
     func fetch(_ args: [String: Any], completion: @escaping ([String: Any]) -> Void) {
+        let raw = args["body"]
+        let hasBody = raw != nil && !(raw is NSNull)
         guard !cancelled, !busy, valid(), count < 3, let key = config.readKey(),
-              args["url"] as? String == "https://api.deepseek.com/chat/completions", args["method"] as? String == "POST",
-              let raw = args["body"] as? String, raw.utf8.count <= 48000,
-              let body = try? JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any],
-              let model = body["model"] as? String, !model.isEmpty, model.count <= 100,
-              let messages = body["messages"] as? [[String: Any]], messages.count == 2,
-              messages[0]["role"] as? String == "system", messages[1]["role"] as? String == "user",
-              let prompt = messages[0]["content"] as? String, let text = messages[1]["content"] as? String,
-              prompt.utf8.count <= 16000, text.utf8.count <= 28000 else { completion(["error": "Нужен ключ и корректный запрос к DeepSeek. Другие адреса не разрешены."]); return }
-        var clean: [String: Any] = ["model":model,"messages":[["role":"system","content":prompt],["role":"user","content":text]],"stream":false,"max_tokens":max(1,min(2048,body["max_tokens"] as? Int ?? 900))]
-        if let t = body["temperature"] as? Double, t.isFinite { clean["temperature"] = max(0,min(2,t)) }
-        if let t = body["thinking"] as? [String: Any], let type = t["type"] as? String, ["enabled","disabled"].contains(type) { clean["thinking"] = ["type":type] }
-        if let effort = body["reasoning_effort"] as? String, ["high","max"].contains(effort) { clean["reasoning_effort"] = effort }
-        guard let url = URL(string: "https://api.deepseek.com/chat/completions"), let data = try? JSONSerialization.data(withJSONObject: clean) else { completion(["error":"Invalid request"]); return }
-        let ms = max(1000,min(240000,args["timeoutMs"] as? Int ?? 75000))
+              let route = GoldgramNetworkPolicy.route(url: args["url"] as? String, method: args["method"] as? String, hasBody: hasBody) else {
+            completion(["error":"Нет ключа, разрешения или поддерживаемого адреса/метода."]); return
+        }
+        let url: URL
+        let method: String
+        var payload: Data? = nil
+        let title: String
+        let message: String
+        switch route {
+        case .models:
+            url = URL(string: "https://api.deepseek.com/models")!
+            method = "GET"; title = "Обновить каталог DeepSeek?"
+            message = "Запрос списка моделей. Переписка, промпты и файлы не передаются."
+        case .completion:
+            guard let raw = raw as? String, raw.utf8.count <= 48000,
+                  let body = try? JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any],
+                  let model = body["model"] as? String, GoldgramNetworkPolicy.modelID(model),
+                  let messages = body["messages"] as? [[String: Any]], messages.count == 2,
+                  messages[0]["role"] as? String == "system", messages[1]["role"] as? String == "user",
+                  let prompt = messages[0]["content"] as? String, let text = messages[1]["content"] as? String,
+                  prompt.utf8.count <= 16000, text.utf8.count <= 28000 else { completion(["error":"Некорректный запрос к DeepSeek."]); return }
+            var clean: [String: Any] = ["model":model,"messages":[["role":"system","content":prompt],["role":"user","content":text]],"stream":false,"max_tokens":max(1,min(2048,body["max_tokens"] as? Int ?? 900))]
+            if let t = body["temperature"] as? Double, t.isFinite { clean["temperature"] = max(0,min(2,t)) }
+            if let t = body["thinking"] as? [String: Any], let type = t["type"] as? String, ["enabled","disabled"].contains(type) { clean["thinking"] = ["type":type] }
+            if let effort = body["reasoning_effort"] as? String, ["low","high","max"].contains(effort) { clean["reasoning_effort"] = effort }
+            guard let data = try? JSONSerialization.data(withJSONObject: clean) else { completion(["error":"Invalid request"]); return }
+            url = URL(string:"https://api.deepseek.com/chat/completions")!
+            method = "POST"; payload = data; title = "Передать данные плагина в DeepSeek?"
+            message = "Модель: "+model+"\n\nПромпт:\n"+prompt+"\n\nТекст:\n"+text
+        }
+        let ms = max(1000,min(route == .models ? 30000 : 240000,args["timeoutMs"] as? Int ?? (route == .models ? 15000 : 75000)))
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: Double(ms)/1000)
-        request.httpMethod = "POST"; request.httpBody = data
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type"); request.setValue("Bearer " + key, forHTTPHeaderField: "Authorization")
+        request.httpMethod = method; request.httpBody = payload
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if payload != nil { request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
+        request.setValue("Bearer " + key, forHTTPHeaderField: "Authorization")
         busy = true; count += 1
         DispatchQueue.main.asyncAfter(deadline: .now()+0.35) { [weak self] in
             guard let self, !self.cancelled, self.valid(), let presenter = self.presenter, presenter.viewIfLoaded?.window != nil else { self?.busy = false; completion(["error":"Запрос отменён"]); return }
             let send: () -> Void = { [weak self] in
-                guard let self, !self.cancelled, self.valid() else { completion(["error":"request_cancelled"]); return }
+                guard let self, !self.cancelled, self.valid(), self.config.readKey() == key else { self?.busy = false; completion(["error":"request_cancelled"]); return }
                 self.alert = nil
                 let cfg = URLSessionConfiguration.ephemeral
                 cfg.httpShouldSetCookies = false; cfg.httpCookieStorage = nil; cfg.urlCache = nil; cfg.urlCredentialStorage = nil
@@ -608,7 +678,15 @@ final class GoldgramPluginNetwork: NSObject, UIDocumentPickerDelegate {
                     DispatchQueue.main.async { [weak self] in
                         guard let self, !self.cancelled else { return }
                         self.busy = false; self.task = nil; self.session?.finishTasksAndInvalidate(); self.session = nil
-                        guard self.valid(), error == nil, let http = response as? HTTPURLResponse, let data, data.count <= 512*1024, let text = String(data: data, encoding: .utf8) else { completion(["error":"Network error or invalid response"]); return }
+                        guard self.valid(), self.config.readKey() == key, error == nil, let http = response as? HTTPURLResponse, let data, data.count <= 512*1024 else { completion(["error":"Network error or invalid response"]); return }
+                        if route == .models {
+                            guard http.statusCode == 200 else { completion(["status":http.statusCode,"body":"{\"error\":\"Model discovery failed\"}"]); return }
+                            guard let models = GoldgramNetworkPolicy.catalog(data),
+                                  let json = try? JSONSerialization.data(withJSONObject: ["object":"list","data":models]), let body = String(data: json, encoding: .utf8) else { completion(["error":"Некорректный список моделей."]); return }
+                            self.config.saveCatalog(models)
+                            completion(["status":200,"body":body]); return
+                        }
+                        guard let text = String(data: data, encoding: .utf8) else { completion(["error":"Invalid response"]); return }
                         completion(["status":http.statusCode,"body":text])
                     }
                 }
@@ -616,11 +694,106 @@ final class GoldgramPluginNetwork: NSObject, UIDocumentPickerDelegate {
             }
             if self.skipRequestConfirmation() { send(); return }
             guard presenter.presentedViewController == nil else { self.busy = false; completion(["error":"Закройте открытое окно и повторите запрос."]); return }
-            let alert = UIAlertController(title: "Передать данные плагина в DeepSeek?", message: "Модель: "+model+"\n\nПромпт:\n"+prompt+"\n\nТекст:\n"+text, preferredStyle: .alert)
+            let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
             self.alert = alert
             alert.addAction(UIAlertAction(title: "Отправить запрос", style: .default) { _ in send() })
             alert.addAction(UIAlertAction(title: "Отмена", style: .cancel) { [weak self] _ in self?.busy = false; completion(["error":"request_cancelled"]) })
             presenter.present(alert, animated: true)
         }
+    }
+}
+
+// Native model picker/catalog. A user opening the screen authorizes only a
+// metadata GET; the broker still checks account, plugin grants and key.
+final class GoldgramModelCatalogScreen: UITableViewController {
+    private let config: GoldgramAIConfig
+    private let valid: () -> Bool
+    private let fallback: [[String: String]]
+    private let selected: String?
+    private let choose: ((String) -> Void)?
+    private var broker: GoldgramPluginNetwork?
+    private var status = ""
+    private var opened = false
+    private var models: [[String: Any]] = []
+    private var updatedAt: Double?
+    init(config: GoldgramAIConfig, valid: @escaping () -> Bool, fallback: [[String: String]] = [], selected: String? = nil, choose: ((String) -> Void)? = nil) {
+        self.config = config; self.valid = valid; self.fallback = fallback; self.selected = selected; self.choose = choose
+        super.init(style: .insetGrouped)
+    }
+    required init?(coder: NSCoder) { return nil }
+    override func viewDidLoad() {
+        super.viewDidLoad(); title = "Модели DeepSeek"; reloadCatalog()
+        NotificationCenter.default.addObserver(self, selector: #selector(stop), name: UIApplication.didEnterBackgroundNotification, object: nil)
+    }
+    deinit { NotificationCenter.default.removeObserver(self) }
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        guard !opened else { return }; opened = true
+        if let cache = config.modelCatalog, GoldgramNetworkPolicy.fresh(updated: cache.updated, now: Date().timeIntervalSince1970) { return }
+        refresh()
+    }
+    override func viewDidDisappear(_ animated: Bool) { super.viewDidDisappear(animated); stop() }
+    @objc private func stop() { broker?.cancel(); broker = nil; status = ""; reloadCatalog(); tableView.reloadData() }
+    private func reloadCatalog() {
+        updatedAt = nil; models = []
+        guard valid() else { return }
+        if let cache = config.modelCatalog { models = cache.models; updatedAt = cache.updated; return }
+        models = fallback.compactMap { item in
+            guard let value = item["value"], GoldgramNetworkPolicy.modelID(value) else { return nil }
+            return ["id":value,"name":item["title"] ?? value]
+        }
+    }
+    override func numberOfSections(in tableView: UITableView) -> Int { 2 }
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? 1 : models.count + (choose == nil ? 0 : 1) }
+    override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? { section == 0 ? "Каталог" : (updatedAt == nil ? "Резервные варианты (не проверены API)" : "Модели из API") }
+    override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
+        guard section == 0 else { return nil }
+        let date = updatedAt.map { DateFormatter.localizedString(from: Date(timeIntervalSince1970: $0), dateStyle: .short, timeStyle: .short) }
+        return ([status, date.map { "Последнее успешное обновление: " + $0 } ?? "Нет подтверждённого списка.", "Обновление при открытии устаревшего каталога (24 ч) или вручную. Только метаданные; без отправки переписки."] .filter { !$0.isEmpty }).joined(separator: "\n")
+    }
+    override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
+        if indexPath.section == 0 { cell.textLabel?.text = broker == nil ? "Обновить список моделей" : "Отменить обновление"; cell.accessoryType = .disclosureIndicator; return cell }
+        let rows = models
+        if indexPath.row >= rows.count { cell.textLabel?.text = "Ввести ID вручную"; cell.accessoryType = .disclosureIndicator; return cell }
+        let row = rows[indexPath.row], id = row["id"] as? String ?? ""
+        cell.textLabel?.text = row["name"] as? String ?? id
+        var details = [id]
+        if let window = row["context_window"] as? Int { details.append("Контекст: "+String(window)) }
+        if let modalities = row["input_modalities"] as? [String] { details.append(modalities.joined(separator: ", ")) }
+        cell.detailTextLabel?.text = details.joined(separator: " · "); cell.detailTextLabel?.numberOfLines = 0
+        if id == selected { cell.accessoryType = .checkmark }
+        return cell
+    }
+    override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        guard valid() else { stop(); return }
+        if indexPath.section == 0 { if broker != nil { stop() } else { refresh() }; return }
+        guard let choose else { return }
+        let rows = models
+        if indexPath.row < rows.count, let id = rows[indexPath.row]["id"] as? String { choose(id); navigationController?.popViewController(animated: true); return }
+        let alert = UIAlertController(title:"ID модели",message:"Будет использован указанный ID; доступность не проверяется автоматически.",preferredStyle:.alert)
+        alert.addTextField { $0.text = self.selected; $0.autocapitalizationType = .none; $0.autocorrectionType = .no }
+        alert.addAction(UIAlertAction(title:"Выбрать",style:.default) { [weak self, weak alert] _ in
+            guard let self, self.valid(), let id = alert?.textFields?.first?.text?.trimmingCharacters(in:.whitespacesAndNewlines), GoldgramNetworkPolicy.modelID(id) else { return }
+            choose(id); self.navigationController?.popViewController(animated:true)
+        })
+        alert.addAction(UIAlertAction(title:"Отмена",style:.cancel)); present(alert,animated:true)
+    }
+    private func refresh() {
+        guard broker == nil, valid() else { return }
+        guard config.readKey() != nil else { status = "Сначала задайте API-ключ в настройках этого плагина."; tableView.reloadData(); return }
+        status = "Обновление…"; tableView.reloadData()
+        let network = GoldgramPluginNetwork(config: config, presenter: self, valid: { [weak self] in
+            guard let self else { return false }; return self.valid() && self.viewIfLoaded?.window != nil && UIApplication.shared.applicationState == .active
+        }, skipRequestConfirmation: { true })
+        broker = network
+        network.fetch(["url":"https://api.deepseek.com/models","method":"GET","timeoutMs":15000]) { [weak self, weak network] result in
+            guard let self, let network, self.broker === network else { return }
+            self.broker = nil
+            self.status = result["status"] as? Int == 200 ? "Список обновлён." : (result["status"] as? Int).map { "Ошибка HTTP "+String($0)+". Сохранённый список не изменён." } ?? "Не удалось обновить. Сохранённый список не изменён."
+            self.reloadCatalog(); self.tableView.reloadData()
+        }
+        tableView.reloadData()
     }
 }
