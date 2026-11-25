@@ -1,6 +1,6 @@
 # CURRENT_STATUS — verified checkpoint
 
- > **2026-11-25 local user date — #270 green and confirmation opt-out confirmed on device; next P0 multi-plugin stage.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
+ > **2026-11-25 local user date — #270 green/device-confirmed; #271 multi-plugin candidate in CI.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
 
 ## P0 development priority (user-approved 2026-11-25)
 
@@ -13,11 +13,11 @@
 | Item | Latest confirmed status |
 | --- | --- |
 | Feature branch | `gold-next-243-author-search` |
-| HEAD | `7d96dc20291fe09993dad7ed4273bf75711eb026` (#270 green), direct parent #269 |
+| HEAD | `bd15066de347c382a68e26208b39ce5dfa6f25a4` (#271 candidate), direct parent #270 |
 | Last green CI | [#270](https://github.com/sviridovski/Telegram-iOS/actions/runs/45652311197), completed success, 28m36s wall |
 | Last installed | #270 — user confirms disabled confirmation dialogs no longer appear; both switches shown off. |
 | Failed candidate | #263 attempt 1: Native/Mx success, Build cancelled, logs unavailable; #261 earlier compile error resolved in #262. |
-| Next task | **P0 Engine 2.0**: independent multi-plugin registry, UI/actions and execution (target #271), per [PLUGIN_ENGINE_2_ROADMAP.md](./PLUGIN_ENGINE_2_ROADMAP.md). |
+| Next task | **P0 Engine 2.0**: validate #271 CI/device multi-plugin operation; then Network Engine and model discovery (target #272). |
 | Recovery | #263 green and swipe confirmed, media completeness issue open. #260 earlier broadly user-confirmed baseline; original port/telegram-13.2 unchanged. |
 
 ## #252 corrections retained in #253
@@ -291,3 +291,13 @@ User explicitly approved prioritizing the universal plugin engine until mature, 
 ## #270 — CI green and confirmation opt-out verified on device (2026-11-25)
 
 User installed #270 and reported that confirmation dialogs are no longer requested when switched off. Screenshot shows both AI Commander 2.1.8 toggles disabled in the shared confirmations page. This confirms the requested usability behavior; independent re-enable/reset, restart persistence, account isolation and code-update reset were not separately reported. CI #270 [45652311197](https://github.com/sviridovski/Telegram-iOS/actions/runs/45652311197) completed successfully, wall time 28m36s; jobs: native: success, mx: success, build: success. Source 7d96dc20291fe09993dad7ed4273bf75711eb026. #270 is the latest green/user-confirmed baseline for the tested flow. Next P0 stage: multi-plugin registry and independent actions/execution (target #271), following [PLUGIN_ENGINE_2_ROADMAP.md](./PLUGIN_ENGINE_2_ROADMAP.md). No app source changes or new build requested in this documentation checkpoint.
+
+
+## #271 candidate — independent multi-plugin registry and execution (2026-11-25)
+
+- User approved implementation after device-confirmed #270. Published bd15066de347c382a68e26208b39ce5dfa6f25a4, direct parent #270 7d96dc20291fe09993dad7ed4273bf75711eb026; active branch verified. [CI #271](https://github.com/sviridovski/Telegram-iOS/actions/runs/45691273817) queued at this checkpoint. #270 remains last green/device-confirmed baseline.
+- Five source/test files changed: GoldgramPlugins.swift, GoldgramAI.swift, ChatController.swift, test_goldgram_ai.py and test_plugin_engine.py. All eligible registrations collected, composite UUID + local action ID prevents collisions, per-plugin button/worker/cancellation, combined context menu, account-scoped visibility toggle, optional field migration. Grouped draggable floating controls with up to six slots depending on available area, overflow selector; one floating button per plugin retained from existing GGAPI, group position shared. Menu-only plugins supported. Native fallback only when no eligible plugin registrations. Each button retains its own pending result if another modal is presented. Context action result can be reopened via its action. No automatic send.
+- Global max four disposable worker executions, at most one active execution for the same account/plugin; busy/limit returns an error rather than a persistent queue. Registry invalidation checks account, grants, code, safe mode, action availability. Disable/delete/replacement/safe mode cancels invalid executions; leaving chat/background and changes to draft cancel affected chat operations. Shared draft is deliberately serialized by existing snapshot/revision checks: after one action replaces draft, concurrent stale results cannot overwrite it. Network confirmation modals are not concurrent: if another modal is open and confirmation required, retry after dismissal; previously explicitly approved opt-out requests may execute independently. Existing #270 consent policy, Keychain and scoped DeepSeek-only broker unchanged. No raw sessions/archive, new endpoint or background worker.
+- Store refresh before writes; result settings/storage three-way merge from original/latest/proposed, reject conflicts/size limit, preserve unrelated plugin records. Registry notification drives UI updates and cancels invalid runs. No second SQLite DB. Bundled independent Goldgram Test A/B use same local ID shared and isolated counters/labels; install via Plugins > Установить тесты многоплагинности, manually enable both. Test original JS unchanged.
+- Local verification: 16 standalone Swift preconditions against copied exact routing/merge/slot helpers passed; actual bundled A/B JavaScript executed in two separate simulated worker contexts with original worker source, returning A · 1, B · 1, A · 2, B · 2. Added automated CI Swift and Node fixtures including duplicate local IDs, storage isolation, error handling, capacity and merged data size bounds. Full iOS typecheck/compile, actual WebKit parallel scheduling, UIKit layout and network/device acceptance pending. No claim full Engine 2.0 complete.
+- Acceptance: enable original AICC and A/B simultaneously, test AI and counters A=1 B=1 A=2; long press allowed ordinary message, test each distinct menu action; hide A floating button while menu remains, disable A, confirm B/AI unaffected; safe mode disables all; cancel active execution and test repeated independent actions. Restart and verify counters/settings/confirmations. Check background/account/draft switching and no auto-send; existing Goldgram regression. Next P0 step after acceptance: Network Engine/model discovery (#272 target), then streaming. No TelegramCore, Mx, workflow/cache keys, SQLite, Ghost, Collector or Live Bridge changes. #270 wall 28m36s, native compile 1259s; restore/save 90s/61s. Preserve warm cache rather than invalidate it during this feature change; no new cache acceleration or #271 wall time claimed.

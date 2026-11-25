@@ -206,3 +206,8 @@ Reusable engine-level account/plugin policy governs repeated DeepSeek request an
 
 ## #270 checkpoint
 Confirmation policy opt-out verified on device; see CURRENT_STATUS and DECISIONS_LOG. Next: independent multi-plugin execution.
+
+
+## #271 candidate — registry / multi-plugin controls
+
+GoldgramAIButtonGroup hosts per-plugin buttons with independent execution and shared movable layout; UUID-qualified context action routes, safe registration revocation, max four disposable workers, per-account/plugin execution lease, merge-on-commit of settings/storage. Shared draft snapshot remains authoritative. See CURRENT_STATUS and DECISIONS_LOG for limits, CI and device acceptance.

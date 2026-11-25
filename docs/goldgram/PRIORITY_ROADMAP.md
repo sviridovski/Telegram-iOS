@@ -30,3 +30,7 @@ Original AICC request and generated response confirmed by user on iPhone. #270 c
 
 ### #270 checkpoint — confirmed
 CI green, user confirms both disabled confirmation dialogs no longer interrupt the workflow. Proceed to multi-plugin stage next; remaining lifecycle/persistence tests stay in regression matrix. No source changes at this checkpoint.
+
+
+### #271 candidate — multi-plugin stage
+Registry, independent controls/actions and bounded isolated execution implemented; A/B mock worker and Swift routing/merge/slots tests passed. CI and on-device acceptance pending, #270 fallback. Grouped layout, one floating button per plugin, global four-execution cap, no persistent queue. Next network stage only after validation.

@@ -5,3 +5,8 @@ Supported manifest grants: ui.read, ui.mutate, chat.read, chat.write, messages.r
 
 ## #270 confirmation preferences (candidate)
 Engine management UI only: per-plugin/account switches for repeated DeepSeek requests on user-invoked chat actions and draft preview. Defaults confirm; explicit opt-out; reset on code changes or re-enable. Settings actions still confirm network; no automatic send, arbitrary URLs, clipboard/file bypass or JS permission mutation. Full iOS/device validation pending.
+
+
+## #271 multi-plugin candidate
+
+All enabled eligible plugins can register their individual floating control and context actions. Composite native identity does not change plugin-local IDs. Per-plugin state, independent execution, hide button without removing context actions, safe mode and cancellation. Max four simultaneous workers, one per account/plugin; shared draft guards and modal confirmation constraints. GGAPI method set otherwise unchanged. CI/device tests pending.
