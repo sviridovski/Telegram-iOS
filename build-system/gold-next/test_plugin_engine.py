@@ -84,6 +84,32 @@ const reRender='GGAPI.settings.addSection({title:"Initial",items:[{type:"info",k
 await self.onmessage({data:{source:reRender,grants:compat,event:'settings.action'}});
 assert.equal(result.schemaCleared,true);assert.equal(result.sections.length,1);assert.equal(result.sections[0].title,'Updated');
 console.log('Goldgram #275 declarative UI, dynamic card/progress and permissions OK');
+
+const evScript='const a=GGAPI.events.on("chat.opened",()=>GGAPI.storage.set("opened",1)); GGAPI.events.on("chat.closed",()=>GGAPI.storage.set("closed",1)); const b=GGAPI.events.on("local.x",()=>GGAPI.storage.set("bad",1)); GGAPI.events.off(b); GGAPI.events.once("local.x",()=>GGAPI.storage.set("once",Number(GGAPI.storage.get("once")||0)+1)); GGAPI.events.on("settings.action",()=>{GGAPI.events.emit("local.x",{});GGAPI.events.emit("local.x",{});});';
+await self.onmessage({data:{source:evScript,grants:compat,event:'plugin.start'}});
+assert.deepEqual(result.lifecycleSubscriptions,['chat.opened','chat.closed']);
+await self.onmessage({data:{source:evScript,grants:compat,event:'chat.opened',context:{peerId:'p',type:'user'}}});
+assert.equal(result.storage.opened,1);assert.equal(result.storage.closed,undefined);assert.equal(result.output,null);
+await self.onmessage({data:{source:evScript,grants:compat,event:'chat.closed'}});
+assert.equal(result.storage.closed,1);
+await self.onmessage({data:{source:evScript,grants:compat,event:'settings.action'}});
+assert.equal(result.storage.once,1);assert.equal(result.storage.bad,undefined);
+await self.onmessage({data:{source:evScript,grants:compat.filter(x=>x!=='chat.read'),event:'plugin.start'}});
+assert.deepEqual(result.lifecycleSubscriptions,[]);
+await self.onmessage({data:{source:'GGAPI.events.emit("chat.opened",{})',grants:compat,event:'plugin.start'}});
+assert.ok(result.error);
+await self.onmessage({data:{source:'GGAPI.events.on("local.x",()=>GGAPI.events.emit("local.x",{}));GGAPI.events.emit("local.x",{})',grants:compat,event:'plugin.start'}});
+assert.ok(result.error);
+const cmd='const t=GGAPI.commands.register(["hello","bye"],p=>GGAPI.ui.showSheet({title:p.name,text:"manual"}));GGAPI.commands.register("other",()=>{});GGAPI.commands.unregister(t);GGAPI.commands.register("hello",p=>GGAPI.ui.showSheet({title:p.name,text:"manual"}));';
+await self.onmessage({data:{source:cmd,grants:compat,event:'plugin.start'}});
+assert.deepEqual(result.contextActions.map(x=>x.id),['cmd:other','cmd:hello']);
+await self.onmessage({data:{source:cmd,grants:compat,event:'context.tap',key:'cmd:hello',context:{selectedMessage:{text:'test'}}}});
+assert.equal(result.output.title,'hello');assert.equal(result.output.text,'manual');
+const beforePassive=requests.length;
+await self.onmessage({data:{source:'GGAPI.events.on("chat.opened",async()=>{try{await GGAPI.network.fetch("https://api.deepseek.com/models")}catch(e){GGAPI.storage.set("blocked",true)};GGAPI.ui.showSheet({title:"x",text:"x"})});',grants:compat,event:'chat.opened',context:{peerId:'p'}}});
+assert.equal(result.storage.blocked,true);assert.equal(requests.length,beforePassive);assert.equal(result.output,null);
+console.log('Goldgram #276 events, once/off, recursion limit, scoped commands and passive RPC denial OK');
+
 })().catch(e=>{console.error(e);process.exit(1)});
 """
 with tempfile.TemporaryDirectory() as tmp:
@@ -101,3 +127,6 @@ assert 'addFloatingButton' in source and 'contextActions:Object.keys(actions)' i
 assert 'sk-goldgram-managed' in source and 'credential.readKey() != nil' in source
 print("Goldgram #269 scoped compatibility contracts present")
 
+
+assert "GoldgramPluginLifecycle" in source and "lifecycleEnabled == true" in source
+assert "UIApplication.didEnterBackgroundNotification" in source

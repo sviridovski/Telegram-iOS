@@ -318,6 +318,7 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
     private var goldgramAIVisible = false
     private var goldgramAIEnabled = false
     private var goldgramAIEpoch: UInt64 = 0
+    private var goldgramLifecyclePeer: (String, String)?
     var secondaryRightNavigationButton: ChatNavigationButton?
     var chatInfoNavigationButton: ChatNavigationButton?
     
@@ -8149,6 +8150,17 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
         self.goldgramAIButton?.removeFromSuperview()
         self.goldgramAIButton = nil
         self.goldgramInstallAI()
+        GoldgramPluginLifecycle.cancel()
+        self.goldgramLifecyclePeer = nil
+        if self.goldgramAIIdentity() != nil, let peer = self.chatLocation.peerId, let host = self.view.window {
+            let scoped = String(describing: peer) + ":" + String(describing: self.chatLocation.threadId)
+            let type = peer.namespace == Namespaces.Peer.CloudUser ? "user" : "group"
+            self.goldgramLifecyclePeer = (scoped, type)
+            GoldgramPluginLifecycle.deliver(account: String(self.context.account.peerId.id._internalGetInt64Value()), host: host, event: "chat.opened", peer: scoped, type: type, valid: { [weak self = self] in
+                guard let self else { return false }
+                return self.goldgramAIIdentity() != nil
+            })
+        }
         self.forwardSideListAppearance(.didAppear, animated: animated)
         
         self.didAppear = true
@@ -8601,12 +8613,21 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
     
     override public func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        let lifecycle = self.goldgramAIIdentity() != nil ? self.goldgramLifecyclePeer : nil
+        self.goldgramLifecyclePeer = nil
+        GoldgramPluginLifecycle.cancel()
         self.goldgramAIVisible = false
         self.goldgramAIEnabled = false
         self.goldgramAIEpoch &+= 1
         self.goldgramAIButton?.cancel()
         self.goldgramAIButton?.removeFromSuperview()
         self.goldgramAIButton = nil
+        if let lifecycle, let host = self.view.window {
+            GoldgramPluginLifecycle.deliver(account: String(self.context.account.peerId.id._internalGetInt64Value()), host: host, event: "chat.closed", peer: lifecycle.0, type: lifecycle.1, valid: { [weak self = self] in
+                guard let self else { return false }
+                return self.isApplicationInForegroundValue && GoldgramAuthorSearchBridge.isCurrentAccount(self.context)
+            })
+        }
         self.forwardSideListAppearance(.willDisappear, animated: animated)
 
         self.walletTransferAnimationsVisible = false

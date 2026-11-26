@@ -94,6 +94,9 @@ private struct GoldgramPluginRecord: Codable {
     var chatButtonHidden: Bool?
     var streamingOptions: GoldgramStreamOptions?
     var uiOptions: GoldgramPluginUIOptions?
+    // Optional fields: legacy installs do not receive automatic chat callbacks.
+    var lifecycleEnabled: Bool?
+    var lifecycleSubscriptions: [String]?
     var manifest: GoldgramPluginManifest { GoldgramPluginManifest(code) }
 }
 
@@ -276,6 +279,7 @@ private final class GoldgramPluginRun: NSObject, WKNavigationDelegate, WKScriptM
         self.completion = completion
         super.init()
         NotificationCenter.default.addObserver(self, selector: #selector(registryChanged(_:)), name: .goldgramPluginsChanged, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(backgrounded), name: UIApplication.didEnterBackgroundNotification, object: nil)
         if let presenter, interactive {
             let skipRequest = GoldgramPluginConfirmationPolicy.skipRequest(record.confirmationPolicy, grants: record.grants, event: event)
             broker = GoldgramPluginNetwork(config: credential, presenter: presenter, valid: valid, skipRequestConfirmation: {
@@ -306,6 +310,7 @@ private final class GoldgramPluginRun: NSObject, WKNavigationDelegate, WKScriptM
         DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: timeout)
         view.loadHTMLString(Self.page, baseURL: nil)
     }
+    @objc private func backgrounded() { cancel() }
     @objc private func registryChanged(_ note: Notification) {
         guard let account = note.object as? String, lease.hasPrefix(account + ":") else { return }
         if !valid() { cancel() }
@@ -390,10 +395,20 @@ function goldWorkerMain() {
     const need = t => { if (!allowed(t)) throw Error("Permission denied: " + t); };
     const sections = [], logs = [], handlers = Object.create(null), buttons = Object.create(null), actions = Object.create(null), actionTitles = Object.create(null);
     let schemaCleared = false;
+    const lifecycleNames = ["chat.opened","chat.closed"];
+    const nativeNames = ["plugin.start","settings.changed","settings.action",...lifecycleNames];
+    const passive = lifecycleNames.includes(p.event);
+    let eventSerial=0, handlerCount=0, emissionCount=0, commandSerial=0;
+    const emissions=[], commandTokens=new Map();
+    const localName=n=>typeof n==="string"&&/^local\.[a-zA-Z0-9_.-]{1,60}$/.test(n);
+    function subscribe(name,fn,once){need("events");if(typeof fn!=="function"||(!nativeNames.includes(name)&&!localName(name)))return null;if(lifecycleNames.includes(name)&&!allowed("chat.read"))return null;if(handlerCount>=64)throw Error("Too many event handlers");const list=handlers[name]||(handlers[name]=[]);if(list.length>=24)throw Error("Too many event handlers");const id="event:"+(++eventSerial);list.push({id,fn,once});handlerCount++;return id;}
+    function off(id){need("events");for(const list of Object.values(handlers)){const i=list.findIndex(h=>h.id===id);if(i>=0){list.splice(i,1);handlerCount--;return true;}}return false;}
+    async function dispatch(name,payload){for(const h of [...(handlers[name]||[])]){if(!(handlers[name]||[]).includes(h))continue;if(h.once)off(h.id);await h.fn(payload);}}
+    function emit(name,payload){need("events");if(!localName(name))throw Error("Only local.* events may be emitted");if(++emissionCount>32)throw Error("Event limit exceeded");const raw=JSON.stringify(payload===undefined?null:payload);if(typeof raw!=="string"||raw.length>8192)throw Error("Event payload too large");emissions.push([name,JSON.parse(raw)]);return true;}
     const ctx = p.context || {}; let draft = typeof ctx.draft === "string" ? ctx.draft : null, changed = false, output = null, floating = null;
     const keyAlias = "sk-goldgram-managed";
     const isSecret = k => k === "apiKey" || k === "aicc_api_key_v2";
-    const rpc = (method,args,progress) => new Promise((resolve,reject)=>{const id=++serial; pending.set(id,r=>r && r.error ? reject(Error(r.error)) : resolve(r)); if(typeof progress==="function")progressHandlers.set(id,progress); send(JSON.stringify({rpc:id,method,args}));});
+    const rpc = (method,args,progress) => new Promise((resolve,reject)=>{if(passive){reject(Error("Interactive action required"));return;}const id=++serial; pending.set(id,r=>r && r.error ? reject(Error(r.error)) : resolve(r)); if(typeof progress==="function")progressHandlers.set(id,progress); send(JSON.stringify({rpc:id,method,args}));});
     const settings = Object.assign(Object.create(null), p.settings || {});
     const storage = Object.assign(Object.create(null), p.storage || {});
     const own = (o,k) => Object.prototype.hasOwnProperty.call(o,k);
@@ -446,10 +461,10 @@ function goldWorkerMain() {
     };
     const logging = Object.freeze({log,info:log,warn:log,error:log});
     const base = {
-      runtime:Object.freeze({apiVersion:()=>5,features:()=>({scopedChat:!!ctx.peerId,localOnly:!allowed("network.fetch"),modelDiscovery:allowed("network.fetch"),declarativeUI:allowed("settings.read"),streaming:allowed("network.fetch")&&p.streamingEnabled===true}),pluginId:()=>p.pluginId||"",hasPermission:allowed,grants:()=>Array.from(grants)}),
+      runtime:Object.freeze({apiVersion:()=>5,features:()=>({scopedChat:!!ctx.peerId,localOnly:!allowed("network.fetch"),modelDiscovery:allowed("network.fetch"),declarativeUI:allowed("settings.read"),eventBus:allowed("events"),chatLifecycle:allowed("events")&&allowed("chat.read"),contextCommands:allowed("chat.write")&&allowed("messages.read")&&allowed("ui.mutate"),streaming:allowed("network.fetch")&&p.streamingEnabled===true}),pluginId:()=>p.pluginId||"",hasPermission:allowed,grants:()=>Array.from(grants)}),
       settings:Object.freeze({addSection:section,define:section,clearSections:()=>{need("settings.read");sections.length=0;schemaCleared=true;return true;},getPlugin:(k,f)=>{need("settings.read");if(isSecret(k))return p.managedKey?keyAlias:f;return own(settings,k)?settings[k]:f;},setPlugin:(k,v)=>{need("settings.read");if(isSecret(k)){if(v===""||v===keyAlias)return true;throw Error("Use native secure field");}return write(settings,k,v);}}),
       storage:Object.freeze({get:k=>{need("storage");if(isSecret(k))return p.managedKey?keyAlias:null;return own(storage,k)?storage[k]:null;},set:(k,v)=>{need("storage");if(isSecret(k)){if(v===keyAlias&&p.managedKey)return true;throw Error("Use native secure field");}return write(storage,k,v);},getJSON:(k,f)=>{need("storage");return own(storage,k)?storage[k]:f;},setJSON:(k,v)=>{need("storage");return write(storage,k,v);},remove:k=>{need("storage");delete storage[k];}}),
-      events:Object.freeze({on:(name,fn)=>{need("events");if (!["plugin.start","settings.changed","settings.action"].includes(name)||typeof fn!=="function")return null; const list=handlers[name]||(handlers[name]=[]);if(list.length<24)list.push(fn);return String(list.length);}}),
+      events:Object.freeze({on:(name,fn)=>subscribe(name,fn,false),once:(name,fn)=>subscribe(name,fn,true),off,emit}),
       console:logging,log,toast,app:Object.freeze({toast,alert:(title,text)=>toast(String(title)+"\n"+String(text))})
     };
     const localOutput=(title,text)=>{need("ui.read");output={kind:"sheet",title:String(title).slice(0,160),text:String(text).slice(0,16000)};return true;};
@@ -459,6 +474,22 @@ function goldWorkerMain() {
       draftText:()=>{need("chat.read");return draft||"";},setDraftText:t=>{need("chat.write");if(draft===null)throw Error("Open a writable chat");draft=String(t).slice(0,4096);changed=true;return true;},insertText:t=>{need("chat.write");if(draft===null)throw Error("Open a writable chat");draft=(draft+String(t)).slice(0,4096);changed=true;return true;},setTyping:()=>{need("ui.mutate");return true;} });
     if(allowed("messages.read")) {const rows=Array.isArray(ctx.messages)?ctx.messages:[];const visible=n=>rows.slice(-Math.max(1,Math.min(36,Number(n)||8)));base.messages=Object.freeze({visible,current:visible,get:id=>rows.find(m=>String(m.id)===String(id))||null,getSelectedMessage:()=>ctx.selectedMessage||null});}
     if(allowed("ui.mutate")||allowed("ui.read")) base.ui=Object.freeze({showToast:toast,showSheet:v=>localOutput(v.title||"AI",v.text||""),addFloatingButton:(cfg,fn)=>{need("ui.mutate");if(!cfg||typeof cfg.id!=="string"||typeof fn!=="function")throw Error("Invalid button");floating={id:cfg.id.slice(0,100),title:String(cfg.title||"AI").slice(0,12)};buttons[floating.id]=fn;return floating.id;},removeFloatingButton:id=>{need("ui.mutate");delete buttons[id];if(floating&&floating.id===id)floating=null;},addMessageContextAction:(cfg,fn)=>{need("ui.mutate");if(!cfg||typeof cfg.id!=="string"||typeof fn!=="function")throw Error("Invalid action");const id=cfg.id.slice(0,100);if(Object.keys(actions).length>=24&&!own(actions,id))throw Error("Too many actions");actions[id]=fn;actionTitles[id]=String(cfg.title||id).slice(0,160);return id;},removeMessageContextAction:id=>{need("ui.mutate");delete actions[id];delete actionTitles[id];},removeChatMenuButton:()=>{need("ui.mutate");},select:async(title,choices)=>{need("ui.mutate");const r=await rpc("ui.select",{title:String(title),choices});return r.value;},setChatHeaderBadge:()=>{need("ui.mutate");},clearChatHeaderBadge:()=>{need("ui.mutate");}});
+    if(allowed("chat.write")&&allowed("messages.read")&&allowed("ui.mutate")){
+      base.commands=Object.freeze({
+        register:(names,fn,options={})=>{
+          const values=Array.isArray(names)?names:[names];
+          if(!values.length||values.length>8||typeof fn!=="function")throw Error("Invalid command");
+          const normalized=[...new Set(values.map(n=>String(n).replace(/^\//,"").toLowerCase()))];
+          if(normalized.some(n=>! /^[a-z0-9_]{1,32}$/.test(n)||own(actions,"cmd:"+n))||Object.keys(actions).length+normalized.length>24)throw Error("Invalid or duplicate command");
+          const token="command:"+(++commandSerial);
+          commandTokens.set(token,normalized);
+          for(const name of normalized){const id="cmd:"+name;actions[id]=payload=>fn({...payload,name,command:name,args:"",text:""});actionTitles[id]=String(options.title||("Команда: /"+name)).slice(0,160);}
+          return token;
+        },
+        unregister:token=>{const names=commandTokens.get(token);if(!names)return false;for(const n of names){delete actions["cmd:"+n];delete actionTitles["cmd:"+n];}commandTokens.delete(token);return true;},
+        list:()=>Array.from(commandTokens.values()).flat().filter(n=>own(actions,"cmd:"+n))
+      });
+    }
     if(allowed("clipboard"))base.clipboard=Object.freeze({setText:t=>{output={kind:"clipboard",title:"Копировать результат",text:String(t).slice(0,16000)};return true;}});
     if(allowed("network.fetch")){
       let catalog=p.modelCatalog||{models:[],updatedAt:0,stale:true};
@@ -489,12 +520,15 @@ function goldWorkerMain() {
     try {
       const run = new Function("GGAPI","GG","console",p.source);
       await run(api,api,logging);
-      for (const fn of handlers[p.event] || []) await fn({key:p.key,value:p.value,pluginId:p.pluginId});
+      const lifecycleSubscriptions=lifecycleNames.filter(name=>(handlers[name]||[]).length>0);
+      await dispatch(p.event,{key:p.key,value:p.value,pluginId:p.pluginId,...(passive?{peerId:ctx.peerId,chatType:ctx.type}:{} )});
       if(p.event==="floating.tap"&&floating&&buttons[floating.id]) await buttons[floating.id]();
       if(p.event==="context.tap"&&actions[p.key])await actions[p.key]({message:ctx.selectedMessage});
       if(p.event==="settings.action"||p.event==="context.tap"){ await new Promise(resolve=>setTimeout(resolve,0)); let idle=0; while(idle<12){await new Promise(resolve=>setTimeout(resolve,100));idle=pending.size?0:idle+1;} }
+      while(emissions.length){const [name,value]=emissions.shift();await dispatch(name,value);}
       if(changed && !output)output={kind:"draft",title:"Результат плагина",text:draft};
-      const raw = JSON.stringify({sections,schemaCleared,settings,storage,logs,floating,output,contextActions:Object.keys(actions).map(id=>({id,title:actionTitles[id]}))});
+      if(passive)output=null;
+      const raw = JSON.stringify({sections,schemaCleared,settings,storage,logs,floating,output,lifecycleSubscriptions,contextActions:Object.keys(actions).map(id=>({id,title:actionTitles[id]}))});
       if (raw.length>220000) throw Error("Result too large");
       send(raw);
     } catch (_) { send(JSON.stringify({error:"Ошибка JavaScript или отсутствующее разрешение/API. Проверьте код и совместимость."})); }
@@ -553,7 +587,7 @@ final class GoldgramPluginManager: UITableViewController, UIDocumentPickerDelega
     override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
         section == 0 ? (store.failure ?? "GGAPI: открытый чат и локальные настройки; подтверждения управляются для каждого плагина. Не все методы Ghostgram поддерживаются.") : "Импортируйте только доверенный код. Не вводите API-ключи в обычные настройки."
     }
-    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? (store.isCurrent() ? store.state.plugins.count : 0) : (section == 1 ? 7 : 1) }
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? (store.isCurrent() ? store.state.plugins.count : 0) : (section == 1 ? 8 : 1) }
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
         if indexPath.section == 0 {
@@ -566,7 +600,7 @@ final class GoldgramPluginManager: UITableViewController, UIDocumentPickerDelega
             cell.detailTextLabel?.text = "DeepSeek · промпт и плавающая кнопка"
             cell.imageView?.image = UIImage(systemName: "sparkles")
         } else {
-            cell.textLabel?.text = ["Вставить JavaScript", "Импортировать .js из файлов", "Установить тестовый плагин", "Безопасный режим", "Подтверждения плагинов", "Установить тесты многоплагинности", "Установить тест интерфейса"][indexPath.row]
+            cell.textLabel?.text = ["Вставить JavaScript", "Импортировать .js из файлов", "Установить тестовый плагин", "Безопасный режим", "Подтверждения плагинов", "Установить тесты многоплагинности", "Установить тест интерфейса", "Установить тест событий"][indexPath.row]
             if indexPath.row == 3 { cell.detailTextLabel?.text = store.state.safe ? "Включён — выполнение заблокировано" : "Выключен" }
             if indexPath.row == 4 { cell.detailTextLabel?.text = "Запросы к сервисам и вставка ответа" }
         }
@@ -607,6 +641,9 @@ final class GoldgramPluginManager: UITableViewController, UIDocumentPickerDelega
         case 6:
             store.refresh()
             if !store.state.plugins.contains(where: { $0.code == Self.uiExample }) && !install(Self.uiExample) { notice("Не удалось установить тест интерфейса.") }
+        case 7:
+            store.refresh()
+            if !store.state.plugins.contains(where: { $0.code == Self.lifecycleExample }) && !install(Self.lifecycleExample) { notice("Не удалось установить тест событий.") }
         default:
             store.refresh()
             var next = store.state; next.safe.toggle()
@@ -674,6 +711,29 @@ render();
 GGAPI.ui.addFloatingButton({id:"ui",title:"UI"},()=>GGAPI.ui.showSheet({title:"UI",text:"Уровень: "+GGAPI.settings.getPlugin("level",4)}));
 GGAPI.ui.addMessageContextAction({id:"one",title:"UI: команда 1"},()=>GGAPI.ui.showSheet({title:"UI",text:"Команда 1"}));
 GGAPI.ui.addMessageContextAction({id:"two",title:"UI: команда 2"},()=>GGAPI.ui.showSheet({title:"UI",text:"Команда 2"}));
+"""#
+    static let lifecycleExample = #"""
+// @name Goldgram Lifecycle Test
+// @version 1.0
+// @permission.events required
+// @permission.chat.read required
+// @permission.chat.write required
+// @permission.messages.read required
+// @permission.ui.mutate required
+// @permission.ui.read required
+// @permission.storage required
+// @permission.settings.read required
+function count(key){GGAPI.storage.set(key,Number(GGAPI.storage.get(key)||0)+1);}
+GGAPI.events.on("chat.opened",()=>count("opened"));
+GGAPI.events.on("chat.closed",()=>count("closed"));
+GGAPI.events.once("local.test",()=>count("once"));
+GGAPI.settings.addSection({title:"События",items:[
+  {type:"info",key:"opened",title:"Открытия",detail:String(GGAPI.storage.get("opened")||0)},
+  {type:"info",key:"closed",title:"Закрытия",detail:String(GGAPI.storage.get("closed")||0)},
+  {type:"button",key:"read",title:"Проверить счётчики"}
+]});
+GGAPI.events.on("settings.action",p=>{if(p.key==="read"){GGAPI.events.emit("local.test",1);GGAPI.events.emit("local.test",2);GGAPI.app.alert("События",String(GGAPI.storage.get("opened")||0)+" / "+String(GGAPI.storage.get("closed")||0));}});
+GGAPI.commands.register("lifecycle",()=>GGAPI.app.alert("Lifecycle","Команда вызвана вручную"));
 """#
     static let example = #"""
 // @name Тест Goldgram
@@ -874,7 +934,7 @@ private final class GoldgramPluginUISettings: UITableViewController {
         reload()
     }
     override func numberOfSections(in tableView: UITableView) -> Int { 2 }
-    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? 4 : actions.count }
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? 5 : actions.count }
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? { section == 0 ? "Внешний вид" : "Команды контекстного меню" }
     override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
         section == 0 ? "Выключение расширенного интерфейса возвращает обычные строки настроек. Команды и кнопка управляются отдельно. Настройки не меняют код плагина." : "Скрытые команды не вызываются из меню. Разрешения плагина не расширяются."
@@ -892,6 +952,18 @@ private final class GoldgramPluginUISettings: UITableViewController {
         }
         let toggle = UISwitch()
         let row = indexPath.row
+        if indexPath.section == 0 && row == 4 {
+            cell.textLabel?.text = "События открытия / закрытия чата"
+            cell.detailTextLabel?.text = "Только на экране, без текста сообщений и сетевых запросов."
+            toggle.isOn = p.lifecycleEnabled == true
+            toggle.isEnabled = p.grants.contains("events") && p.grants.contains("chat.read")
+            toggle.addAction(UIAction { [weak self, weak toggle] _ in
+                guard let self, let toggle else { return }
+                self.change(p) { record, _ in record.lifecycleEnabled = toggle.isOn }
+            }, for: .valueChanged)
+            cell.selectionStyle = .none; toggle.accessibilityLabel = cell.textLabel?.text; cell.accessoryView = toggle
+            return cell
+        }
         if indexPath.section == 0 {
             cell.textLabel?.text = ["Расширенные компоненты", "Плавающая кнопка", "Команды контекстного меню"][row]
             toggle.isOn = [options.enhanced, p.chatButtonHidden != true, options.contextEnabled][row]
@@ -1140,7 +1212,7 @@ private final class GoldgramPluginDetail: UITableViewController {
         guard run == nil else { return }
         switch row {
         case 0:
-            if p.enabled { p.enabled = false; p.grants = []; p.floatingTitle = nil; p.contextActions = nil; p.confirmationPolicy = nil; if store.put(p) { sections = []; status = "Выключен" }; tableView.reloadData(); return }
+            if p.enabled { p.enabled = false; p.grants = []; p.floatingTitle = nil; p.contextActions = nil; p.lifecycleSubscriptions = nil; p.confirmationPolicy = nil; if store.put(p) { sections = []; status = "Выключен" }; tableView.reloadData(); return }
             let unsupported = p.manifest.required.subtracting(GoldgramPluginManifest.supported)
             guard unsupported.isEmpty else { showPluginError("Не поддерживаются обязательные разрешения: " + unsupported.sorted().joined(separator: ", ")); return }
             let grants = p.manifest.required.union(p.manifest.optional.intersection(GoldgramPluginManifest.supported)).sorted()
@@ -1157,7 +1229,7 @@ private final class GoldgramPluginDetail: UITableViewController {
             navigationController?.pushViewController(GoldgramPluginEditor(title: "JavaScript", text: p.code) { [weak self] code in
                 guard let self else { return }; self.store.refresh()
                 guard self.store.isCurrent(), var current = self.store.record(self.id), current.code == p.code, !code.isEmpty, code.utf8.count <= GoldgramPluginStore.maxCode else { return }
-                current.previousCode = current.code; current.code = code; current.enabled = false; current.grants = []; current.settingsSchema = nil; current.floatingTitle = nil; current.contextActions = nil; current.confirmationPolicy = nil; current.streamingOptions = nil; current.uiOptions = nil
+                current.previousCode = current.code; current.code = code; current.enabled = false; current.grants = []; current.settingsSchema = nil; current.floatingTitle = nil; current.contextActions = nil; current.confirmationPolicy = nil; current.streamingOptions = nil; current.uiOptions = nil; current.lifecycleEnabled = nil; current.lifecycleSubscriptions = nil
                 if self.store.put(current) { self.sections = []; self.status = "Код обновлён; разрешите заново."; self.title = current.manifest.name; self.navigationController?.popViewController(animated: true); self.tableView.reloadData() }
                 else { (self.navigationController?.topViewController)?.showPluginError("Не удалось сохранить.") }
             }, animated: true)
@@ -1165,7 +1237,7 @@ private final class GoldgramPluginDetail: UITableViewController {
         case 4: showPluginError(logs.isEmpty ? "Нет записей." : logs.joined(separator: "\n"))
         case 5:
             guard let previous = p.previousCode else { showPluginError("Нет предыдущей версии."); return }
-            p.previousCode = p.code; p.code = previous; p.enabled = false; p.grants = []; p.settingsSchema = nil; p.floatingTitle = nil; p.contextActions = nil; p.confirmationPolicy = nil; p.streamingOptions = nil; p.uiOptions = nil
+            p.previousCode = p.code; p.code = previous; p.enabled = false; p.grants = []; p.settingsSchema = nil; p.floatingTitle = nil; p.contextActions = nil; p.confirmationPolicy = nil; p.streamingOptions = nil; p.uiOptions = nil; p.lifecycleEnabled = nil; p.lifecycleSubscriptions = nil
             if store.put(p) { sections = []; status = "Код восстановлен; разрешите заново."; title = p.manifest.name; tableView.reloadData() }
         case 10:
             guard p.enabled, !store.state.safe else { return }
@@ -1219,6 +1291,7 @@ private final class GoldgramPluginDetail: UITableViewController {
                 if event == "plugin.start" || !sections.isEmpty || result["schemaCleared"] as? Bool == true { current.settingsSchema = schema }
             }
             if current.grants.contains("storage") { current.storage = mergedStorage }
+            current.lifecycleSubscriptions = GoldgramPluginLifecycle.subscriptions(result["lifecycleSubscriptions"], grants: current.grants)
             current.floatingTitle = current.grants.contains("ui.mutate") ? (result["floating"] as? [String: Any])?["title"] as? String : nil
             current.contextActions = current.grants.contains("ui.mutate") ? GoldgramPluginChatRun.validateActions(result["contextActions"]) : nil
             guard self.store.put(current) else { self.status = "Не удалось сохранить настройки."; self.tableView.reloadData(); return }
@@ -1400,6 +1473,7 @@ final class GoldgramPluginChatRun {
                 if !checked.isEmpty || result["schemaCleared"] as? Bool == true { current.settingsSchema = schema }
             }
             if current.grants.contains("storage") { current.storage = mergedStorage }
+            current.lifecycleSubscriptions = GoldgramPluginLifecycle.subscriptions(result["lifecycleSubscriptions"], grants: current.grants)
             if current.grants.contains("ui.mutate") { current.contextActions = Self.validateActions(result["contextActions"]); current.floatingTitle = (result["floating"] as? [String: Any])?["title"] as? String }
             guard latest.put(current) else { completion(nil, "Не удалось сохранить настройки."); return }
             let output = result["output"] as? [String: Any]
@@ -1407,6 +1481,64 @@ final class GoldgramPluginChatRun {
                 guard (kind == "draft" && current.grants.contains("chat.write")) || (kind == "clipboard" && current.grants.contains("clipboard")) || (kind == "sheet" && current.grants.contains("ui.read")) else { completion(nil, "Недостаточно разрешений."); return }
             }
             completion(output, output == nil ? (result["logs"] as? [String])?.last : nil)
+        }
+    }
+}
+
+
+// Best-effort foreground notifications, never a background service or a queue
+// of chat content. One current batch, at most four existing execution slots.
+// A new transition cancels the previous batch; busy plugins are skipped.
+@MainActor
+public final class GoldgramPluginLifecycle {
+    private static var active: [UUID: GoldgramPluginRun] = [:]
+    private static var generation = UUID()
+    static func subscriptions(_ raw: Any?, grants: [String]) -> [String] {
+        guard grants.contains("events"), grants.contains("chat.read"), let list = raw as? [String] else { return [] }
+        return ["chat.opened", "chat.closed"].filter { list.contains($0) }
+    }
+    public static func cancel() {
+        generation = UUID()
+        let previous = Array(active.values)
+        active.removeAll()
+        for run in previous { run.cancel() }
+    }
+    public static func deliver(account: String, host: UIView, event: String, peer: String, type: String, valid: @escaping () -> Bool) {
+        cancel()
+        guard ["chat.opened", "chat.closed"].contains(event), UIApplication.shared.applicationState == .active, valid(),
+              !peer.isEmpty, peer.utf8.count <= 256, ["user", "group"].contains(type) else { return }
+        let store = GoldgramPluginStore(account: account, isCurrent: valid)
+        guard store.failure == nil, !store.state.safe else { return }
+        let batch = generation
+        let records = store.state.plugins.filter {
+            $0.enabled && $0.lifecycleEnabled == true &&
+            subscriptions($0.lifecycleSubscriptions, grants: $0.grants).contains(event) &&
+            $0.manifest.required.isSubset(of: Set($0.grants)) && Set($0.grants).isSubset(of: GoldgramPluginManifest.supported)
+        }
+        for p in records.prefix(4) {
+            guard let lease = GoldgramPluginRun.reserve(account: account, id: p.id) else { continue }
+            let stillValid = {
+                guard Self.generation == batch, UIApplication.shared.applicationState == .active, valid() else { return false }
+                let latest = GoldgramPluginStore(account: account, isCurrent: valid)
+                guard latest.failure == nil, !latest.state.safe, let current = latest.record(p.id) else { return false }
+                return current.enabled && current.lifecycleEnabled == true && current.code == p.code && current.grants == p.grants &&
+                    Self.subscriptions(current.lifecycleSubscriptions, grants: current.grants).contains(event)
+            }
+            active[p.id] = GoldgramPluginRun(lease: lease, host: host, record: p, event: event, key: nil, value: nil, account: account, context: ["peerId": peer, "type": type], valid: stillValid) { result, _ in
+                guard Self.generation == batch else { return }
+                Self.active.removeValue(forKey: p.id)
+                guard stillValid(), let result, let values = result["settings"] as? [String: Any], let storage = result["storage"] as? [String: Any],
+                      let encoded = GoldgramPluginStore.encodeValues(values), let stored = GoldgramPluginStore.encodeValues(storage) else { return }
+                let latest = GoldgramPluginStore(account: account, isCurrent: valid)
+                guard var current = latest.record(p.id),
+                      let mergedSettings = GoldgramPluginRouting.merge(base: p.settings, latest: current.settings, proposed: encoded),
+                      let mergedStorage = GoldgramPluginRouting.merge(base: p.storage, latest: current.storage, proposed: stored) else { return }
+                let oldSettings = current.settings, oldStorage = current.storage
+                if current.grants.contains("settings.read") { current.settings = mergedSettings }
+                if current.grants.contains("storage") { current.storage = mergedStorage }
+                // Passive callbacks cannot publish UI, change subscriptions, send, or perform RPC.
+                if current.settings != oldSettings || current.storage != oldStorage { _ = latest.put(current) }
+            }
         }
     }
 }
