@@ -1,6 +1,6 @@
 # CURRENT_STATUS — verified checkpoint
 
-  > **2026-11-26 local user date — #276 CI green; #275 last device-accepted; #276 lifecycle device testing pending.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
+  > **2026-11-26 local user date — #276 CI green and installed; basic chat lifecycle device test passed (1 opening / 1 closing); remaining regression checks pending.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
 
 ## P0 development priority (user-approved 2026-11-25)
 
@@ -15,10 +15,10 @@
 | Feature branch | `gold-next-243-author-search` |
 | HEAD | `ce7db08f07db254d132f88b99accaaee1233636a` (#276 CI green), direct parent #275 |
 | Last green CI | [#276](https://github.com/sviridovski/Telegram-iOS/actions/runs/45756006091), success, 31m11s wall |
-| Last installed | #275 — user confirms UI controls/context menu and button editing work; other tested functions also reported working. |
+| Last installed | #276 — user reports installing and shows Lifecycle Test counters 1 opening / 1 closing after one chat visit; #275 previously accepted UI flows. |
 | Failed candidate | #272 both attempts: wallet-engine Git LFS test snapshot timeout; no native compile. |
-| Next task | **P0 Engine 2.0**: verify #276 device lifecycle/command flows; then extended GGAPI (target #277). |
-| Recovery | #276 latest green CI; #275 device-accepted recovery baseline; #274 prior streaming checkpoint. Earlier #263 navigation checkpoint and older archive/media limitations remain historical. |
+| Next task | **P0 Engine 2.0**: basic #276 lifecycle test passed; verify manual /lifecycle menu command and opt-out, then extended GGAPI (target #277). |
+| Recovery | #276 latest green CI and installed with basic lifecycle flow verified; #275 previous device-accepted recovery baseline; #274 prior streaming checkpoint. Earlier #263 navigation checkpoint and older archive/media limitations remain historical. |
 
 ## #252 corrections retained in #253
 
@@ -387,3 +387,7 @@ Source published: [ce7db08f07db254d132f88b99accaaee1233636a](https://github.com/
 
 - [CI #276](https://github.com/sviridovski/Telegram-iOS/actions/runs/45756006091) completed successfully at 05:05:02 UTC, source `ce7db08f07db254d132f88b99accaaee1233636a`, matching live HEAD of `gold-next-243-author-search`. All three jobs (native, mx, build) successful; IPA artifact 15089146519 present and not expired at verification. Wall time 31m11s versus #275 20m06s. Native cache resolve/restore/save and Mx cached validation succeeded; exact hit counts and cause of longer duration not established. The 15–20 minute target remains unmet on this run.
 - #276 is the latest green CI, not yet user-confirmed on device. #275 remains last installed/device-accepted recovery baseline. Follow the #276 lifecycle test checklist above (event counters, opt-in/opt-out, manual command and prior feature regressions). Extended GGAPI messages/files/media (target #277) follows device acceptance. No source or architecture changes, workflow dispatch, or new build for this documentation checkpoint.
+
+## #276 basic lifecycle device test passed (2026-11-26)
+
+User reports installing #276 and opening/closing one chat. Screenshot of Goldgram Lifecycle Test shows `Открытия: 1`, `Закрытия: 1`, and the counter-check alert `1 / 1`. This is positive on-device evidence for delivery of chat.opened/chat.closed and retention of both counters across the tested callbacks. It does not verify the manual /lifecycle command, opt-out, restart persistence, rapid navigation, account isolation, safe mode, or prior-feature regressions. #276 is the latest green and installed build with this specific flow verified; #275 remains previous accepted recovery baseline. Next quick checks: manual context-menu /lifecycle and disabled chat events (counters should stay unchanged on an ordinary chat visit). Then proceed with extended GGAPI (target #277) under the approved engine-first roadmap. No source/architecture changes or build dispatch for this checkpoint. Do not publish user screenshots or private chat data.
