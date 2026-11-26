@@ -1,6 +1,6 @@
 # CURRENT_STATUS — verified checkpoint
 
-  > **2026-11-26 local user date — #274 green/device-accepted; #275 extended UI Engine candidate.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
+  > **2026-11-26 local user date — #275 CI green; #274 device-accepted; #275 device acceptance pending.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
 
 ## P0 development priority (user-approved 2026-11-25)
 
@@ -13,11 +13,11 @@
 | Item | Latest confirmed status |
 | --- | --- |
 | Feature branch | `gold-next-243-author-search` |
-| HEAD | `1699a18cbf304a3884f8b8a538cc8edfd0915f99` (#275 candidate), direct parent #274 |
-| Last green CI | [#274](https://github.com/sviridovski/Telegram-iOS/actions/runs/45737637443), success, 36m10s wall |
+| HEAD | `1699a18cbf304a3884f8b8a538cc8edfd0915f99` (#275 CI green), direct parent #274 |
+| Last green CI | [#275](https://github.com/sviridovski/Telegram-iOS/actions/runs/45751521153), success, 20m06s wall |
 | Last installed | #274 — user confirms streaming generation works excellently; individual controls and negative-path tests not separately confirmed. |
 | Failed candidate | #272 both attempts: wallet-engine Git LFS test snapshot timeout; no native compile. |
-| Next task | **P0 Engine 2.0**: verify #275 CI/device native controls, dynamic settings and visibility; then Event Bus/lifecycle (target #276). |
+| Next task | **P0 Engine 2.0**: verify #275 on-device native controls, dynamic settings and visibility; then Event Bus/lifecycle (target #276). |
 | Recovery | #263 green and swipe confirmed, media completeness issue open. #260 earlier broadly user-confirmed baseline; original port/telegram-13.2 unchanged. |
 
 ## #252 corrections retained in #253
@@ -364,3 +364,8 @@ User approved development of #275 after device acceptance of streaming in #274. 
 - Added bundled Goldgram UI Test, install from Plugins > Установить тест интерфейса, then enable and allow requested permissions. Contains toggle, slider with step 0.5, stepper, select, textarea, grouped info/card/progress, floating UI button, two context actions; no network or archive access. Tests: actual worker script executed with simulated host RPC/accelerated timers and 57 assertions total (all earlier worker regressions plus new schema, dynamic output, permissions and explicit clear/re-render); 13 standalone Linux Swift preconditions against copied final UI policy and Codable migration passed. Added test fixtures to CI. UIKit/WebKit compilation and actual iPhone interaction remain unverified. No claim of full UI Engine roadmap coverage; complex nested screens/charts, advanced button placement and further lifecycle handling remain follow-up work.
 - CI #274 wall 36m10s; native build step 1550s, cache restore 122s/save 87s, 8228 of 10103 Bazel processes reported disk cache hits, critical path 1252.20s. Keep working parent cache, LFS fix, all preflight tests; no cache-key/size change or actual speedup claimed for #275. 15–20 min target still unmet.
 - Acceptance: enable original AICC on #275 and verify ordinary/streaming generation, settings, profile and model selection; open Interface settings, disable one message action and verify absent while others work, disable all/re-enable, hide/show and rename floating button, disable enhanced UI and restore it. Install UI Test and enable, set level 7.5 then save, verify updated card and 75% indicator, search/select style, toggle, stepper, multiline editor, collapse group; test UI A/B isolation, persistence on restart, safe mode and previous streaming regressions. Next approved P0 after CI and device acceptance: Event Bus/lifecycle (target #276).
+
+## #275 CI green — device acceptance pending (2026-11-26)
+
+- [CI #275](https://github.com/sviridovski/Telegram-iOS/actions/runs/45751521153) completed successfully at 04:11:19 UTC, attempt 1, source `1699a18cbf304a3884f8b8a538cc8edfd0915f99`. Verified HEAD of `gold-next-243-author-search` matches. All three jobs (native, mx, build) success; IPA artifact 15086731319 present, not expired at check. Wall time 20m06s vs #274 36m10s; native cache restore/save and Mx validation steps succeeded, exact cache hit rate and cause of improvement not established in this check. Do not treat a single faster run as a guaranteed speedup.
+- Latest green CI is #275; latest device-accepted baseline remains #274 until the user confirms #275 UI tests. Follow the candidate acceptance checklist above. Next P0 is Event Bus/lifecycle (target #276) only after device acceptance. No source changes, architecture changes, or workflow dispatch for this checkpoint.
