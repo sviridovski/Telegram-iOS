@@ -215,3 +215,8 @@ GoldgramAIButtonGroup hosts per-plugin buttons with independent execution and sh
 
 ## #272 candidate — provider network policy and model catalog
 Scoped native route dispatcher, sanitized provider metadata, key-scoped cache, explicit foreground refresh, plugin-defined dynamic model select; see CURRENT_STATUS and compatibility guide. No new database, no changes to archive/Collector/Ghost.
+
+
+## #273 — native fallback versus JS plugin settings
+
+Native reserve assistant and imported plugins have independent credentials and settings. Native configuration is keyed by account; plugin credentials are keyed by account and plugin UUID. Plugin UI/commands are JS-owned; the generic catalog does not overwrite legacy JS model choices. Native button switch does not disable plugin registrations. See CURRENT_STATUS for partial device verification.

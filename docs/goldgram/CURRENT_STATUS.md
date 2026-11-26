@@ -1,6 +1,6 @@
 # CURRENT_STATUS — verified checkpoint
 
-  > **2026-11-26 local user date — #271 green/device-accepted; #272 failed twice in Git LFS checkout; #273 CI-only fix candidate.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
+  > **2026-11-26 local user date — #273 green and installed; native model catalog verified, plugin-specific checks pending.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
 
 ## P0 development priority (user-approved 2026-11-25)
 
@@ -14,10 +14,10 @@
 | --- | --- |
 | Feature branch | `gold-next-243-author-search` |
 | HEAD | `e3b9b0796a7b34d1c844285f02e73fa924931997` (#273 CI-only fix), direct parent #272 |
-| Last green CI | [#271](https://github.com/sviridovski/Telegram-iOS/actions/runs/45691273817), completed success, 38m09s wall |
-| Last installed | #271 — user reports works excellently; screenshots AI/A/B then AI/A. |
+| Last green CI | [#273](https://github.com/sviridovski/Telegram-iOS/actions/runs/45730780334), success, 32m24s wall |
+| Last installed | #273 — native catalog live refresh confirmed; plugin settings/independent button observed; full acceptance pending. |
 | Failed candidate | #272 both attempts: wallet-engine Git LFS test snapshot timeout; no native compile. |
-| Next task | **P0 Engine 2.0**: validate #273 CI checkout and Network Engine device tests; then SSE streaming (number shifted). |
+| Next task | **P0 Engine 2.0**: confirm original AICC plugin-specific catalog and generation on #273; then SSE streaming (target #274). |
 | Recovery | #263 green and swipe confirmed, media completeness issue open. #260 earlier broadly user-confirmed baseline; original port/telegram-13.2 unchanged. |
 
 ## #252 corrections retained in #253
@@ -325,3 +325,8 @@ CI run [#272](https://github.com/sviridovski/Telegram-iOS/actions/runs/457188231
 - #272 run 45718823181 attempt 2: native job 139602240048 failed again in Checkout pinned submodules efficiently, before any Swift compile or Bazel cache restore. Git LFS batch timeout for wallet-engine examples/swift/WalletEngineAppUITests/Snapshots/iphone-16-pro/ton-connect-connected.png, then fallback checkout failed. Mx success, Build skipped. First attempt had failed for a different snapshot in same directory.
 - Inspected third-party/wallet-engine/BUILD and pinned upstream i582/wallet-engine .gitattributes/Cargo.toml: LFS tracks PNG visual baselines in examples/swift/WalletEngineAppUITests/Snapshots and examples/web/e2e/scenarios/snapshots; production Bazel inputs do not include these example paths. #273 source e3b9b0796a7b34d1c844285f02e73fa924931997, direct parent #272, only .github/workflows/build.yml changed. Scope lfs.fetchexclude to those PNG patterns during submodule update, keep LFS enabled for all other files, no dependency revision changes. Shallow checkout first; on failure retry full checkout --force (fresh CI runner only) with 5s/15s delays, maximum three attempts; reject recursive submodule status with missing/mismatched/conflicted pins. No application code or cache key format changed. Existing parent cache preference then broad prefix retained; actual hit and duration pending.
 - Local bash syntax and seven mock Git control-flow fixtures passed (success, retry success, second retry success, all fail, mismatch, missing, conflict). Actual Git LFS network and macOS build not tested locally. [CI #273](https://github.com/sviridovski/Telegram-iOS/actions/runs/45730780334), in_progress. #271 remains last green and user-confirmed. #273 is a CI fix for Network Engine, not Streaming Engine; resume SSE only after successful CI and user acceptance of catalog/generation, following existing roadmap. Numbering shifts accordingly.
+
+
+## #273 green; partial Network Engine device verification (2026-11-26)
+
+CI [#273](https://github.com/sviridovski/Telegram-iOS/actions/runs/45730780334) completed success, 32m24s wall, source e3b9b0796a7b34d1c844285f02e73fa924931997. User installed #273. Screenshots show native fallback catalog initially missing its own API key, then successful catalog update at 04:26 local, DeepSeek-V4.1-Flash (deepseek-flash, image/text) and DeepSeek-V4-Pro (deepseek-v4-pro, text), both context 1048576 as returned/displayed by API. Native fallback floating button switched off; original plugin button remains visible. The original AICC 2.1.8 settings show its own saved Keychain credential and two JS-defined model options. Source confirms independent native config keyed by account, plugin credential keyed by account + plugin UUID, and native fallback only when no eligible plugin registration and fallback enabled. Original JS has hardcoded model options and normalization, so selecting a model or disabling button in native fallback does not modify plugin settings. This is expected separation, but UI labels are confusing. Explain using Plugins > AI Командный центр 2.1.8 > Каталог моделей DeepSeek (plugin-specific catalog) and Показывать кнопку в чате, and plugin's own model setting for actual generation. Do not request duplicate key if already saved in plugin, do not merge secrets or force overriding JS settings. Proposed later UI clarification: label native assistant as reserve, emphasize plugin-specific catalog and upgrade original JS to dynamic model selector in AICC 3.0. No source changes or new CI triggered for this checkpoint. Native live model discovery confirmed; plugin-specific catalog refresh and generation regression on #273 not yet explicitly reported; streaming stage awaits these checks. Image modality metadata does not establish image-input support in current text-only broker. No changes to SQLite/Ghost/Collector/Live Bridge.
