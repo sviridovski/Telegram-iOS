@@ -258,3 +258,7 @@ The plugin host may run foreground explicit actions in eligible ordinary read-on
 ## #279 candidate — scoped discussion-root access and TTL consent preference
 
 Native confirmation policy adds a backward-compatible optional per-plugin TTL warning opt-out, explicit consent once, same eligible selected ordinary text only, current grants/action/account checks and existing reset behavior. Linked-discussion selected-message access admits the exact available current thread channelMessageId/effectiveMessageId, not arbitrary foreign peer IDs. Selected text with webpage preview is treated as text only. Existing protected/secret/ephemeral exclusions, history and composer boundaries remain intact. See CURRENT_STATUS/DECISIONS_LOG for limits and acceptance.
+
+## #280 candidate — text and media access are independent
+
+For explicit ordinary selected-message actions, text captions on supported image/file attachments are treated as text when non-expiring and otherwise eligible. Native permission filtering and worker callback sanitization remove mediaKind when media grants are missing, without discarding the caption. Existing media-only gate, exact discussion root scope, secret/protected/ephemeral exclusions, history scope and composer safety remain. See CURRENT_STATUS/DECISIONS_LOG for limits and tests.

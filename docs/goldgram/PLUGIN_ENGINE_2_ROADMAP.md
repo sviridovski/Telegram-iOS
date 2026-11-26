@@ -121,3 +121,10 @@ Following the prior 1/1 screenshot, user confirmed all works after being asked t
 
 ### #279 — finish context-menu fixes before GoldAPI
 [CI #279](https://github.com/sviridovski/Telegram-iOS/actions/runs/45811725164), source 0d047b339d9521f4c82b27635c98286bbb35ab2a. Per-plugin TTL warning toggle and exact current linked-discussion root ID; selected webpage preview text only. Device acceptance required before GoldAPI.
+
+## #279 CI and partial device checkpoint (2026-11-26)
+
+[CI #279](https://github.com/sviridovski/Telegram-iOS/actions/runs/45811725164) succeeded (all three jobs; IPA artifact 15116570980 unexpired when checked); wall time 35m39s, source `0d047b339d9521f4c82b27635c98286bbb35ab2a`. User installed #279 and confirmed that the warning no longer appears in the group with auto-delete, validating the tested opt-out path. User still reports missing AI Commander context actions on the news root inside its discussion; new screenshots show a publication with visible media plus text and an ordinary native menu without AI actions. Toggle re-enable and other regressions not explicitly retested. Do not publish screenshots or their private contents.
+
+### #280 — caption/context fix before GoldAPI
+[CI #280](https://github.com/sviridovski/Telegram-iOS/actions/runs/45873381350), source 699fc6667f77bb2f65c37a6326a30e2c1aceebf5. Selected caption text independent of media permission, native/worker metadata gating. Verify device before GoldAPI.
