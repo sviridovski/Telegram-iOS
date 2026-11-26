@@ -100,3 +100,10 @@ User reports #275 works very well, sliders change the context menu, button editi
 
 ### #276 candidate — scoped Event Bus/lifecycle
 Opt-in foreground chat.opened/closed, bounded per-execution on/once/off/local.emit, manual context-menu commands and native teardown. [CI #276](https://github.com/sviridovski/Telegram-iOS/actions/runs/45756006091) queued at first verification; #275 fallback. Full lifecycle parity, slash interception and durable background events not implemented. Verify CI and actual device; next P0 extended GGAPI only after acceptance.
+
+## #276 accepted — lifecycle checkpoint (2026-11-26)
+
+Following the prior 1/1 screenshot, user confirmed all works after being asked to verify the manual `/lifecycle` context-menu action and disabled chat event counters, and explicitly approved proceeding to #277. Treat those flows as user-reported working, not individually instrumented test results. #276 is current green/device-accepted recovery baseline (`ce7db08f07db254d132f88b99accaaee1233636a`; CI success, 31m11s). Restart persistence, rapid-navigation limits, account isolation, safe mode and earlier feature regressions remain in the test matrix.
+
+### #277 target — extended GGAPI candidate
+[CI #277](https://github.com/sviridovski/Telegram-iOS/actions/runs/45793342815) in_progress at verification; source 79e8a85b416b0c2048e39023ab834e664de849a6. Scoped visible-snapshot text history (not full server history), optional metadata-only media, bounded persistent logical text/JSON files in the existing plugin record. Test on iPhone before moving to further GGAPI/GoldAPI work. See CURRENT_STATUS and DECISIONS_LOG for acceptance and gaps.

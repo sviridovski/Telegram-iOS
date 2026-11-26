@@ -242,3 +242,11 @@ Native controls and validated JS-owned schema, optional UI preferences scoped by
 ## #276 candidate — scoped event bus and disposable lifecycle
 
 Keep disposable Workers and existing global execution slots. Opt-in automatic foreground chat.opened/closed subscriptions use only eligible chat metadata, no draft/messages, network, UI output or send. Scoped callback tokens, local event emission limits, current-context/grant checks, cancellation and local settings/storage merge. Explicit command registration maps to existing context-menu actions, not slash interception. No persistent runtime, plugin.stop/onUnload parity or guaranteed delivery. See CURRENT_STATUS and DECISIONS_LOG for test gates and limitations.
+
+## #276 accepted — lifecycle checkpoint (2026-11-26)
+
+Following the prior 1/1 screenshot, user confirmed all works after being asked to verify the manual `/lifecycle` context-menu action and disabled chat event counters, and explicitly approved proceeding to #277. Treat those flows as user-reported working, not individually instrumented test results. #276 is current green/device-accepted recovery baseline (`ce7db08f07db254d132f88b99accaaee1233636a`; CI success, 31m11s). Restart persistence, rapid-navigation limits, account isolation, safe mode and earlier feature regressions remain in the test matrix.
+
+## #277 candidate — bounded GGAPI data services
+
+Extend only the existing foreground snapshot boundary: text history is explicitly incomplete, selected media is kind/ID metadata behind optional media.read plus chat/messages grants, and logical UTF-8 files use optional bounded fileData in the existing account/plugin JSON record (atomic validated merge, no arbitrary filesystem or new database). No native archive, read-state, session or send bridge. See CURRENT_STATUS and DECISIONS_LOG for evidence and limits.

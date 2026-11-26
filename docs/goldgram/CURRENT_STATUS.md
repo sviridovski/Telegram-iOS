@@ -1,6 +1,6 @@
 # CURRENT_STATUS — verified checkpoint
 
-  > **2026-11-26 local user date — #276 CI green and installed; basic chat lifecycle device test passed (1 opening / 1 closing); remaining regression checks pending.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
+  > **2026-11-26 local user date — #276 green/device-accepted; extended GGAPI candidate (target #277) published; CI/device validation pending.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
 
 ## P0 development priority (user-approved 2026-11-25)
 
@@ -13,12 +13,12 @@
 | Item | Latest confirmed status |
 | --- | --- |
 | Feature branch | `gold-next-243-author-search` |
-| HEAD | `ce7db08f07db254d132f88b99accaaee1233636a` (#276 CI green), direct parent #275 |
+| HEAD | `79e8a85b416b0c2048e39023ab834e664de849a6` (extended GGAPI candidate, target #277), direct parent #276 |
 | Last green CI | [#276](https://github.com/sviridovski/Telegram-iOS/actions/runs/45756006091), success, 31m11s wall |
-| Last installed | #276 — user reports installing and shows Lifecycle Test counters 1 opening / 1 closing after one chat visit; #275 previously accepted UI flows. |
+| Last installed | #276 — screenshot 1 opening / 1 closing; user subsequently reports all works and approves #277. |
 | Failed candidate | #272 both attempts: wallet-engine Git LFS test snapshot timeout; no native compile. |
-| Next task | **P0 Engine 2.0**: basic #276 lifecycle test passed; verify manual /lifecycle menu command and opt-out, then extended GGAPI (target #277). |
-| Recovery | #276 latest green CI and installed with basic lifecycle flow verified; #275 previous device-accepted recovery baseline; #274 prior streaming checkpoint. Earlier #263 navigation checkpoint and older archive/media limitations remain historical. |
+| Next task | **P0 Engine 2.0**: verify extended GGAPI candidate CI and on-device data tests; then next approved roadmap stage. |
+| Recovery | #276 green/device-accepted recovery baseline; #275 prior UI and #274 prior streaming checkpoints. Earlier #263 navigation checkpoint and older archive/media limitations remain historical. |
 
 ## #252 corrections retained in #253
 
@@ -391,3 +391,18 @@ Source published: [ce7db08f07db254d132f88b99accaaee1233636a](https://github.com/
 ## #276 basic lifecycle device test passed (2026-11-26)
 
 User reports installing #276 and opening/closing one chat. Screenshot of Goldgram Lifecycle Test shows `Открытия: 1`, `Закрытия: 1`, and the counter-check alert `1 / 1`. This is positive on-device evidence for delivery of chat.opened/chat.closed and retention of both counters across the tested callbacks. It does not verify the manual /lifecycle command, opt-out, restart persistence, rapid navigation, account isolation, safe mode, or prior-feature regressions. #276 is the latest green and installed build with this specific flow verified; #275 remains previous accepted recovery baseline. Next quick checks: manual context-menu /lifecycle and disabled chat events (counters should stay unchanged on an ordinary chat visit). Then proceed with extended GGAPI (target #277) under the approved engine-first roadmap. No source/architecture changes or build dispatch for this checkpoint. Do not publish user screenshots or private chat data.
+
+## #276 accepted — lifecycle checkpoint (2026-11-26)
+
+Following the prior 1/1 screenshot, user confirmed all works after being asked to verify the manual `/lifecycle` context-menu action and disabled chat event counters, and explicitly approved proceeding to #277. Treat those flows as user-reported working, not individually instrumented test results. #276 is current green/device-accepted recovery baseline (`ce7db08f07db254d132f88b99accaaee1233636a`; CI success, 31m11s). Restart persistence, rapid-navigation limits, account isolation, safe mode and earlier feature regressions remain in the test matrix.
+
+
+## Extended GGAPI — #277 target candidate (2026-11-26)
+
+Source [79e8a85b416b0c2048e39023ab834e664de849a6](https://github.com/sviridovski/Telegram-iOS/commit/79e8a85b416b0c2048e39023ab834e664de849a6), direct parent accepted #276; [CI #277](https://github.com/sviridovski/Telegram-iOS/actions/runs/45793342815) in_progress at verification. Scope: GoldgramPlugins.swift, GoldgramAI.swift (menu forwarding only), ChatController.swift (foreground snapshot/menu only), test_plugin_engine.py. No changes to SQLite, archive, Collector, Live Bridge, Ghost policy, network/stream transport, original AICC JS or CI/cache configuration. #276 remains accepted fallback. No full iOS compile or on-device test of candidate yet.
+
+- GGAPI.messages.history/getHistory(peerId,{limit,beforeId}) returns only the existing scoped, visible ordinary text snapshot, maximum 36, oldest to newest, with `scope: visibleSnapshot, complete: false, hasMore: null`. Before-ID filters this snapshot, not pagination from server. Foreign peer/thread and unsupported options rejected. get/fetch/getMessages additionally support explicitly selected allowed message by its ID; max 36 IDs, no cross-chat query, no mark-read or network. Existing visible/current ordering remains chronological. AICC legacy history fallback can use this snapshot. No full Telegram history, remote search or archive access claimed.
+- Optional media.read grant plus messages.read and chat.read: ordinary supported single image/file metadata only (message ID and kind), via media.visible/selected/forMessage/info. Menu on supported media only for registrations with these grants; selected snapshot has no caption, raw data, file path or secret fields. Existing protected, ephemeral, TTL, restricted, secret and read-only/otherwise ineligible chat checks remain; no download, raw bytes, save or send. Old plugins without the grant do not receive media metadata. Metadata classification is coarse, not full Ghostgram API parity.
+- Persistent logical files: optional Codable fileData in existing per-account/plugin JSON record; old records decode without it. storage grant, non-passive executions only; writeText/readText/writeJSON/readJSON/list/exists/stat/remove, existing explicit JSON pick/share. 16 flat safe ASCII names, aggregate 64 KiB UTF-8 incl names, deny path traversal/secret-like names, native revalidation and merge-on-commit through existing atomic store. No filesystem paths, directories, binary files or new SQLite; share only JSON through existing native share UI. No passive access, no change to existing settings/storage or Keychain policy. File contents are local data, not a secret vault. Existing total worker-result/store quotas still apply. Plugin disable stops execution, delete removes its record; ordinary plugin version changes retain data unless existing record policy clears it.
+- Bundled Goldgram Data Test, install from Plugins > Установить тест GGAPI. Write two synthetic files, read from a separate action (expect Привет 👋 / {count:42}), restart and read again, remove and read null. Floating API button reports count of visible text/media and full-history false. Context action shows selected text length or media kind. Revoke optional media.read and verify media action disappears, text still works; re-enable if wanted. Check AICC generation/SSE, lifecycle opt-out, safe mode and multi-plugin isolation. No private test data needed.
+- Local V8 executed the actual updated Worker and JS harness with simulated RPC/accelerated timers: 100 assertions passed (73 prior + 27 new), including persistence across executions via supplied snapshots, UTF-8 quota, file count/path/secret-name checks, scope refusal, media grants and passive denial. This is not native store integration, macOS Swift/UIKit/WebKit build, real device or actual Node/Python CI execution. Added assertions to existing CI fixture. Existing warm-cache path preserved; no speedup claimed, 15–20 min target still open. Next roadmap stage only after CI and device acceptance.
