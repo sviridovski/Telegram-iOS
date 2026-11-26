@@ -184,3 +184,10 @@ assert 'guard canSendMessagesToChat(self.presentationInterfaceState)' in chat
 assert 'goldgramPluginTimedText' in chat and 'attr.timeout != viewOnceTimeout' in chat
 assert 'Сообщение с автоудалением' in chat and 'AutoclearTimeoutMessageAttribute' in chat
 assert 'guard registration == nil, draft.writable' in ai and 'guard draft.writable, self.token' in ai
+
+assert 'var allowTimedTextWithoutPrompt: Bool?' in source and 'skipTimedTextPrompt(account: String, actionKey: String)' in source
+assert 'thread.channelMessageId == id || thread.effectiveMessageId == id' in chat
+assert 'thread.isChannelPost, !thread.isNotAvailable' in chat
+assert 'peer == message.id.peerId || self.goldgramPluginDiscussionRoot(message.id)' in chat
+assert 'message.media.allSatisfy { $0 is TelegramMediaWebpage }' in chat
+assert 'GoldgramAIButtonGroup.skipTimedTextPrompt' in chat

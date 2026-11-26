@@ -452,6 +452,7 @@ public final class GoldgramAIButtonGroup: UIView {
     private var dragOrigin = CGPoint.zero
     private var dragAnchor: CGPoint?
     public static func isEnabled(account: String) -> Bool { GoldgramAIButton.isEnabled(account: account) }
+    public static func skipTimedTextPrompt(account: String, actionKey: String) -> Bool { GoldgramPluginChatRun.skipTimedTextPrompt(account: account, actionKey: actionKey) }
     public static func pluginMenu(account: String, mediaOnly: Bool = false) -> [[String: String]] { GoldgramPluginChatRun.menu(account: account, mediaOnly: mediaOnly) }
     public init(account: String, presenter: UIViewController, snapshot: @escaping () -> GoldgramAIDraft?, pluginContext: (() -> [String: Any])? = nil, insert: @escaping (GoldgramAIDraft, String) -> Bool) {
         self.account = account; self.presenter = presenter; self.snapshot = snapshot; self.pluginContext = pluginContext; self.insert = insert

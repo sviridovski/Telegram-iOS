@@ -8150,13 +8150,27 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
         button.reposition()
     }
 
+    // A linked discussion displays the source channel's root post as well as group replies.
+    // Permit only the exact root identity supplied by the active Telegram reply thread.
+    private func goldgramPluginDiscussionRoot(_ id: MessageId) -> Bool {
+        guard case let .replyThread(thread) = self.chatLocation, thread.isChannelPost, !thread.isNotAvailable else { return false }
+        return thread.channelMessageId == id || thread.effectiveMessageId == id
+    }
+
+    private func goldgramPluginSelectedText(_ message: Message) -> Bool {
+        // A web-page preview is not an attachment payload. Only the text is passed.
+        !message.text.isEmpty && message.media.allSatisfy { $0 is TelegramMediaWebpage }
+    }
+
     func goldgramPluginMessageMenu(_ message: EngineMessage) -> [[String: String]] {
-        guard self.goldgramPluginIdentity() != nil, self.goldgramAIButton != nil, let peer = self.chatLocation.peerId, peer == message.id.peerId,
+        guard self.goldgramPluginIdentity() != nil, self.goldgramAIButton != nil, let peer = self.chatLocation.peerId,
+              peer == message.id.peerId || self.goldgramPluginDiscussionRoot(message.id),
               message.id.namespace == Namespaces.Message.Cloud, !message._asMessage().isCopyProtected(), !message.containsSecretMedia,
               !message.attributes.contains(where: { $0 is AutoclearTimeoutMessageAttribute || $0 is RestrictedContentMessageAttribute || $0 is EphemeralMessageAttribute }) else { return [] }
         if message.attributes.contains(where: { $0 is AutoremoveTimeoutMessageAttribute }) && !self.goldgramPluginTimedText(message._asMessage()) { return [] }
-        let mediaOnly = !message.media.isEmpty
-        guard mediaOnly ? self.goldgramPluginMediaKind(message._asMessage()) != nil : !message.text.isEmpty else { return [] }
+        let textOnly = self.goldgramPluginSelectedText(message._asMessage())
+        let mediaOnly = !textOnly
+        guard textOnly || self.goldgramPluginMediaKind(message._asMessage()) != nil else { return [] }
         return GoldgramAIButtonGroup.pluginMenu(account: String(self.context.account.peerId.id._internalGetInt64Value()), mediaOnly: mediaOnly)
     }
     func goldgramInvokePluginMessageAction(_ key: String, message: EngineMessage) {
@@ -8167,7 +8181,8 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
         } else {
             snapshot = ["id":String(describing:message.id),"id_num":message.id.id,"timestamp":message.timestamp,"outgoing":!message._asMessage().flags.contains(.Incoming),"text":String(message.text.prefix(6000)),"authorPeerId":String(describing:message.author?.id)]
         }
-        if self.goldgramPluginTimedText(message._asMessage()) {
+        if self.goldgramPluginTimedText(message._asMessage()) &&
+            !GoldgramAIButtonGroup.skipTimedTextPrompt(account: String(self.context.account.peerId.id._internalGetInt64Value()), actionKey: key) {
             guard let identity = self.goldgramPluginIdentity() else { return }
             // Context menu is dismissed before the confirmation. Revalidate at both taps.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self = self] in

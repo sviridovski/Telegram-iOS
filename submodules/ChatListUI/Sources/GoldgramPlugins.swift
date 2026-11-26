@@ -43,12 +43,17 @@ private struct GoldgramPluginManifest {
 private struct GoldgramPluginConfirmationPolicy: Codable, Equatable {
     var allowRequestWithoutPrompt = false
     var allowDraftWithoutPreview = false
+    // Missing field in older records means confirmation stays enabled.
+    var allowTimedTextWithoutPrompt: Bool?
     static func skipRequest(_ policy: Self?, grants: [String], event: String) -> Bool {
         policy?.allowRequestWithoutPrompt == true && grants.contains("network.fetch") &&
             (event == "floating.tap" || event == "context.tap")
     }
     static func skipDraft(_ policy: Self?, grants: [String]) -> Bool {
         policy?.allowDraftWithoutPreview == true && grants.contains("chat.write")
+    }
+    static func skipTimedText(_ policy: Self?, grants: [String]) -> Bool {
+        policy?.allowTimedTextWithoutPrompt == true && grants.contains("messages.read") && grants.contains("ui.mutate")
     }
 }
 
@@ -858,7 +863,7 @@ private final class GoldgramPluginConfirmations: UITableViewController {
     override func viewDidLoad() { super.viewDidLoad(); title = "Подтверждения плагинов" }
     override func viewWillAppear(_ animated: Bool) { super.viewWillAppear(animated); store.refresh(); tableView.reloadData() }
     override func numberOfSections(in tableView: UITableView) -> Int { store.isCurrent() ? store.state.plugins.count + 1 : 1 }
-    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? 1 : 2 }
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? 1 : 3 }
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
         guard store.isCurrent(), section > 0, section <= store.state.plugins.count else { return nil }
         return store.state.plugins[section - 1].manifest.name
@@ -877,17 +882,18 @@ private final class GoldgramPluginConfirmations: UITableViewController {
         }
         guard store.isCurrent(), indexPath.section <= store.state.plugins.count else { return cell }
         let p = store.state.plugins[indexPath.section - 1]
-        let network = indexPath.row == 0
-        let allowed = p.enabled && p.grants.contains(network ? "network.fetch" : "chat.write")
-        let skipped = network ? p.confirmationPolicy?.allowRequestWithoutPrompt == true : p.confirmationPolicy?.allowDraftWithoutPreview == true
-        cell.textLabel?.text = network ? "Подтверждать запрос к DeepSeek" : "Предпросмотр перед вставкой"
+        let row = indexPath.row
+        let network = row == 0, timed = row == 2
+        let allowed = p.enabled && p.grants.contains(network ? "network.fetch" : (timed ? "messages.read" : "chat.write")) && (!timed || p.grants.contains("ui.mutate"))
+        let skipped = timed ? GoldgramPluginConfirmationPolicy.skipTimedText(p.confirmationPolicy, grants: p.grants) : (network ? p.confirmationPolicy?.allowRequestWithoutPrompt == true : p.confirmationPolicy?.allowDraftWithoutPreview == true)
+        cell.textLabel?.text = timed ? "Подтверждать доступ к автоудаляемому тексту" : (network ? "Подтверждать запрос к DeepSeek" : "Предпросмотр перед вставкой")
         cell.detailTextLabel?.text = allowed ? (skipped ? "Выключено" : "Включено") : "Нет разрешения или плагин выключен"
         let toggle = UISwitch(); toggle.isOn = !skipped; toggle.isEnabled = allowed
         toggle.accessibilityLabel = cell.textLabel?.text
         toggle.addAction(UIAction { [weak self, weak toggle] _ in
             toggle?.setOn(!skipped, animated: false)
             guard let self, let index = self.store.state.plugins.firstIndex(where: { $0.id == p.id }) else { return }
-            self.tableView(self.tableView, didSelectRowAt: IndexPath(row: network ? 0 : 1, section: index + 1))
+            self.tableView(self.tableView, didSelectRowAt: IndexPath(row: row, section: index + 1))
         }, for: .valueChanged)
         cell.accessoryView = toggle
         cell.selectionStyle = allowed ? .default : .none
@@ -905,23 +911,30 @@ private final class GoldgramPluginConfirmations: UITableViewController {
         }
         guard indexPath.section <= store.state.plugins.count else { return }
         let p = store.state.plugins[indexPath.section - 1]
-        let network = indexPath.row == 0, grant = network ? "network.fetch" : "chat.write"
-        guard p.enabled, p.grants.contains(grant) else { return }
-        let skipped = network ? p.confirmationPolicy?.allowRequestWithoutPrompt == true : p.confirmationPolicy?.allowDraftWithoutPreview == true
+        let network = indexPath.row == 0, timed = indexPath.row == 2
+        let grant = network ? "network.fetch" : (timed ? "messages.read" : "chat.write")
+        guard p.enabled, p.grants.contains(grant), !timed || p.grants.contains("ui.mutate") else { return }
+        let skipped = timed ? GoldgramPluginConfirmationPolicy.skipTimedText(p.confirmationPolicy, grants: p.grants) : (network ? p.confirmationPolicy?.allowRequestWithoutPrompt == true : p.confirmationPolicy?.allowDraftWithoutPreview == true)
         let apply: (Bool) -> Void = { [weak self] skip in
             guard let self, self.store.isCurrent() else { return }; self.store.refresh()
             guard var current = self.store.record(p.id),
                   current.enabled, current.code == p.code, current.grants == p.grants else { return }
             var policy = current.confirmationPolicy ?? GoldgramPluginConfirmationPolicy()
-            if network { policy.allowRequestWithoutPrompt = skip } else { policy.allowDraftWithoutPreview = skip }
+            if timed { policy.allowTimedTextWithoutPrompt = skip }
+            else if network { policy.allowRequestWithoutPrompt = skip } else { policy.allowDraftWithoutPreview = skip }
             current.confirmationPolicy = policy
             if !self.store.put(current) { self.showPluginError("Не удалось сохранить настройки.") }
             self.tableView.reloadData()
         }
         if skipped { apply(false); return }
-        let message = network
-            ? "Разрешить этому плагину при нажатии его кнопки или команды отправлять промпт, текст и доступный контекст переписки в api.deepseek.com без повторного окна? Запросы могут расходовать баланс. Фоновые запросы, другие адреса и запросы из настроек не разрешаются автоматически."
-            : "Разрешить этому плагину заменять текущий неизменённый черновик без предпросмотра? Текст останется в поле ввода, а отправку сообщения вы выполните сами."
+        let message: String
+        if timed {
+            message = "Разрешить этому плагину получать выбранный вручную обычный текст группы или канала с автоудалением без повторного предупреждения? Плагин может сохранить текст или передать разрешённому сервису. Автоудаление Telegram не удаляет такие копии. Защищённые, одноразовые и секретные сообщения остаются недоступны."
+        } else if network {
+            message = "Разрешить этому плагину при нажатии его кнопки или команды отправлять промпт, текст и доступный контекст переписки в api.deepseek.com без повторного окна? Запросы могут расходовать баланс. Фоновые запросы, другие адреса и запросы из настроек не разрешаются автоматически."
+        } else {
+            message = "Разрешить этому плагину заменять текущий неизменённый черновик без предпросмотра? Текст останется в поле ввода, а отправку сообщения вы выполните сами."
+        }
         let alert = UIAlertController(title: "Отключить подтверждение?", message: message, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Разрешить", style: .default) { _ in apply(true) })
         alert.addAction(UIAlertAction(title: "Отмена", style: .cancel))
@@ -1530,6 +1543,13 @@ final class GoldgramPluginChatRun {
         guard store.failure == nil, !store.state.safe, let current = store.record(id), current.enabled,
               current.grants.contains("chat.write"), registrations(account: account).contains(where: { $0.id == id }) else { return (false, false) }
         return (true, GoldgramPluginConfirmationPolicy.skipDraft(current.confirmationPolicy, grants: current.grants))
+    }
+    static func skipTimedTextPrompt(account: String, actionKey: String) -> Bool {
+        guard let (id, local) = GoldgramPluginRouting.splitAction(actionKey) else { return false }
+        let store = GoldgramPluginStore(account: account, isCurrent: { true })
+        guard store.failure == nil, !store.state.safe, let current = store.record(id), current.enabled,
+              registrations(account: account).contains(where: { $0.id == id && $0.actions.contains(where: { $0["id"] == local }) }) else { return false }
+        return GoldgramPluginConfirmationPolicy.skipTimedText(current.confirmationPolicy, grants: current.grants)
     }
     static func menu(account: String, mediaOnly: Bool = false) -> [[String: String]] {
         let entries = registrations(account: account).filter { !mediaOnly || ($0.grants.contains("media.read") && $0.grants.contains("chat.read")) }
