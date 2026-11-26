@@ -38,3 +38,7 @@ Registry, independent controls/actions and bounded isolated execution implemente
 
 ### #271 accepted / #272 candidate
 #271 green and device-confirmed by user; #272 implements scoped DeepSeek GET/POST, catalog cache/freshness, JS API and dynamic opt-in select. Existing AICC 2.1.8 unchanged. [CI #272](https://github.com/sviridovski/Telegram-iOS/actions/runs/45718823181) in_progress. Full device validation pending; next #273 streaming only after acceptance.
+
+
+### #274 candidate — Streaming Engine
+User requested independent on/off controls for new features. Scoped opt-in SSE, optional live panel/indicator/partial result/statistics, legacy final response compatibility, worker progress callbacks and bounded cancellation implemented. Default off, original AICC JS unchanged. [CI #274](https://github.com/sviridovski/Telegram-iOS/actions/runs/45737637443) in_progress. Full iOS/device acceptance pending; #273 fallback. Next extended UI Engine only after validation.

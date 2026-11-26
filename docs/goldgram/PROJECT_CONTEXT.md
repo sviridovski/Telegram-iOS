@@ -224,3 +224,8 @@ Native reserve assistant and imported plugins have independent credentials and s
 
 ## #273 accepted checkpoint
 Network Engine and plugin generation accepted by user; JS-defined message actions visible on device. Next stage: SSE, maintaining native reserve/plugin separation and scoped permissions.
+
+
+## #274 candidate — opt-in streaming transport
+
+Native bounded SSE parser/delegate, per-plugin streamingOptions, local optional progress panel, scoped stop and compatible JSON, worker RPC progress callbacks. No new database, credentials or Telegram send capability. See CURRENT_STATUS and DECISIONS_LOG for limitations and test gates.

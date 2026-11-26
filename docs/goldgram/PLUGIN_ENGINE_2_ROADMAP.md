@@ -81,3 +81,7 @@ Registry, independent controls/actions and bounded isolated execution implemente
 
 ### #273 accepted — Network Engine complete for tested flow
 User confirms plugin catalog/generation work; screenshot confirms JS context menu registration. CI green. Next SSE/Streaming Engine (#274 target); individual actions and remaining negative-path tests remain in regression matrix.
+
+
+### #274 candidate — Streaming Engine
+User requested independent on/off controls for new features. Scoped opt-in SSE, optional live panel/indicator/partial result/statistics, legacy final response compatibility, worker progress callbacks and bounded cancellation implemented. Default off, original AICC JS unchanged. [CI #274](https://github.com/sviridovski/Telegram-iOS/actions/runs/45737637443) in_progress. Full iOS/device acceptance pending; #273 fallback. Next extended UI Engine only after validation.
