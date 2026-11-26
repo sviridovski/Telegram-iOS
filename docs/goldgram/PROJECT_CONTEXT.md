@@ -238,3 +238,7 @@ Streaming transport accepted for the tested on-device generation flow; optional 
 ## #275 candidate — declarative plugin UI
 
 Native controls and validated JS-owned schema, optional UI preferences scoped by account/plugin, explicit re-render and action filtering. No new permissions or storage database; see CURRENT_STATUS and DECISIONS_LOG for limits and test gates.
+
+## #276 candidate — scoped event bus and disposable lifecycle
+
+Keep disposable Workers and existing global execution slots. Opt-in automatic foreground chat.opened/closed subscriptions use only eligible chat metadata, no draft/messages, network, UI output or send. Scoped callback tokens, local event emission limits, current-context/grant checks, cancellation and local settings/storage merge. Explicit command registration maps to existing context-menu actions, not slash interception. No persistent runtime, plugin.stop/onUnload parity or guaranteed delivery. See CURRENT_STATUS and DECISIONS_LOG for test gates and limitations.
