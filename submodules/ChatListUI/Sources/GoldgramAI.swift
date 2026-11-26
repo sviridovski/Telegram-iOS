@@ -8,7 +8,8 @@ import UniformTypeIdentifiers
 public struct GoldgramAIDraft: Equatable {
     public let identity: String
     public let text: String
-    public init(identity: String, text: String) { self.identity = identity; self.text = text }
+    public let writable: Bool
+    public init(identity: String, text: String, writable: Bool = true) { self.identity = identity; self.text = text; self.writable = writable }
 }
 
 // #272: provider endpoint policy and sanitized model catalog; no credentials in JS.
@@ -358,7 +359,7 @@ public final class GoldgramAIButton: UIButton {
             let id = registration.id
             let current = UUID(); token = current
             let runner = GoldgramPluginChatRun(); pluginRun = runner; setTitle("×", for: .normal)
-            var context = pluginContext?() ?? [:]; context["draft"] = draft.text
+            var context = pluginContext?() ?? [:]; context["draft"] = draft.text; context["draftWritable"] = draft.writable
             let action = selectedAction
             if let action { context["selectedMessage"] = action.1 }
             runner.start(account: config.account, presenter: presenter, id: id, context: context, event: action == nil ? "floating.tap" : "context.tap", key: action?.0, valid: { [weak self] in
@@ -368,7 +369,10 @@ public final class GoldgramAIButton: UIButton {
                 self.pluginRun = nil; self.setTitle(self.idleTitle, for: .normal)
                 guard self.snapshot() == draft, self.authorized() else { return }
                 if let output, let kind = output["kind"] as? String, let text = output["text"] as? String {
-                    if kind == "draft" { self.preview(text, draft: draft, token: current, pluginId: id) }
+                    if kind == "draft" {
+                        if draft.writable { self.preview(text, draft: draft, token: current, pluginId: id) }
+                        else if !text.isEmpty { self.notice("Результат плагина (чат только для чтения)\n\n" + text) }
+                    }
                     else if kind == "clipboard" {
                         let alert = UIAlertController(title: "Копировать результат?", message: text, preferredStyle: .alert)
                         alert.addAction(UIAlertAction(title: "Копировать", style: .default) { [weak self] _ in guard let self, self.snapshot() == draft, self.token == current, self.authorized() else { return }; UIPasteboard.general.string = text })
@@ -377,7 +381,7 @@ public final class GoldgramAIButton: UIButton {
                 } else if let error { self.notice(error) }
             }); return
         }
-        guard registration == nil else { return }
+        guard registration == nil, draft.writable else { return }
         guard let key = config.readKey() else { notice("Задайте ключ в Goldgram → Плагины → AI Command Center."); return }
         let prompt = config.prompt, model = config.model
         guard let request = GoldgramAIProtocol.request(key: key, model: model, prompt: prompt, draft: draft.text) else {
@@ -414,7 +418,7 @@ public final class GoldgramAIButton: UIButton {
         self.task = task; task.resume()
     }
     private func preview(_ answer: String, draft: GoldgramAIDraft, token: UUID, pluginId: UUID? = nil) {
-        guard self.token == token, snapshot() == draft, authorized(), !answer.isEmpty, answer.utf16.count <= 4096 else { return }
+        guard draft.writable, self.token == token, snapshot() == draft, authorized(), !answer.isEmpty, answer.utf16.count <= 4096 else { return }
         if let pluginId {
             let policy = GoldgramPluginChatRun.draftPolicy(account: config.account, id: pluginId)
             guard policy.allowed else { return }
@@ -518,7 +522,7 @@ public final class GoldgramAIButtonGroup: UIView {
         overflowItems = Array(shown.dropFirst(limit))
         overflow.isHidden = overflowItems.isEmpty
         if !overflowItems.isEmpty { overflow.setTitle("+" + String(overflowItems.count), for: .normal); visible.append(overflow) }
-        if let fallback { visible.append(fallback) }
+        if let fallback, snapshot()?.writable == true { visible.append(fallback) }
         let usedColumns = min(columns, max(1, visible.count))
         let usedRows = max(1, (visible.count + columns - 1) / columns)
         let width = CGFloat(usedColumns - 1) * 54, height = CGFloat(usedRows - 1) * 46

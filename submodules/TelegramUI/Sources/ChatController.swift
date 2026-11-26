@@ -8060,7 +8060,7 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
         }
     }
 
-    private func goldgramAIIdentity() -> String? {
+    private func goldgramPluginIdentity() -> String? {
         guard self.goldgramAIVisible, self.isNodeLoaded, self.view.window != nil,
               self.isApplicationInForegroundValue, !self.isPreviewingMode,
               GoldgramAuthorSearchBridge.isCurrentAccount(self.context),
@@ -8069,9 +8069,31 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
               !self.presentationInterfaceState.copyProtectionEnabled, !self.presentationInterfaceState.myCopyProtectionEnabled,
               self.presentationInterfaceState.interfaceState.editMessage == nil,
               self.presentationInterfaceState.interfaceState.forwardMessageIds == nil,
-              self.presentationInterfaceState.interfaceState.selectionState == nil,
-              canSendMessagesToChat(self.presentationInterfaceState) else { return nil }
+              self.presentationInterfaceState.interfaceState.selectionState == nil else { return nil }
         return String(describing: peer) + ":" + String(describing: self.chatLocation.threadId) + ":" + String(self.goldgramAIEpoch)
+    }
+
+    private func goldgramAIIdentity() -> String? {
+        guard canSendMessagesToChat(self.presentationInterfaceState) else { return nil }
+        return self.goldgramPluginIdentity()
+    }
+
+    private func goldgramPluginChatType(_ peer: PeerId) -> String {
+        if peer.namespace == Namespaces.Peer.CloudUser { return "user" }
+        if let channel = self.presentationInterfaceState.renderedPeer?.chatMainPeer as? TelegramChannel, case .broadcast = channel.info { return "channel" }
+        return "group"
+    }
+
+    // Ordinary long-lived cloud group/channel text with server auto-delete.
+    // Only an explicit selected-message action may use this exception.
+    private func goldgramPluginTimedText(_ message: Message) -> Bool {
+        guard message.id.peerId.namespace == Namespaces.Peer.CloudGroup || message.id.peerId.namespace == Namespaces.Peer.CloudChannel,
+              message.id.namespace == Namespaces.Message.Cloud, message.media.isEmpty, !message.text.isEmpty,
+              let attr = message.autoremoveAttribute, attr.timeout >= 3600, attr.timeout != viewOnceTimeout,
+              let begin = attr.countdownBeginTime, Int64(begin) + Int64(attr.timeout) > Int64(Date().timeIntervalSince1970),
+              !message.isCopyProtected(), !EngineMessage(message).containsSecretMedia,
+              !message.attributes.contains(where: { $0 is AutoclearTimeoutMessageAttribute || $0 is RestrictedContentMessageAttribute || $0 is EphemeralMessageAttribute }) else { return false }
+        return true
     }
 
     private func goldgramPluginMediaKind(_ message: Message) -> String? {
@@ -8089,13 +8111,14 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
     }
 
     private func goldgramInstallAI() {
-        guard self.goldgramAIEnabled, self.goldgramAIButton == nil, self.goldgramAIIdentity() != nil else { return }
+        guard self.goldgramAIEnabled, self.goldgramAIButton == nil, self.goldgramPluginIdentity() != nil else { return }
         let account = String(self.context.account.peerId.id._internalGetInt64Value())
         let button = GoldgramAIButtonGroup(account: account, presenter: self, snapshot: { [weak self = self] in
-            guard let self, let identity = self.goldgramAIIdentity() else { return nil }
-            return GoldgramAIDraft(identity: identity, text: self.presentationInterfaceState.interfaceState.effectiveInputState.inputText.string)
+            guard let self, let identity = self.goldgramPluginIdentity() else { return nil }
+            let writable = self.goldgramAIIdentity() != nil
+            return GoldgramAIDraft(identity: identity, text: writable ? self.presentationInterfaceState.interfaceState.effectiveInputState.inputText.string : "", writable: writable)
         }, pluginContext: { [weak self = self] in
-            guard let self, self.goldgramAIIdentity() != nil, let peer = self.chatLocation.peerId else { return [:] }
+            guard let self, self.goldgramPluginIdentity() != nil, let peer = self.chatLocation.peerId else { return [:] }
             var rows: [[String: Any]] = []; var mediaRows: [[String: Any]] = []; var seen = Set<MessageId>()
             self.chatDisplayNode.historyNode.forEachVisibleMessageItemNode { item in
                 guard let message = item.item?.message, message.id.peerId == peer, message.id.namespace == Namespaces.Message.Cloud,
@@ -8111,7 +8134,7 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
                 let lhs = $0["timestamp"] as? Int32 ?? 0, rhs = $1["timestamp"] as? Int32 ?? 0
                 return lhs == rhs ? ($0["id_num"] as? Int32 ?? 0) < ($1["id_num"] as? Int32 ?? 0) : lhs < rhs
             }
-            return ["peerId": String(describing: peer) + ":" + String(describing: self.chatLocation.threadId), "type": peer.namespace == Namespaces.Peer.CloudUser ? "user" : "group", "messages": Array(rows.suffix(36)), "mediaRows": Array(mediaRows.suffix(36))]
+            return ["peerId": String(describing: peer) + ":" + String(describing: self.chatLocation.threadId), "type": self.goldgramPluginChatType(peer), "messages": Array(rows.suffix(36)), "mediaRows": Array(mediaRows.suffix(36))]
         }, insert: { [weak self = self] original, answer in
             guard let self, self.goldgramAIIdentity() == original.identity,
                   self.presentationInterfaceState.interfaceState.effectiveInputState.inputText.string == original.text else { return false }
@@ -8128,9 +8151,10 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
     }
 
     func goldgramPluginMessageMenu(_ message: EngineMessage) -> [[String: String]] {
-        guard self.goldgramAIIdentity() != nil, self.goldgramAIButton != nil, let peer = self.chatLocation.peerId, peer == message.id.peerId,
+        guard self.goldgramPluginIdentity() != nil, self.goldgramAIButton != nil, let peer = self.chatLocation.peerId, peer == message.id.peerId,
               message.id.namespace == Namespaces.Message.Cloud, !message._asMessage().isCopyProtected(), !message.containsSecretMedia,
-              !message.attributes.contains(where: { $0 is AutoremoveTimeoutMessageAttribute || $0 is AutoclearTimeoutMessageAttribute || $0 is RestrictedContentMessageAttribute || $0 is EphemeralMessageAttribute }) else { return [] }
+              !message.attributes.contains(where: { $0 is AutoclearTimeoutMessageAttribute || $0 is RestrictedContentMessageAttribute || $0 is EphemeralMessageAttribute }) else { return [] }
+        if message.attributes.contains(where: { $0 is AutoremoveTimeoutMessageAttribute }) && !self.goldgramPluginTimedText(message._asMessage()) { return [] }
         let mediaOnly = !message.media.isEmpty
         guard mediaOnly ? self.goldgramPluginMediaKind(message._asMessage()) != nil : !message.text.isEmpty else { return [] }
         return GoldgramAIButtonGroup.pluginMenu(account: String(self.context.account.peerId.id._internalGetInt64Value()), mediaOnly: mediaOnly)
@@ -8143,14 +8167,37 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
         } else {
             snapshot = ["id":String(describing:message.id),"id_num":message.id.id,"timestamp":message.timestamp,"outgoing":!message._asMessage().flags.contains(.Incoming),"text":String(message.text.prefix(6000)),"authorPeerId":String(describing:message.author?.id)]
         }
-        self.goldgramAIButton?.invokePluginAction(key: key, message: snapshot)
+        if self.goldgramPluginTimedText(message._asMessage()) {
+            guard let identity = self.goldgramPluginIdentity() else { return }
+            // Context menu is dismissed before the confirmation. Revalidate at both taps.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self = self] in
+                guard let self, self.goldgramPluginIdentity() == identity, self.presentedViewController == nil,
+                      self.goldgramPluginMessageMenu(message).contains(where: { $0["id"] == key }) else { return }
+                let alert = UIAlertController(title: "Сообщение с автоудалением", message: "Передать выбранный текст плагину? Плагин может сохранить текст или передать его разрешённому сервису. Автоудаление в Telegram не удаляет такие копии.", preferredStyle: .alert)
+                alert.addAction(UIAlertAction(title: "Продолжить", style: .default) { [weak self] _ in
+                    guard let self, self.goldgramPluginIdentity() == identity,
+                          self.goldgramPluginTimedText(message._asMessage()),
+                          self.goldgramPluginMessageMenu(message).contains(where: { $0["id"] == key }) else { return }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+                        guard let self, self.goldgramPluginIdentity() == identity,
+                              self.goldgramPluginTimedText(message._asMessage()),
+                              self.goldgramPluginMessageMenu(message).contains(where: { $0["id"] == key }) else { return }
+                        self.goldgramAIButton?.invokePluginAction(key: key, message: snapshot)
+                    }
+                })
+                alert.addAction(UIAlertAction(title: "Отмена", style: .cancel))
+                self.present(alert, animated: true)
+            }
+        } else {
+            self.goldgramAIButton?.invokePluginAction(key: key, message: snapshot)
+        }
     }
 
     private func goldgramRefreshAI() {
         guard self.goldgramAIVisible, self.goldgramAIEnabled else { return }
         if self.goldgramAIButton == nil { self.goldgramInstallAI() }
         guard let button = self.goldgramAIButton else { return }
-        button.isHidden = self.goldgramAIIdentity() == nil
+        button.isHidden = self.goldgramPluginIdentity() == nil
         if button.isHidden { button.cancel() }
         button.reposition()
     }

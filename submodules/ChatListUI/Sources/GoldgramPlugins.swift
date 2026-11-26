@@ -489,7 +489,7 @@ function goldWorkerMain() {
     const localOutput=(title,text)=>{need("ui.read");output={kind:"sheet",title:String(title).slice(0,160),text:String(text).slice(0,16000)};return true;};
     base.app=Object.freeze({toast,alert:localOutput,restartHint:()=>toast("Обновите настройки")});
     if(allowed("chat.read")||allowed("chat.write")) base.chat=Object.freeze({
-      currentPeerId:()=>{need("chat.read");return ctx.peerId||null;}, currentChatInfo:()=>{need("chat.read");return ctx.peerId?{peerId:ctx.peerId,type:ctx.type||"user",isGroup:ctx.type==="group"}:null;},
+      currentPeerId:()=>{need("chat.read");return ctx.peerId||null;}, currentChatInfo:()=>{need("chat.read");return ctx.peerId?{peerId:ctx.peerId,type:ctx.type||"user",isGroup:ctx.type==="group",isChannel:ctx.type==="channel",canSend:ctx.draftWritable!==false}:null;},
       draftText:()=>{need("chat.read");return draft||"";},setDraftText:t=>{need("chat.write");if(draft===null)throw Error("Open a writable chat");draft=String(t).slice(0,4096);changed=true;return true;},insertText:t=>{need("chat.write");if(draft===null)throw Error("Open a writable chat");draft=(draft+String(t)).slice(0,4096);changed=true;return true;},setTyping:()=>{need("ui.mutate");return true;} });
     if(allowed("messages.read")) {
       const rows=!passive&&Array.isArray(ctx.messages)?ctx.messages:[];
@@ -1563,7 +1563,7 @@ final class GoldgramPluginChatRun {
             if (input["selectedMessage"] as? [String: Any])?["mediaKind"] != nil { input.removeValue(forKey: "selectedMessage") }
         }
         if !p.grants.contains("messages.read") { input.removeValue(forKey: "messages"); input.removeValue(forKey: "selectedMessage") }
-        if !p.grants.contains("chat.read") { input.removeValue(forKey: "draft"); input.removeValue(forKey: "peerId"); input.removeValue(forKey: "type") }
+        if !p.grants.contains("chat.read") { input.removeValue(forKey: "draft"); input.removeValue(forKey: "peerId"); input.removeValue(forKey: "type"); input.removeValue(forKey: "draftWritable") }
         run = GoldgramPluginRun(lease: lease, host: presenter.view, record: p, event: event, key: key, value: nil, account: account, presenter: presenter, context: input, valid: stillValid) { [weak self] result, error in
             guard let self else { return }; self.run = nil
             guard stillValid(), let result else { completion(nil, error ?? "Чат изменился."); return }

@@ -145,6 +145,14 @@ await self.onmessage({data:{source:'GGAPI.events.on("chat.opened",()=>GGAPI.stor
 assert.equal(result.storage.filesAvailable,false);assert.deepEqual(result.files,{});
 console.log('Goldgram #277 scoped snapshot, media permissions, persistent logical files and quotas OK');
 
+const channelScript='GGAPI.ui.addMessageContextAction({id:"check",title:"Check"},()=>{const info=GGAPI.chat.currentChatInfo();GGAPI.storage.set("type",info.type);GGAPI.storage.set("canSend",info.canSend);GGAPI.storage.set("isChannel",info.isChannel);GGAPI.chat.setDraftText(GGAPI.messages.getSelectedMessage().text);});';
+await self.onmessage({data:{source:channelScript,grants:compat,event:'context.tap',key:'check',context:{peerId:'c',type:'channel',draft:"",draftWritable:false,selectedMessage:{id:"p",text:"answer"}}}});
+assert.equal(result.storage.type,'channel');assert.equal(result.storage.canSend,false);assert.equal(result.storage.isChannel,true);assert.equal(result.output.text,'answer');
+await self.onmessage({data:{source:channelScript,grants:compat,event:'context.tap',key:'check',context:{peerId:'g',type:'group',draft:"",draftWritable:true,selectedMessage:{id:"p",text:"answer"}}}});
+assert.equal(result.storage.type,'group');assert.equal(result.storage.canSend,true);assert.equal(result.storage.isChannel,false);assert.equal(result.output.kind,'draft');
+console.log('Goldgram #278 channel context metadata and virtual draft output OK');
+
+
 
 })().catch(e=>{console.error(e);process.exit(1)});
 """
@@ -169,3 +177,10 @@ assert "UIApplication.didEnterBackgroundNotification" in source
 
 assert 'GoldgramPluginStore.mergedFiles' in source and 'var fileData: [String: String]?' in source
 assert 'input.removeValue(forKey: "mediaRows")' in source
+
+chat = (root / "submodules/TelegramUI/Sources/ChatController.swift").read_text()
+ai = (root / "submodules/ChatListUI/Sources/GoldgramAI.swift").read_text()
+assert 'guard canSendMessagesToChat(self.presentationInterfaceState)' in chat
+assert 'goldgramPluginTimedText' in chat and 'attr.timeout != viewOnceTimeout' in chat
+assert 'Сообщение с автоудалением' in chat and 'AutoclearTimeoutMessageAttribute' in chat
+assert 'guard registration == nil, draft.writable' in ai and 'guard draft.writable, self.token' in ai
