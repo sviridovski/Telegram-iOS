@@ -8074,6 +8074,20 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
         return String(describing: peer) + ":" + String(describing: self.chatLocation.threadId) + ":" + String(self.goldgramAIEpoch)
     }
 
+    private func goldgramPluginMediaKind(_ message: Message) -> String? {
+        guard message.media.count == 1, !EngineMessage(message).containsSecretMedia, message.minAutoremoveOrClearTimeout == nil else { return nil }
+        if message.media.first is TelegramMediaImage { return "photo" }
+        if let file = message.media.first as? TelegramMediaFile {
+            if file.isInstantVideo { return "video_note" }
+            if file.isVoice { return "voice" }
+            if file.isAnimated { return "animation" }
+            if file.isVideo { return "video" }
+            if file.isMusic { return "audio" }
+            return "document"
+        }
+        return nil
+    }
+
     private func goldgramInstallAI() {
         guard self.goldgramAIEnabled, self.goldgramAIButton == nil, self.goldgramAIIdentity() != nil else { return }
         let account = String(self.context.account.peerId.id._internalGetInt64Value())
@@ -8082,15 +8096,22 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
             return GoldgramAIDraft(identity: identity, text: self.presentationInterfaceState.interfaceState.effectiveInputState.inputText.string)
         }, pluginContext: { [weak self = self] in
             guard let self, self.goldgramAIIdentity() != nil, let peer = self.chatLocation.peerId else { return [:] }
-            var rows: [[String: Any]] = []; var seen = Set<MessageId>()
+            var rows: [[String: Any]] = []; var mediaRows: [[String: Any]] = []; var seen = Set<MessageId>()
             self.chatDisplayNode.historyNode.forEachVisibleMessageItemNode { item in
                 guard let message = item.item?.message, message.id.peerId == peer, message.id.namespace == Namespaces.Message.Cloud,
-                      !message.isCopyProtected(), message.media.isEmpty, !message.text.isEmpty,
+                      !message.isCopyProtected(),
                       !message.attributes.contains(where: { $0 is AutoremoveTimeoutMessageAttribute || $0 is AutoclearTimeoutMessageAttribute || $0 is RestrictedContentMessageAttribute || $0 is EphemeralMessageAttribute }), seen.insert(message.id).inserted else { return }
-                rows.append(["id": String(describing: message.id), "id_num": message.id.id, "timestamp": message.timestamp, "outgoing": !message.flags.contains(.Incoming), "text": String(message.text.prefix(1000)), "authorPeerId": String(describing: message.author?.id)])
+                if message.media.isEmpty, !message.text.isEmpty {
+                    rows.append(["id": String(describing: message.id), "id_num": message.id.id, "timestamp": message.timestamp, "outgoing": !message.flags.contains(.Incoming), "text": String(message.text.prefix(1000)), "authorPeerId": String(describing: message.author?.id)])
+                } else if let kind = self.goldgramPluginMediaKind(message) {
+                    mediaRows.append(["messageId": String(describing: message.id), "kind": kind])
+                }
             }
-            rows.sort { ($0["timestamp"] as? Int32 ?? 0) < ($1["timestamp"] as? Int32 ?? 0) }
-            return ["peerId": String(describing: peer) + ":" + String(describing: self.chatLocation.threadId), "type": peer.namespace == Namespaces.Peer.CloudUser ? "user" : "group", "messages": Array(rows.suffix(36))]
+            rows.sort {
+                let lhs = $0["timestamp"] as? Int32 ?? 0, rhs = $1["timestamp"] as? Int32 ?? 0
+                return lhs == rhs ? ($0["id_num"] as? Int32 ?? 0) < ($1["id_num"] as? Int32 ?? 0) : lhs < rhs
+            }
+            return ["peerId": String(describing: peer) + ":" + String(describing: self.chatLocation.threadId), "type": peer.namespace == Namespaces.Peer.CloudUser ? "user" : "group", "messages": Array(rows.suffix(36)), "mediaRows": Array(mediaRows.suffix(36))]
         }, insert: { [weak self = self] original, answer in
             guard let self, self.goldgramAIIdentity() == original.identity,
                   self.presentationInterfaceState.interfaceState.effectiveInputState.inputText.string == original.text else { return false }
@@ -8109,12 +8130,19 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
     func goldgramPluginMessageMenu(_ message: EngineMessage) -> [[String: String]] {
         guard self.goldgramAIIdentity() != nil, self.goldgramAIButton != nil, let peer = self.chatLocation.peerId, peer == message.id.peerId,
               message.id.namespace == Namespaces.Message.Cloud, !message._asMessage().isCopyProtected(), !message.containsSecretMedia,
-              !message.text.isEmpty, message.media.isEmpty, !message.attributes.contains(where: { $0 is AutoremoveTimeoutMessageAttribute || $0 is AutoclearTimeoutMessageAttribute || $0 is RestrictedContentMessageAttribute || $0 is EphemeralMessageAttribute }) else { return [] }
-        return GoldgramAIButtonGroup.pluginMenu(account: String(self.context.account.peerId.id._internalGetInt64Value()))
+              !message.attributes.contains(where: { $0 is AutoremoveTimeoutMessageAttribute || $0 is AutoclearTimeoutMessageAttribute || $0 is RestrictedContentMessageAttribute || $0 is EphemeralMessageAttribute }) else { return [] }
+        let mediaOnly = !message.media.isEmpty
+        guard mediaOnly ? self.goldgramPluginMediaKind(message._asMessage()) != nil : !message.text.isEmpty else { return [] }
+        return GoldgramAIButtonGroup.pluginMenu(account: String(self.context.account.peerId.id._internalGetInt64Value()), mediaOnly: mediaOnly)
     }
     func goldgramInvokePluginMessageAction(_ key: String, message: EngineMessage) {
         guard self.goldgramPluginMessageMenu(message).contains(where: { $0["id"] == key }) else { return }
-        let snapshot = ["id":String(describing:message.id),"id_num":message.id.id,"timestamp":message.timestamp,"outgoing":!message._asMessage().flags.contains(.Incoming),"text":String(message.text.prefix(6000)),"authorPeerId":String(describing:message.author?.id)] as [String:Any]
+        let snapshot: [String: Any]
+        if let kind = self.goldgramPluginMediaKind(message._asMessage()) {
+            snapshot = ["id": String(describing: message.id), "mediaKind": kind]
+        } else {
+            snapshot = ["id":String(describing:message.id),"id_num":message.id.id,"timestamp":message.timestamp,"outgoing":!message._asMessage().flags.contains(.Incoming),"text":String(message.text.prefix(6000)),"authorPeerId":String(describing:message.author?.id)]
+        }
         self.goldgramAIButton?.invokePluginAction(key: key, message: snapshot)
     }
 

@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 // #267: deliberately foreground, on-demand and local-only. Never expose Telegram,
 // account objects, credentials, filesystem or network to imported JavaScript.
 private struct GoldgramPluginManifest {
-    static let supported: Set<String> = ["settings.read", "events", "console", "ui.read", "storage", "chat.read", "chat.write", "messages.read", "network.fetch", "ui.mutate", "clipboard"]
+    static let supported: Set<String> = ["settings.read", "events", "console", "ui.read", "storage", "chat.read", "chat.write", "messages.read", "network.fetch", "ui.mutate", "clipboard", "media.read"]
     let name: String
     let version: String
     let author: String
@@ -97,6 +97,8 @@ private struct GoldgramPluginRecord: Codable {
     // Optional fields: legacy installs do not receive automatic chat callbacks.
     var lifecycleEnabled: Bool?
     var lifecycleSubscriptions: [String]?
+    // Bounded logical files in the existing account/plugin record; no filesystem bridge.
+    var fileData: [String: String]?
     var manifest: GoldgramPluginManifest { GoldgramPluginManifest(code) }
 }
 
@@ -177,6 +179,22 @@ private final class GoldgramPluginStore {
             }
         }
         return input
+    }
+    static func validatedFiles(_ raw: Any?) -> [String: String]? {
+        guard let files = raw as? [String: String], files.count <= 16 else { return nil }
+        var total = 0
+        for (name, body) in files {
+            guard safeKey(name), name.range(of: "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$", options: .regularExpression) != nil,
+                  !name.contains(".."), body.utf8.count <= 65536 else { return nil }
+            total += name.utf8.count + body.utf8.count
+            guard total <= 65536 else { return nil }
+        }
+        return files
+    }
+    static func mergedFiles(base: [String: String]?, latest: [String: String]?, raw: Any?) -> [String: String]? {
+        guard let proposed = validatedFiles(raw),
+              let merged = GoldgramPluginRouting.merge(base: base ?? [:], latest: latest ?? [:], proposed: proposed) else { return nil }
+        return validatedFiles(merged)
     }
     static func decodeValues(_ values: [String: String]) -> [String: Any] {
         values.compactMapValues { try? JSONSerialization.jsonObject(with: Data($0.utf8), options: [.fragmentsAllowed]) }
@@ -267,6 +285,7 @@ private final class GoldgramPluginRun: NSObject, WKNavigationDelegate, WKScriptM
         var input: [String: Any] = ["source": record.code, "grants": record.grants, "event": event,
             "settings": GoldgramPluginStore.decodeValues(record.settings), "storage": GoldgramPluginStore.decodeValues(record.storage)]
         input["context"] = context
+        if grants.contains("storage"), event != "chat.opened", event != "chat.closed" { input["files"] = record.fileData ?? [:] }
         input["pluginId"] = record.id.uuidString
         input["managedKey"] = !account.isEmpty && credential.readKey() != nil
         input["streamingEnabled"] = record.streamingOptions?.enabled == true && grants.contains("network.fetch") && interactive
@@ -461,7 +480,7 @@ function goldWorkerMain() {
     };
     const logging = Object.freeze({log,info:log,warn:log,error:log});
     const base = {
-      runtime:Object.freeze({apiVersion:()=>5,features:()=>({scopedChat:!!ctx.peerId,localOnly:!allowed("network.fetch"),modelDiscovery:allowed("network.fetch"),declarativeUI:allowed("settings.read"),eventBus:allowed("events"),chatLifecycle:allowed("events")&&allowed("chat.read"),contextCommands:allowed("chat.write")&&allowed("messages.read")&&allowed("ui.mutate"),streaming:allowed("network.fetch")&&p.streamingEnabled===true}),pluginId:()=>p.pluginId||"",hasPermission:allowed,grants:()=>Array.from(grants)}),
+      runtime:Object.freeze({apiVersion:()=>5,features:()=>({scopedChat:!!ctx.peerId,localOnly:!allowed("network.fetch"),modelDiscovery:allowed("network.fetch"),declarativeUI:allowed("settings.read"),eventBus:allowed("events"),chatLifecycle:allowed("events")&&allowed("chat.read"),contextCommands:allowed("chat.write")&&allowed("messages.read")&&allowed("ui.mutate"),snapshotHistory:allowed("messages.read")&&allowed("chat.read")&&!!ctx.peerId&&!passive,persistentFiles:allowed("storage")&&!passive,mediaMetadata:allowed("media.read")&&allowed("messages.read")&&!passive&&!!ctx.peerId,streaming:allowed("network.fetch")&&p.streamingEnabled===true}),pluginId:()=>p.pluginId||"",hasPermission:allowed,grants:()=>Array.from(grants)}),
       settings:Object.freeze({addSection:section,define:section,clearSections:()=>{need("settings.read");sections.length=0;schemaCleared=true;return true;},getPlugin:(k,f)=>{need("settings.read");if(isSecret(k))return p.managedKey?keyAlias:f;return own(settings,k)?settings[k]:f;},setPlugin:(k,v)=>{need("settings.read");if(isSecret(k)){if(v===""||v===keyAlias)return true;throw Error("Use native secure field");}return write(settings,k,v);}}),
       storage:Object.freeze({get:k=>{need("storage");if(isSecret(k))return p.managedKey?keyAlias:null;return own(storage,k)?storage[k]:null;},set:(k,v)=>{need("storage");if(isSecret(k)){if(v===keyAlias&&p.managedKey)return true;throw Error("Use native secure field");}return write(storage,k,v);},getJSON:(k,f)=>{need("storage");return own(storage,k)?storage[k]:f;},setJSON:(k,v)=>{need("storage");return write(storage,k,v);},remove:k=>{need("storage");delete storage[k];}}),
       events:Object.freeze({on:(name,fn)=>subscribe(name,fn,false),once:(name,fn)=>subscribe(name,fn,true),off,emit}),
@@ -472,7 +491,29 @@ function goldWorkerMain() {
     if(allowed("chat.read")||allowed("chat.write")) base.chat=Object.freeze({
       currentPeerId:()=>{need("chat.read");return ctx.peerId||null;}, currentChatInfo:()=>{need("chat.read");return ctx.peerId?{peerId:ctx.peerId,type:ctx.type||"user",isGroup:ctx.type==="group"}:null;},
       draftText:()=>{need("chat.read");return draft||"";},setDraftText:t=>{need("chat.write");if(draft===null)throw Error("Open a writable chat");draft=String(t).slice(0,4096);changed=true;return true;},insertText:t=>{need("chat.write");if(draft===null)throw Error("Open a writable chat");draft=(draft+String(t)).slice(0,4096);changed=true;return true;},setTyping:()=>{need("ui.mutate");return true;} });
-    if(allowed("messages.read")) {const rows=Array.isArray(ctx.messages)?ctx.messages:[];const visible=n=>rows.slice(-Math.max(1,Math.min(36,Number(n)||8)));base.messages=Object.freeze({visible,current:visible,get:id=>rows.find(m=>String(m.id)===String(id))||null,getSelectedMessage:()=>ctx.selectedMessage||null});}
+    if(allowed("messages.read")) {
+      const rows=!passive&&Array.isArray(ctx.messages)?ctx.messages:[];
+      const selected=!passive&&ctx.selectedMessage&&(!ctx.selectedMessage.mediaKind||allowed("media.read"))?ctx.selectedMessage:null;
+      const limit=(n,fallback=8)=>Math.max(1,Math.min(36,Math.floor(Number(n)||fallback)));
+      const visible=n=>rows.slice(-limit(n));
+      const get=id=>selected&&String(selected.id)===String(id)?selected:rows.find(m=>String(m.id)===String(id))||null;
+      const history=async(peerId,options={})=>{
+        need("chat.read");
+        if(!ctx.peerId||String(peerId)!==String(ctx.peerId)||passive)throw Error("Only the current chat snapshot is available");
+        if(!options||typeof options!=="object"||Object.keys(options).some(k=>k!=="limit"&&k!=="beforeId"))throw Error("Unsupported snapshot history option");
+        let items=rows;
+        if(options.beforeId!==undefined){const id=Number(options.beforeId);if(!Number.isSafeInteger(id)||id<=0)throw Error("Invalid beforeId");items=items.filter(m=>Number(m.id_num)<id);}
+        return {items:items.slice(-limit(options.limit,16)),scope:"visibleSnapshot",complete:false,hasMore:null};
+      };
+      const fetch=async ids=>{if(!Array.isArray(ids)||ids.length>36)throw Error("Invalid message IDs");return ids.map(get).filter(Boolean);};
+      base.messages=Object.freeze({visible,current:visible,get,getSelectedMessage:()=>selected,history,getHistory:history,fetch,getMessages:fetch});
+    }
+    if(allowed("media.read")&&allowed("messages.read")&&!passive){
+      const items=Array.isArray(ctx.mediaRows)?ctx.mediaRows:[];
+      const selected=ctx.selectedMessage&&ctx.selectedMessage.mediaKind?{messageId:ctx.selectedMessage.id,kind:ctx.selectedMessage.mediaKind}:null;
+      const lookup=id=>selected&&String(selected.messageId)===String(id)?selected:items.find(m=>String(m.messageId)===String(id))||null;
+      base.media=Object.freeze({selected:()=>selected,forMessage:lookup,info:lookup,visible:n=>items.slice(-Math.max(1,Math.min(36,Math.floor(Number(n)||8))))});
+    }
     if(allowed("ui.mutate")||allowed("ui.read")) base.ui=Object.freeze({showToast:toast,showSheet:v=>localOutput(v.title||"AI",v.text||""),addFloatingButton:(cfg,fn)=>{need("ui.mutate");if(!cfg||typeof cfg.id!=="string"||typeof fn!=="function")throw Error("Invalid button");floating={id:cfg.id.slice(0,100),title:String(cfg.title||"AI").slice(0,12)};buttons[floating.id]=fn;return floating.id;},removeFloatingButton:id=>{need("ui.mutate");delete buttons[id];if(floating&&floating.id===id)floating=null;},addMessageContextAction:(cfg,fn)=>{need("ui.mutate");if(!cfg||typeof cfg.id!=="string"||typeof fn!=="function")throw Error("Invalid action");const id=cfg.id.slice(0,100);if(Object.keys(actions).length>=24&&!own(actions,id))throw Error("Too many actions");actions[id]=fn;actionTitles[id]=String(cfg.title||id).slice(0,160);return id;},removeMessageContextAction:id=>{need("ui.mutate");delete actions[id];delete actionTitles[id];},removeChatMenuButton:()=>{need("ui.mutate");},select:async(title,choices)=>{need("ui.mutate");const r=await rpc("ui.select",{title:String(title),choices});return r.value;},setChatHeaderBadge:()=>{need("ui.mutate");},clearChatHeaderBadge:()=>{need("ui.mutate");}});
     if(allowed("chat.write")&&allowed("messages.read")&&allowed("ui.mutate")){
       base.commands=Object.freeze({
@@ -512,9 +553,27 @@ function goldWorkerMain() {
         return copyCatalog();
       }});
     }
-    if(allowed("storage")){
-      const files=Object.create(null);
-      base.files=Object.freeze({writeJSON:(name,value)=>{if(typeof name!=="string"||!name.endsWith(".json")||name.length>100||/[\\/]/.test(name))throw Error("Invalid filename");const raw=JSON.stringify(value);if(typeof raw!=="string"||raw.length>65536)throw Error("File too large");files[name]=raw;return {name};},readJSON:name=>own(files,name)?JSON.parse(files[name]):null,pick:async()=>{const r=await rpc("files.pick",{});return r.value===null?null:{value:r.value};},share:async name=>{if(!own(files,name))throw Error("Unknown file");await rpc("files.share",{name,body:files[name]});return true;}});
+    const files=Object.assign(Object.create(null),allowed("storage")&&!passive?p.files||{}:{});
+    if(allowed("storage")&&!passive){
+      const validName=name=>typeof name==="string"&&/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(name)&&!name.includes("..")&&validKey(name);
+      const size=value=>{let n=0;for(const ch of value){const cp=ch.codePointAt(0);n+=cp<=127?1:cp<=2047?2:cp<=65535?3:4;}return n;};
+      const check=name=>{if(!validName(name))throw Error("Invalid filename");};
+      const writeText=(name,text)=>{
+        check(name);if(typeof text!=="string"||size(text)>65536)throw Error("File too large");
+        const names=Object.keys(files).filter(k=>k!==name);
+        if(names.length>=16||names.reduce((n,k)=>n+size(k)+size(files[k]),size(name)+size(text))>65536)throw Error("File quota exceeded");
+        files[name]=text;return {name};
+      };
+      const readText=name=>{check(name);return own(files,name)?files[name]:null;};
+      base.files=Object.freeze({
+        writeText,readText,writeJSON:(name,value)=>{check(name);if(!name.endsWith(".json"))throw Error("Invalid JSON filename");const raw=JSON.stringify(value);if(typeof raw!=="string")throw Error("Invalid JSON");return writeText(name,raw);},
+        readJSON:name=>{const raw=readText(name);return raw===null?null:JSON.parse(raw);},
+        list:()=>Object.keys(files).sort(),exists:name=>{check(name);return own(files,name);},
+        stat:name=>{const raw=readText(name);return raw===null?null:{name,sizeBytes:size(raw)};},
+        remove:name=>{check(name);const found=own(files,name);delete files[name];return found;},
+        pick:async()=>{const r=await rpc("files.pick",{});return r.value===null?null:{value:r.value};},
+        share:async name=>{check(name);if(!name.endsWith(".json")||!own(files,name))throw Error("Only existing JSON files can be shared");const r=await rpc("files.share",{name,body:files[name]});return r.value===true;}
+      });
     }
     const api=Object.freeze(base);
     try {
@@ -528,7 +587,7 @@ function goldWorkerMain() {
       while(emissions.length){const [name,value]=emissions.shift();await dispatch(name,value);}
       if(changed && !output)output={kind:"draft",title:"Результат плагина",text:draft};
       if(passive)output=null;
-      const raw = JSON.stringify({sections,schemaCleared,settings,storage,logs,floating,output,lifecycleSubscriptions,contextActions:Object.keys(actions).map(id=>({id,title:actionTitles[id]}))});
+      const raw = JSON.stringify({sections,schemaCleared,settings,storage,files,logs,floating,output,lifecycleSubscriptions,contextActions:Object.keys(actions).map(id=>({id,title:actionTitles[id]}))});
       if (raw.length>220000) throw Error("Result too large");
       send(raw);
     } catch (_) { send(JSON.stringify({error:"Ошибка JavaScript или отсутствующее разрешение/API. Проверьте код и совместимость."})); }
@@ -587,7 +646,7 @@ final class GoldgramPluginManager: UITableViewController, UIDocumentPickerDelega
     override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
         section == 0 ? (store.failure ?? "GGAPI: открытый чат и локальные настройки; подтверждения управляются для каждого плагина. Не все методы Ghostgram поддерживаются.") : "Импортируйте только доверенный код. Не вводите API-ключи в обычные настройки."
     }
-    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? (store.isCurrent() ? store.state.plugins.count : 0) : (section == 1 ? 8 : 1) }
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? (store.isCurrent() ? store.state.plugins.count : 0) : (section == 1 ? 9 : 1) }
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
         if indexPath.section == 0 {
@@ -600,7 +659,7 @@ final class GoldgramPluginManager: UITableViewController, UIDocumentPickerDelega
             cell.detailTextLabel?.text = "DeepSeek · промпт и плавающая кнопка"
             cell.imageView?.image = UIImage(systemName: "sparkles")
         } else {
-            cell.textLabel?.text = ["Вставить JavaScript", "Импортировать .js из файлов", "Установить тестовый плагин", "Безопасный режим", "Подтверждения плагинов", "Установить тесты многоплагинности", "Установить тест интерфейса", "Установить тест событий"][indexPath.row]
+            cell.textLabel?.text = ["Вставить JavaScript", "Импортировать .js из файлов", "Установить тестовый плагин", "Безопасный режим", "Подтверждения плагинов", "Установить тесты многоплагинности", "Установить тест интерфейса", "Установить тест событий", "Установить тест GGAPI"][indexPath.row]
             if indexPath.row == 3 { cell.detailTextLabel?.text = store.state.safe ? "Включён — выполнение заблокировано" : "Выключен" }
             if indexPath.row == 4 { cell.detailTextLabel?.text = "Запросы к сервисам и вставка ответа" }
         }
@@ -644,6 +703,9 @@ final class GoldgramPluginManager: UITableViewController, UIDocumentPickerDelega
         case 7:
             store.refresh()
             if !store.state.plugins.contains(where: { $0.code == Self.lifecycleExample }) && !install(Self.lifecycleExample) { notice("Не удалось установить тест событий.") }
+        case 8:
+            store.refresh()
+            if !store.state.plugins.contains(where: { $0.code == Self.dataExample }) && !install(Self.dataExample) { notice("Не удалось установить тест GGAPI.") }
         default:
             store.refresh()
             var next = store.state; next.safe.toggle()
@@ -734,6 +796,39 @@ GGAPI.settings.addSection({title:"События",items:[
 ]});
 GGAPI.events.on("settings.action",p=>{if(p.key==="read"){GGAPI.events.emit("local.test",1);GGAPI.events.emit("local.test",2);GGAPI.app.alert("События",String(GGAPI.storage.get("opened")||0)+" / "+String(GGAPI.storage.get("closed")||0));}});
 GGAPI.commands.register("lifecycle",()=>GGAPI.app.alert("Lifecycle","Команда вызвана вручную"));
+"""#
+    static let dataExample = #"""
+// @name Goldgram Data Test
+// @version 1.0
+// @permission.settings.read required
+// @permission.events required
+// @permission.ui.read required
+// @permission.ui.mutate required
+// @permission.chat.read required
+// @permission.messages.read required
+// @permission.storage required
+// @permission.media.read optional
+GGAPI.settings.addSection({title:"Файлы GGAPI",items:[
+  {type:"info",key:"fileState",title:"Файлы",detail:GGAPI.files.list().join(", ")||"Нет файлов"},
+  {type:"button",key:"write",title:"Записать тестовые файлы"},
+  {type:"button",key:"read",title:"Прочитать сохранённые файлы"},
+  {type:"button",key:"remove",title:"Удалить тестовые файлы"}
+]});
+GGAPI.events.on("settings.action",p=>{
+  if(p.key==="write"){GGAPI.files.writeText("note.txt","Привет 👋");GGAPI.files.writeJSON("state.json",{count:42});GGAPI.app.alert("GGAPI","Записано");}
+  if(p.key==="read"){GGAPI.app.alert("GGAPI",String(GGAPI.files.readText("note.txt"))+" / "+JSON.stringify(GGAPI.files.readJSON("state.json")));}
+  if(p.key==="remove"){GGAPI.files.remove("note.txt");GGAPI.files.remove("state.json");GGAPI.app.alert("GGAPI","Удалено");}
+});
+GGAPI.ui.addFloatingButton({id:"data",title:"API"},async()=>{
+  const h=await GGAPI.messages.history(GGAPI.chat.currentPeerId(),{limit:16});
+  const m=GGAPI.media?GGAPI.media.visible(16):[];
+  GGAPI.ui.showSheet({title:"GGAPI",text:"Снимок текста: "+h.items.length+"; медиа: "+m.length+"; полная история: "+h.complete});
+});
+GGAPI.ui.addMessageContextAction({id:"inspect",title:"GGAPI: проверить сообщение"},()=>{
+  const m=GGAPI.messages.getSelectedMessage();
+  const info=GGAPI.media?GGAPI.media.selected():null;
+  GGAPI.ui.showSheet({title:"GGAPI",text:info?"Медиа: "+info.kind:(m?"Текст: "+String(m.text||"").length+" символов":"Нет сообщения")});
+});
 """#
     static let example = #"""
 // @name Тест Goldgram
@@ -1290,7 +1385,10 @@ private final class GoldgramPluginDetail: UITableViewController {
                 current.settings = mergedSettings
                 if event == "plugin.start" || !sections.isEmpty || result["schemaCleared"] as? Bool == true { current.settingsSchema = schema }
             }
-            if current.grants.contains("storage") { current.storage = mergedStorage }
+            if current.grants.contains("storage") {
+                guard let files = GoldgramPluginStore.mergedFiles(base: p.fileData, latest: current.fileData, raw: result["files"]) else { self.status = "Некорректные файлы или превышена квота."; self.tableView.reloadData(); return }
+                current.storage = mergedStorage; current.fileData = files
+            }
             current.lifecycleSubscriptions = GoldgramPluginLifecycle.subscriptions(result["lifecycleSubscriptions"], grants: current.grants)
             current.floatingTitle = current.grants.contains("ui.mutate") ? (result["floating"] as? [String: Any])?["title"] as? String : nil
             current.contextActions = current.grants.contains("ui.mutate") ? GoldgramPluginChatRun.validateActions(result["contextActions"]) : nil
@@ -1433,8 +1531,8 @@ final class GoldgramPluginChatRun {
               current.grants.contains("chat.write"), registrations(account: account).contains(where: { $0.id == id }) else { return (false, false) }
         return (true, GoldgramPluginConfirmationPolicy.skipDraft(current.confirmationPolicy, grants: current.grants))
     }
-    static func menu(account: String) -> [[String: String]] {
-        let entries = registrations(account: account)
+    static func menu(account: String, mediaOnly: Bool = false) -> [[String: String]] {
+        let entries = registrations(account: account).filter { !mediaOnly || ($0.grants.contains("media.read") && $0.grants.contains("chat.read")) }
         return entries.flatMap { p in
             p.actions.compactMap { action -> [String: String]? in
                 guard let id = action["id"], let title = action["title"] else { return nil }
@@ -1449,6 +1547,8 @@ final class GoldgramPluginChatRun {
         guard valid(), store.failure == nil, !store.state.safe, let p = store.record(id), p.enabled, p.grants.contains("ui.mutate"),
               p.manifest.required.isSubset(of: Set(p.grants)), Set(p.grants).isSubset(of: GoldgramPluginManifest.supported),
               (event == "floating.tap" && p.floatingTitle != nil && p.chatButtonHidden != true) || (event == "context.tap" && p.grants.contains("messages.read") && Self.visibleActions(p).contains(where: { $0["id"] == key })) else { completion(nil, "Действие плагина недоступно."); return }
+        if (context["selectedMessage"] as? [String: Any])?["mediaKind"] != nil &&
+            !["media.read", "messages.read", "chat.read"].allSatisfy({ p.grants.contains($0) }) { completion(nil, "Нет разрешения на медиа."); return }
         guard let lease = GoldgramPluginRun.reserve(account: account, id: id) else { completion(nil, "Плагин занят или достигнут лимит 4 выполнений."); return }
         let stillValid = {
             guard valid() else { return false }
@@ -1458,6 +1558,10 @@ final class GoldgramPluginChatRun {
                 ((event == "floating.tap" && current.floatingTitle != nil && current.chatButtonHidden != true) || (event == "context.tap" && Self.visibleActions(current).contains(where: { $0["id"] == key })))
         }
         var input = context
+        if !p.grants.contains("media.read") || !p.grants.contains("messages.read") || !p.grants.contains("chat.read") {
+            input.removeValue(forKey: "mediaRows")
+            if (input["selectedMessage"] as? [String: Any])?["mediaKind"] != nil { input.removeValue(forKey: "selectedMessage") }
+        }
         if !p.grants.contains("messages.read") { input.removeValue(forKey: "messages"); input.removeValue(forKey: "selectedMessage") }
         if !p.grants.contains("chat.read") { input.removeValue(forKey: "draft"); input.removeValue(forKey: "peerId"); input.removeValue(forKey: "type") }
         run = GoldgramPluginRun(lease: lease, host: presenter.view, record: p, event: event, key: key, value: nil, account: account, presenter: presenter, context: input, valid: stillValid) { [weak self] result, error in
@@ -1472,7 +1576,10 @@ final class GoldgramPluginChatRun {
                 current.settings = mergedSettings
                 if !checked.isEmpty || result["schemaCleared"] as? Bool == true { current.settingsSchema = schema }
             }
-            if current.grants.contains("storage") { current.storage = mergedStorage }
+            if current.grants.contains("storage") {
+                guard let files = GoldgramPluginStore.mergedFiles(base: p.fileData, latest: current.fileData, raw: result["files"]) else { completion(nil, "Некорректные файлы или превышена квота."); return }
+                current.storage = mergedStorage; current.fileData = files
+            }
             current.lifecycleSubscriptions = GoldgramPluginLifecycle.subscriptions(result["lifecycleSubscriptions"], grants: current.grants)
             if current.grants.contains("ui.mutate") { current.contextActions = Self.validateActions(result["contextActions"]); current.floatingTitle = (result["floating"] as? [String: Any])?["title"] as? String }
             guard latest.put(current) else { completion(nil, "Не удалось сохранить настройки."); return }

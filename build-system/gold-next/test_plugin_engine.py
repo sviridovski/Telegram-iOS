@@ -110,6 +110,42 @@ await self.onmessage({data:{source:'GGAPI.events.on("chat.opened",async()=>{try{
 assert.equal(result.storage.blocked,true);assert.equal(requests.length,beforePassive);assert.equal(result.output,null);
 console.log('Goldgram #276 events, once/off, recursion limit, scoped commands and passive RPC denial OK');
 
+const dataGrants=[...compat,'media.read'];
+const fileWrite='GGAPI.files.writeText("note.txt","Привет 👋");GGAPI.files.writeJSON("state.json",{count:42});';
+await self.onmessage({data:{source:fileWrite,grants:dataGrants,event:'plugin.start'}});
+assert.equal(result.files['note.txt'],'Привет 👋');assert.equal(result.files['state.json'],'{"count":42}');
+const savedFiles=result.files;
+await self.onmessage({data:{source:'GGAPI.storage.set("read",GGAPI.files.readJSON("state.json").count);GGAPI.storage.set("bytes",GGAPI.files.stat("note.txt").sizeBytes);GGAPI.storage.set("list",GGAPI.files.list());GGAPI.files.remove("note.txt");',grants:dataGrants,event:'plugin.start',files:savedFiles}});
+assert.equal(result.storage.read,42);assert.equal(result.storage.bytes,17);assert.deepEqual(result.storage.list,['note.txt','state.json']);assert.equal(result.files['note.txt'],undefined);
+await self.onmessage({data:{source:'GGAPI.storage.set("empty",GGAPI.files.list().length);',grants:dataGrants,event:'plugin.start'}});
+assert.equal(result.storage.empty,0);
+await self.onmessage({data:{source:'GGAPI.files.writeText("../x","bad")',grants:dataGrants,event:'plugin.start'}});
+assert.ok(result.error);
+await self.onmessage({data:{source:'GGAPI.files.writeText("secret.txt","bad")',grants:dataGrants,event:'plugin.start'}});
+assert.ok(result.error);
+await self.onmessage({data:{source:'GGAPI.files.writeText("note.txt","я".repeat(33000))',grants:dataGrants,event:'plugin.start'}});
+assert.ok(result.error);
+await self.onmessage({data:{source:'for(let i=0;i<17;i++)GGAPI.files.writeText("x"+i,"a")',grants:dataGrants,event:'plugin.start'}});
+assert.ok(result.error);
+await self.onmessage({data:{source:'GGAPI.files.writeText("a.txt","x")',grants:grants,event:'plugin.start'}});
+assert.ok(result.error);
+const historyCtx={peerId:'p',messages:[{id:'a',id_num:1,text:'one'},{id:'b',id_num:2,text:'two'}],selectedMessage:{id:'c',text:'selected'},mediaRows:[{messageId:'m',kind:'photo'}]};
+const histScript='GGAPI.events.on("settings.action",async()=>{const h=await GGAPI.messages.history("p",{limit:1});GGAPI.storage.set("history",h);const b=await GGAPI.messages.getHistory("p",{beforeId:2});GGAPI.storage.set("before",b.items[0].id);GGAPI.storage.set("selected",GGAPI.messages.get("c").text);GGAPI.storage.set("fetch",(await GGAPI.messages.fetch(["b","other"])).length);GGAPI.storage.set("media",GGAPI.media.info("m").kind);});';
+await self.onmessage({data:{source:histScript,grants:dataGrants,event:'settings.action',context:historyCtx}});
+assert.equal(result.storage.history.items[0].id,'b');assert.equal(result.storage.history.complete,false);assert.equal(result.storage.history.scope,'visibleSnapshot');assert.equal(result.storage.before,'a');assert.equal(result.storage.selected,'selected');assert.equal(result.storage.fetch,1);assert.equal(result.storage.media,'photo');
+await self.onmessage({data:{source:'GGAPI.events.on("settings.action",async()=>{await GGAPI.messages.history("other")});',grants:dataGrants,event:'settings.action',context:historyCtx}});
+assert.ok(result.error);
+await self.onmessage({data:{source:'GGAPI.events.on("settings.action",async()=>{await GGAPI.messages.history("p",{tag:"photo"})});',grants:dataGrants,event:'settings.action',context:historyCtx}});
+assert.ok(result.error);
+await self.onmessage({data:{source:'GGAPI.storage.set("hasMedia",!!GGAPI.media);GGAPI.storage.set("selected",GGAPI.messages.getSelectedMessage());',grants:compat,event:'plugin.start',context:{peerId:'p',selectedMessage:{id:'m',mediaKind:'photo'}}}});
+assert.equal(result.storage.hasMedia,false);assert.equal(result.storage.selected,null);
+await self.onmessage({data:{source:'GGAPI.storage.set("selected",GGAPI.media.selected());',grants:dataGrants,event:'plugin.start',context:{peerId:'p',selectedMessage:{id:'m',mediaKind:'photo'}}}});
+assert.equal(result.storage.selected.kind,'photo');assert.equal(result.storage.selected.messageId,'m');
+await self.onmessage({data:{source:'GGAPI.events.on("chat.opened",()=>GGAPI.storage.set("filesAvailable",!!GGAPI.files));',grants:dataGrants,event:'chat.opened',files:savedFiles,context:historyCtx}});
+assert.equal(result.storage.filesAvailable,false);assert.deepEqual(result.files,{});
+console.log('Goldgram #277 scoped snapshot, media permissions, persistent logical files and quotas OK');
+
+
 })().catch(e=>{console.error(e);process.exit(1)});
 """
 with tempfile.TemporaryDirectory() as tmp:
@@ -130,3 +166,6 @@ print("Goldgram #269 scoped compatibility contracts present")
 
 assert "GoldgramPluginLifecycle" in source and "lifecycleEnabled == true" in source
 assert "UIApplication.didEnterBackgroundNotification" in source
+
+assert 'GoldgramPluginStore.mergedFiles' in source and 'var fileData: [String: String]?' in source
+assert 'input.removeValue(forKey: "mediaRows")' in source
