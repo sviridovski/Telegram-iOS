@@ -73,3 +73,7 @@ Registry, independent controls/actions and bounded isolated execution implemente
 
 ### #271 accepted / #272 candidate
 #271 green and device-confirmed by user; #272 implements scoped DeepSeek GET/POST, catalog cache/freshness, JS API and dynamic opt-in select. Existing AICC 2.1.8 unchanged. [CI #272](https://github.com/sviridovski/Telegram-iOS/actions/runs/45718823181) in_progress. Full device validation pending; next #273 streaming only after acceptance.
+
+
+### #273 numbering adjustment
+#272 failed twice in dependency checkout. #273 is a CI-only fix, retains Network Engine code, and is not the SSE stage. Proceed to SSE only after CI/device validation; subsequent build numbers shift.

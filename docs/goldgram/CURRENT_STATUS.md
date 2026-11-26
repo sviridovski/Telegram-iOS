@@ -1,6 +1,6 @@
 # CURRENT_STATUS — verified checkpoint
 
-  > **2026-11-26 local user date — #271 green/device-accepted; #272 attempt 1 failed in dependency checkout; retry requested.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
+  > **2026-11-26 local user date — #271 green/device-accepted; #272 failed twice in Git LFS checkout; #273 CI-only fix candidate.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
 
 ## P0 development priority (user-approved 2026-11-25)
 
@@ -13,11 +13,11 @@
 | Item | Latest confirmed status |
 | --- | --- |
 | Feature branch | `gold-next-243-author-search` |
-| HEAD | `3115be6d99a578e87e2efc448fbc59695cb5dbb8` (#272 candidate), direct parent #271 |
+| HEAD | `e3b9b0796a7b34d1c844285f02e73fa924931997` (#273 CI-only fix), direct parent #272 |
 | Last green CI | [#271](https://github.com/sviridovski/Telegram-iOS/actions/runs/45691273817), completed success, 38m09s wall |
 | Last installed | #271 — user reports works excellently; screenshots AI/A/B then AI/A. |
-| Failed candidate | #272 attempt 1: Git LFS timeout in wallet-engine checkout, fallback collided with partial files; failed jobs rerun requested. |
-| Next task | **P0 Engine 2.0**: verify #272 model catalog/GET and regression tests; then SSE streaming (target #273). |
+| Failed candidate | #272 both attempts: wallet-engine Git LFS test snapshot timeout; no native compile. |
+| Next task | **P0 Engine 2.0**: validate #273 CI checkout and Network Engine device tests; then SSE streaming (number shifted). |
 | Recovery | #263 green and swipe confirmed, media completeness issue open. #260 earlier broadly user-confirmed baseline; original port/telegram-13.2 unchanged. |
 
 ## #252 corrections retained in #253
@@ -318,3 +318,10 @@ User installed #270 and reported that confirmation dialogs are no longer request
 ## #272 attempt 1 — external Git LFS checkout failure; retry (2026-11-26)
 
 CI run [#272](https://github.com/sviridovski/Telegram-iOS/actions/runs/45718823181), source `3115be6d99a578e87e2efc448fbc59695cb5dbb8`. Native job 139571654347 failed at Checkout pinned submodules efficiently, before compilation or cache restore. Decoded job log confirms wallet-engine pinned revision e59e0d89d7ee90c388bf36e3334c5b276f396697: Git LFS download of examples/swift/WalletEngineAppUITests/Snapshots/iphone-16-pro/localnet-activity.png timed out with batch response fatal error; fallback checkout encountered untracked files left by partial checkout and failed. Mx succeeded; Build skipped. No evidence of Swift source compile failure yet. Requested rerun of failed jobs only, API success; latest run attempt 2, status in_progress. Preserve successful Mx and source SHA; no source changes, no new commit on feature branch, no cache key changes. If repeated LFS failure, investigate bounded clean checkout retry and targeted exclusion of verified unused test snapshots rather than disabling LFS globally. #271 remains last green/device-confirmed baseline. Streaming stage blocked until #272 passes CI/device validation.
+
+
+## #272 attempt 2 failed; #273 CI-only checkout correction (2026-11-26)
+
+- #272 run 45718823181 attempt 2: native job 139602240048 failed again in Checkout pinned submodules efficiently, before any Swift compile or Bazel cache restore. Git LFS batch timeout for wallet-engine examples/swift/WalletEngineAppUITests/Snapshots/iphone-16-pro/ton-connect-connected.png, then fallback checkout failed. Mx success, Build skipped. First attempt had failed for a different snapshot in same directory.
+- Inspected third-party/wallet-engine/BUILD and pinned upstream i582/wallet-engine .gitattributes/Cargo.toml: LFS tracks PNG visual baselines in examples/swift/WalletEngineAppUITests/Snapshots and examples/web/e2e/scenarios/snapshots; production Bazel inputs do not include these example paths. #273 source e3b9b0796a7b34d1c844285f02e73fa924931997, direct parent #272, only .github/workflows/build.yml changed. Scope lfs.fetchexclude to those PNG patterns during submodule update, keep LFS enabled for all other files, no dependency revision changes. Shallow checkout first; on failure retry full checkout --force (fresh CI runner only) with 5s/15s delays, maximum three attempts; reject recursive submodule status with missing/mismatched/conflicted pins. No application code or cache key format changed. Existing parent cache preference then broad prefix retained; actual hit and duration pending.
+- Local bash syntax and seven mock Git control-flow fixtures passed (success, retry success, second retry success, all fail, mismatch, missing, conflict). Actual Git LFS network and macOS build not tested locally. [CI #273](https://github.com/sviridovski/Telegram-iOS/actions/runs/45730780334), in_progress. #271 remains last green and user-confirmed. #273 is a CI fix for Network Engine, not Streaming Engine; resume SSE only after successful CI and user acceptance of catalog/generation, following existing roadmap. Numbering shifts accordingly.
