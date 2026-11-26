@@ -85,3 +85,7 @@ User confirms plugin catalog/generation work; screenshot confirms JS context men
 
 ### #274 candidate — Streaming Engine
 User requested independent on/off controls for new features. Scoped opt-in SSE, optional live panel/indicator/partial result/statistics, legacy final response compatibility, worker progress callbacks and bounded cancellation implemented. Default off, original AICC JS unchanged. [CI #274](https://github.com/sviridovski/Telegram-iOS/actions/runs/45737637443) in_progress. Full iOS/device acceptance pending; #273 fallback. Next extended UI Engine only after validation.
+
+
+### #274 accepted — Streaming Engine
+CI green and user reports working streaming generation on device. Individual toggles, cancellation, partial answer and negative paths remain in regression matrix. Next extended UI Engine (#275 target); preserve user-controlled optional features and JS-owned settings. No new source build for this checkpoint.

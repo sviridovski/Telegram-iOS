@@ -1,6 +1,6 @@
 # CURRENT_STATUS — verified checkpoint
 
-  > **2026-11-26 local user date — #273 green/device-accepted; #274 opt-in Streaming Engine candidate.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
+  > **2026-11-26 local user date — #274 green and device-accepted for streaming; next P0 expanded UI Engine.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
 
 ## P0 development priority (user-approved 2026-11-25)
 
@@ -13,11 +13,11 @@
 | Item | Latest confirmed status |
 | --- | --- |
 | Feature branch | `gold-next-243-author-search` |
-| HEAD | `3707704324067a43bb3d83f53754e4cc1b826530` (#274 candidate), direct parent #273 |
-| Last green CI | [#273](https://github.com/sviridovski/Telegram-iOS/actions/runs/45730780334), success, 32m24s wall |
-| Last installed | #273 — user confirms catalog and AI generation work; screenshot shows JS-defined context actions. |
+| HEAD | `3707704324067a43bb3d83f53754e4cc1b826530` (#274 accepted), direct parent #273 |
+| Last green CI | [#274](https://github.com/sviridovski/Telegram-iOS/actions/runs/45737637443), success, 36m10s wall |
+| Last installed | #274 — user confirms streaming generation works excellently; individual controls and negative-path tests not separately confirmed. |
 | Failed candidate | #272 both attempts: wallet-engine Git LFS test snapshot timeout; no native compile. |
-| Next task | **P0 Engine 2.0**: verify #274 CI and device streaming/stop/toggles, then expanded UI Engine (target #275). |
+| Next task | **P0 Engine 2.0**: extended UI Engine (target #275), optional user controls and plugin-owned UI; keep remaining streaming regressions in test matrix. |
 | Recovery | #263 green and swipe confirmed, media completeness issue open. #260 earlier broadly user-confirmed baseline; original port/telegram-13.2 unchanged. |
 
 ## #252 corrections retained in #253
@@ -347,3 +347,8 @@ User approved Streaming Engine and explicitly requested on/off controls for thes
 - API: GGAPI.runtime.features().streaming reflects enabled preference and interactive grant snapshot; GGAPI.network.fetch(url,{...options,onProgress:fn}) and GGAPI.network.stream(url,options,fn) provide cumulative bounded text, thinking flag and done, optional usage progress. Callback is synchronous; final response remains normal fetch-like status/ok/text/json. When streaming disabled, normal fetch and no progress callbacks. Native switch controls transport for all existing completion calls, including old JS stream:false. Existing network.fetch grant required. Native broker rechecks current preference/context/key on updates; no JS override of native opt-in.
 - Local Linux Swift parser/default-options fixture passed, including byte-by-byte Russian and emoji input, CRLF, malformed and oversized data, old optional field migration, finish and partial JSON; 43 JS assertions against actual worker and simulated RPC/accelerated timers passed (including previous regressions, callback and disabled path). Added CI fixtures. No full UIKit/WebKit build, real SSE network, cancellation, layout, stats persistence or live original AICC test yet. Preserve parent cache preference and LFS checkout fix; no new speedup claimed.
 - Device acceptance: keep streaming off initially and verify original AICC ordinary generation, #270 confirmations and #271 A/B. Enable streaming on imported AICC only; copy ordinary text into draft, tap AI, confirm incremental text and final insertion. Test stop with partial off/on, only while content present, verify no automatic send and no overwrite after chat/draft change. Test show-text/indicator both off, each independently, token counters after a completed stream, disabled stats clearing, reopen settings/restart and per-plugin isolation. Validate both Flash and Pro, context actions, network interruption and safe mode. Next approved P0 stage after acceptance: extended UI Engine (#275 target).
+
+
+## #274 accepted — Streaming Engine checkpoint (2026-11-26)
+
+User reports: "проверил 274, все отлично потоковая генерация работает". This confirms the tested streaming flow on the user's iPhone; it does not independently establish each toggle, stop/partial behavior, token persistence, both models, context changes, failure paths or all prior regressions. Keep these in the regression matrix. CI [#274](https://github.com/sviridovski/Telegram-iOS/actions/runs/45737637443) completed success at 3707704324067a43bb3d83f53754e4cc1b826530, all three jobs (mx/native/build) successful, created-to-updated wall 36m10s. #274 is now the latest green and device-accepted baseline for tested flows; 15–20 minute CI target not achieved. No source or CI changes for this checkpoint. Next approved P0 stage: extended UI Engine (target #275), preserving JS ownership of settings/actions, per-plugin isolation, existing streaming/consent toggles, and user requirement that new optional features be individually switchable where technically possible. Do not hardcode AICC-specific UI; keep native services scoped. Preserve SQLite, Ghost, Collector and Live Bridge. No new build until the next development change.

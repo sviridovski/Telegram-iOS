@@ -229,3 +229,7 @@ Network Engine and plugin generation accepted by user; JS-defined message action
 ## #274 candidate — opt-in streaming transport
 
 Native bounded SSE parser/delegate, per-plugin streamingOptions, local optional progress panel, scoped stop and compatible JSON, worker RPC progress callbacks. No new database, credentials or Telegram send capability. See CURRENT_STATUS and DECISIONS_LOG for limitations and test gates.
+
+
+## #274 accepted checkpoint
+Streaming transport accepted for the tested on-device generation flow; optional per-plugin controls remain an architectural requirement for new features. Next P0: extended declarative UI Engine. See CURRENT_STATUS and DECISIONS_LOG for evidence and remaining regression checks.
