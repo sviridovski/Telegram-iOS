@@ -76,6 +76,10 @@ struct GoldgramAIConfig {
         get { (UserDefaults.standard.object(forKey: prefix + "horizontal") as? NSNumber)?.doubleValue ?? 0.0 }
         nonmutating set { UserDefaults.standard.set(newValue, forKey: prefix + "horizontal") }
     }
+    private var streamUsageKey: String { prefix + "streamUsage.v1" }
+    var lastStreamUsage: [String: Int]? { UserDefaults.standard.dictionary(forKey: streamUsageKey) as? [String: Int] }
+    func saveStreamUsage(_ usage: [String: Int]) { UserDefaults.standard.set(usage, forKey: streamUsageKey) }
+    func clearStreamUsage() { UserDefaults.standard.removeObject(forKey: streamUsageKey) }
     private var catalogKey: String { prefix + "modelCatalog.v1" }
     var modelCatalog: (models: [[String: Any]], updated: Double)? {
         guard readKey() != nil,
@@ -91,7 +95,7 @@ struct GoldgramAIConfig {
             UserDefaults.standard.set(data, forKey: catalogKey)
         }
     }
-    func clearCatalog() { UserDefaults.standard.removeObject(forKey: catalogKey) }
+    func clearCatalog() { UserDefaults.standard.removeObject(forKey: catalogKey); clearStreamUsage() }
     private var keyQuery: [String: Any] {
         [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "GoldgramAI.DeepSeek.v1", kSecAttrAccount as String: account]
     }
@@ -347,6 +351,7 @@ public final class GoldgramAIButton: UIButton {
     }
     @objc private func tapped() {
         if let pendingAlert { if authorized(), snapshot() != nil { presentAlert(pendingAlert) } else { cancel() }; return }
+        if let pluginRun, pluginRun.stopStream() { return }
         if task != nil || pluginRun != nil { cancel(); return }
         guard authorized(), let draft = snapshot() else { return }
         if let registration, let presenter {
@@ -567,6 +572,173 @@ public final class GoldgramAIButtonGroup: UIView {
     }
 }
 
+// #274 bounded SSE parser; accumulate complete UTF-8 lines across packets.
+// Never retain or return raw reasoning text, only an activity flag.
+struct GoldgramStreamOptions: Codable, Equatable {
+    var enabled = false
+    var preview = true
+    var reasoning = true
+    var partial = false
+    var usage = true
+}
+
+struct GoldgramSSEParser {
+    private var buffer = Data()
+    private var event: [String] = []
+    private var eventBytes = 0
+    private var received = 0
+    private(set) var text = ""
+    private(set) var thinking = false
+    private(set) var usage: [String: Int] = [:]
+    private(set) var reason = "stop"
+    private var sawFinish = false
+    private(set) var done = false
+
+    mutating func feed(_ data: Data) -> Bool {
+        if done { return true }
+        guard data.count <= 512 * 1024 - received else { return false }
+        received += data.count; buffer.append(data)
+        while let index = buffer.firstIndex(of: 10) {
+            var line = Data(buffer[..<index])
+            buffer.removeSubrange(...index)
+            if line.last == 13 { line.removeLast() }
+            guard line.count <= 64 * 1024, let value = String(data: line, encoding: .utf8) else { return false }
+            if value.isEmpty {
+                if !event.isEmpty {
+                    let payload = event.joined(separator: "\n")
+                    event.removeAll(keepingCapacity: true); eventBytes = 0
+                    guard consume(payload) else { return false }
+                    if done { return true }
+                }
+            } else if value.hasPrefix("data:") {
+                var part = String(value.dropFirst(5))
+                if part.first == " " { part.removeFirst() }
+                eventBytes += part.utf8.count + 1
+                guard eventBytes <= 64 * 1024 else { return false }
+                event.append(part)
+            }
+        }
+        return buffer.count <= 64 * 1024
+    }
+
+    private mutating func consume(_ value: String) -> Bool {
+        if value == "[DONE]" { guard sawFinish else { return false }; done = true; thinking = false; return true }
+        guard let root = try? JSONSerialization.jsonObject(with: Data(value.utf8)) as? [String: Any],
+              (root["error"] == nil || root["error"] is NSNull), let choices = root["choices"] as? [[String: Any]], choices.count <= 1 else { return false }
+        if let tokens = root["usage"] as? [String: Any] {
+            for key in ["prompt_tokens", "completion_tokens", "total_tokens", "prompt_cache_hit_tokens", "prompt_cache_miss_tokens"] {
+                if let n = tokens[key] as? Int, n >= 0, n <= 100_000_000 { usage[key] = n }
+            }
+        }
+        if let choice = choices.first {
+            if let delta = choice["delta"] as? [String: Any] {
+                if let reasoning = delta["reasoning_content"] as? String, !reasoning.isEmpty { thinking = true }
+                if let content = delta["content"] as? String, !content.isEmpty {
+                    guard text.utf8.count + content.utf8.count <= 64 * 1024 else { return false }
+                    text += content; thinking = false
+                }
+            }
+            if let finish = choice["finish_reason"] as? String {
+                guard ["stop","length"].contains(finish) else { return false }
+                reason = finish; thinking = false; sawFinish = true
+            }
+        }
+        return true
+    }
+
+    func response(partial: Bool) -> [String: Any] {
+        var root: [String: Any] = ["choices": [["message": ["role": "assistant", "content": text], "finish_reason": partial ? "cancelled" : reason]], "goldgram_partial": partial]
+        if !usage.isEmpty { root["usage"] = usage }
+        return root
+    }
+}
+
+// URLSession owns the delegate on a serial queue; UI receives bounded snapshots.
+private final class GoldgramSSETransport: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    private var parser = GoldgramSSEParser()
+    private var finished = false
+    private var lastUpdate = Date.distantPast
+    private let update: (GoldgramSSEParser) -> Void
+    private let result: (GoldgramSSEParser?, String?) -> Void
+    init(update: @escaping (GoldgramSSEParser) -> Void, result: @escaping (GoldgramSSEParser?, String?) -> Void) {
+        self.update = update; self.result = result; super.init()
+    }
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200, http.mimeType?.lowercased() == "text/event-stream" else {
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            finish(nil, "DeepSeek SSE HTTP " + String(status) + " / invalid content type")
+            completionHandler(.cancel); return
+        }
+        completionHandler(.allow)
+    }
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        guard !finished else { return }
+        guard parser.feed(data) else { finish(nil, "Некорректный или слишком большой поток SSE."); dataTask.cancel(); return }
+        if parser.done { finish(parser, nil); return }
+        if Date().timeIntervalSince(lastUpdate) >= 0.15 {
+            lastUpdate = Date()
+            let snapshot = parser
+            DispatchQueue.main.async { [update] in update(snapshot) }
+        }
+    }
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        guard !finished else { return }
+        if parser.done { finish(parser, nil) }
+        else { finish(nil, "Поток прерван до завершения.") }
+    }
+    private func finish(_ value: GoldgramSSEParser?, _ error: String?) {
+        guard !finished else { return }; finished = true
+        DispatchQueue.main.async { [result] in result(value, error) }
+    }
+}
+
+// Local nonmodal progress; does not write drafts or send Telegram events.
+private final class GoldgramStreamPanel: UIView {
+    static let marker = 804274
+    private let status = UILabel()
+    private let body = UITextView()
+    init(host: UIView, options: GoldgramStreamOptions, stop: @escaping () -> Void) {
+        super.init(frame: .zero)
+        tag = Self.marker
+        translatesAutoresizingMaskIntoConstraints = false
+        backgroundColor = .secondarySystemBackground
+        layer.cornerRadius = 16
+        layer.borderWidth = 1; layer.borderColor = UIColor.separator.cgColor
+        status.font = .preferredFont(forTextStyle: .subheadline); status.numberOfLines = 2
+        status.text = "DeepSeek · ожидание ответа…"
+        body.isEditable = false; body.font = .preferredFont(forTextStyle: .body)
+        body.backgroundColor = .clear; body.textColor = .label; body.isHidden = !options.preview
+        let button = UIButton(type: .system)
+        button.setTitle("Остановить", for: .normal)
+        button.addAction(UIAction { _ in stop() }, for: .touchUpInside)
+        let stack = UIStackView(arrangedSubviews: [status, body, button])
+        stack.axis = .vertical; stack.spacing = 6; stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack); host.addSubview(self)
+        let preferredWidth = widthAnchor.constraint(equalToConstant: 340); preferredWidth.priority = .defaultHigh
+        let bodyHeight = body.heightAnchor.constraint(equalToConstant: 130); bodyHeight.priority = .defaultHigh
+        NSLayoutConstraint.activate([
+            centerXAnchor.constraint(equalTo: host.safeAreaLayoutGuide.centerXAnchor),
+            topAnchor.constraint(equalTo: host.safeAreaLayoutGuide.topAnchor, constant: 12),
+            widthAnchor.constraint(lessThanOrEqualTo: host.safeAreaLayoutGuide.widthAnchor, constant: -24), preferredWidth,
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            stack.topAnchor.constraint(equalTo: topAnchor, constant: 10),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8),
+            bodyHeight,
+            button.heightAnchor.constraint(greaterThanOrEqualToConstant: 44)
+        ])
+    }
+    required init?(coder: NSCoder) { return nil }
+    func display(_ parser: GoldgramSSEParser, options: GoldgramStreamOptions) {
+        var title = parser.thinking && options.reasoning ? "DeepSeek · рассуждает…" : "DeepSeek · генерация…"
+        if options.usage, let n = parser.usage["total_tokens"] { title += " · \(n) токенов" }
+        status.text = title
+        if options.preview { body.text = parser.text }
+        if options.preview, !body.text.isEmpty { body.scrollRangeToVisible(NSRange(location: (body.text as NSString).length - 1, length: 1)) }
+    }
+}
+
 // Native request broker. Fixed provider routes, managed credentials, and explicit
 // user actions; chat payload confirmation follows the per-plugin consent policy.
 @MainActor
@@ -584,9 +756,17 @@ final class GoldgramPluginNetwork: NSObject, UIDocumentPickerDelegate {
     private var fileReply: (([String: Any]) -> Void)?
     private var exportDirectory: URL?
     private let skipRequestConfirmation: () -> Bool
-    init(config: GoldgramAIConfig, presenter: UIViewController, valid: @escaping () -> Bool, skipRequestConfirmation: @escaping () -> Bool = { false }) { self.config = config; self.presenter = presenter; self.valid = valid; self.skipRequestConfirmation = skipRequestConfirmation; super.init() }
+    private let streamingOptions: () -> GoldgramStreamOptions
+    private var streamID: UUID?
+    private var streamState: GoldgramSSEParser?
+    private var streamReply: (([String: Any]) -> Void)?
+    private var streamPanel: GoldgramStreamPanel?
+    private var streamGuard: (() -> Bool)?
+    private var activeOptions = GoldgramStreamOptions()
+    init(config: GoldgramAIConfig, presenter: UIViewController, valid: @escaping () -> Bool, skipRequestConfirmation: @escaping () -> Bool = { false }, streamingOptions: @escaping () -> GoldgramStreamOptions = { GoldgramStreamOptions() }) { self.config = config; self.presenter = presenter; self.valid = valid; self.skipRequestConfirmation = skipRequestConfirmation; self.streamingOptions = streamingOptions; super.init() }
     func cancel() {
-        cancelled = true; task?.cancel(); session?.invalidateAndCancel(); task = nil; session = nil
+        cancelled = true; streamID = nil; streamReply = nil; streamGuard = nil; streamState = nil; streamPanel?.removeFromSuperview(); streamPanel = nil
+        task?.cancel(); session?.invalidateAndCancel(); task = nil; session = nil
         if let alert, alert.presentingViewController != nil { alert.dismiss(animated: false) }
         if let fileUI, fileUI.presentingViewController != nil { fileUI.dismiss(animated: false) }
         fileReply = nil; cleanExport()
@@ -623,13 +803,71 @@ final class GoldgramPluginNetwork: NSObject, UIDocumentPickerDelegate {
             alert.addAction(UIAlertAction(title: "Отмена", style: .cancel) { [weak self] _ in self?.busy = false; self?.alert = nil; completion(["value":NSNull()]) }); presenter.present(alert, animated: true)
         }
     }
-    func fetch(_ args: [String: Any], completion: @escaping ([String: Any]) -> Void) {
+    // User stop is distinct from lifecycle cancellation: partial results are
+    // allowed only by explicit preference and while the original context is valid.
+    @discardableResult func stopStream() -> Bool {
+        guard let id = streamID else { return false }
+        let partial = activeOptions.partial && !(streamState?.text.isEmpty ?? true)
+        finishStream(id, value: partial ? streamState : nil, error: "request_cancelled", partial: partial)
+        return true
+    }
+    private func finishStream(_ id: UUID, value: GoldgramSSEParser?, error: String?, partial: Bool = false) {
+        guard streamID == id else { return }
+        let allowed = !cancelled && (streamGuard?() == true)
+        let reply = streamReply
+        streamID = nil; streamReply = nil; streamGuard = nil; streamState = nil; busy = false
+        streamPanel?.removeFromSuperview(); streamPanel = nil
+        task?.cancel(); session?.invalidateAndCancel(); task = nil; session = nil
+        guard allowed else { reply?(["error":"request_cancelled"]); return }
+        guard let value, let data = try? JSONSerialization.data(withJSONObject: value.response(partial: partial)), let body = String(data: data, encoding: .utf8) else {
+            reply?(["error":error ?? "Invalid stream"]); return
+        }
+        if activeOptions.usage, !partial {
+            if value.usage.isEmpty { config.clearStreamUsage() } else { config.saveStreamUsage(value.usage) }
+        }
+        reply?(["status":200,"body":body])
+    }
+    private func startStream(_ request: URLRequest, config sessionConfig: URLSessionConfiguration, options: GoldgramStreamOptions, key: String, progress: @escaping ([String: Any]) -> Void, completion: @escaping ([String: Any]) -> Void) {
+        guard !cancelled, valid(), streamingOptions() == options, self.config.readKey() == key, let presenter, let host = presenter.viewIfLoaded, host.window != nil else { busy = false; completion(["error":"request_cancelled"]); return }
+        if (options.preview || options.reasoning), host.viewWithTag(GoldgramStreamPanel.marker) != nil { busy = false; completion(["error":"Закройте другой потоковый ответ или отключите его показ."]); return }
+        let id = UUID(); streamID = id; streamReply = completion; streamState = GoldgramSSEParser(); activeOptions = options
+        streamGuard = { [weak self] in
+            guard let self else { return false }
+            return self.valid() && self.streamingOptions() == options && self.config.readKey() == key && UIApplication.shared.applicationState == .active
+        }
+        if options.preview || options.reasoning {
+            streamPanel = GoldgramStreamPanel(host: host, options: options, stop: { [weak self] in _ = self?.stopStream() })
+        }
+        let transport = GoldgramSSETransport(update: { [weak self] value in
+            guard let self, self.streamID == id else { return }
+            guard self.streamGuard?() == true else { self.finishStream(id, value: nil, error: "request_cancelled"); return }
+            self.streamState = value
+            self.streamPanel?.display(value, options: options)
+            var event: [String: Any] = ["text":value.text, "thinking":options.reasoning && value.thinking, "done":false]
+            if options.usage { event["usage"] = value.usage }
+            progress(event)
+        }, result: { [weak self] value, error in
+            guard let self, self.streamID == id else { return }
+            if let value, self.streamGuard?() == true {
+                var event: [String: Any] = ["text":value.text, "thinking":false, "done":true]
+                if options.usage { event["usage"] = value.usage }
+                progress(event)
+            }
+            self.finishStream(id, value: value, error: error)
+        })
+        let session = URLSession(configuration: sessionConfig, delegate: transport, delegateQueue: nil)
+        self.session = session
+        let task = session.dataTask(with: request); self.task = task; task.resume()
+    }
+    func fetch(_ args: [String: Any], progress: @escaping ([String: Any]) -> Void = { _ in }, completion: @escaping ([String: Any]) -> Void) {
         let raw = args["body"]
         let hasBody = raw != nil && !(raw is NSNull)
         guard !cancelled, !busy, valid(), count < 3, let key = config.readKey(),
               let route = GoldgramNetworkPolicy.route(url: args["url"] as? String, method: args["method"] as? String, hasBody: hasBody) else {
             completion(["error":"Нет ключа, разрешения или поддерживаемого адреса/метода."]); return
         }
+        let options = streamingOptions()
+        let streaming = route == .completion && options.enabled
         let url: URL
         let method: String
         var payload: Data? = nil
@@ -648,7 +886,8 @@ final class GoldgramPluginNetwork: NSObject, UIDocumentPickerDelegate {
                   messages[0]["role"] as? String == "system", messages[1]["role"] as? String == "user",
                   let prompt = messages[0]["content"] as? String, let text = messages[1]["content"] as? String,
                   prompt.utf8.count <= 16000, text.utf8.count <= 28000 else { completion(["error":"Некорректный запрос к DeepSeek."]); return }
-            var clean: [String: Any] = ["model":model,"messages":[["role":"system","content":prompt],["role":"user","content":text]],"stream":false,"max_tokens":max(1,min(2048,body["max_tokens"] as? Int ?? 900))]
+            var clean: [String: Any] = ["model":model,"messages":[["role":"system","content":prompt],["role":"user","content":text]],"stream":streaming,"max_tokens":max(1,min(2048,body["max_tokens"] as? Int ?? 900))]
+            if streaming { clean["stream_options"] = ["include_usage":true] }
             if let t = body["temperature"] as? Double, t.isFinite { clean["temperature"] = max(0,min(2,t)) }
             if let t = body["thinking"] as? [String: Any], let type = t["type"] as? String, ["enabled","disabled"].contains(type) { clean["thinking"] = ["type":type] }
             if let effort = body["reasoning_effort"] as? String, ["low","high","max"].contains(effort) { clean["reasoning_effort"] = effort }
@@ -660,7 +899,7 @@ final class GoldgramPluginNetwork: NSObject, UIDocumentPickerDelegate {
         let ms = max(1000,min(route == .models ? 30000 : 240000,args["timeoutMs"] as? Int ?? (route == .models ? 15000 : 75000)))
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: Double(ms)/1000)
         request.httpMethod = method; request.httpBody = payload
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(streaming ? "text/event-stream" : "application/json", forHTTPHeaderField: "Accept")
         if payload != nil { request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
         request.setValue("Bearer " + key, forHTTPHeaderField: "Authorization")
         busy = true; count += 1
@@ -672,6 +911,9 @@ final class GoldgramPluginNetwork: NSObject, UIDocumentPickerDelegate {
                 let cfg = URLSessionConfiguration.ephemeral
                 cfg.httpShouldSetCookies = false; cfg.httpCookieStorage = nil; cfg.urlCache = nil; cfg.urlCredentialStorage = nil
                 cfg.timeoutIntervalForRequest = Double(ms)/1000; cfg.timeoutIntervalForResource = Double(ms)/1000
+                if streaming {
+                    self.startStream(request, config: cfg, options: options, key: key, progress: progress, completion: completion); return
+                }
                 let session = URLSession(configuration: cfg, delegate: GoldgramAINoRedirect(), delegateQueue: nil)
                 self.session = session
                 let task = session.dataTask(with: request) { [weak self] data, response, error in

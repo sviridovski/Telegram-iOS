@@ -67,6 +67,7 @@ private struct GoldgramPluginRecord: Codable {
     // Native-only consent policy; absent on older installs means always ask.
     var confirmationPolicy: GoldgramPluginConfirmationPolicy?
     var chatButtonHidden: Bool?
+    var streamingOptions: GoldgramStreamOptions?
     var manifest: GoldgramPluginManifest { GoldgramPluginManifest(code) }
 }
 
@@ -232,6 +233,7 @@ private final class GoldgramPluginRun: NSObject, WKNavigationDelegate, WKScriptM
         input["context"] = context
         input["pluginId"] = record.id.uuidString
         input["managedKey"] = !account.isEmpty && credential.readKey() != nil
+        input["streamingEnabled"] = record.streamingOptions?.enabled == true && grants.contains("network.fetch") && interactive
         if grants.contains("network.fetch"), !account.isEmpty, let cache = credential.modelCatalog {
             input["modelCatalog"] = ["models": cache.models, "updatedAt": cache.updated, "stale": !GoldgramNetworkPolicy.fresh(updated: cache.updated, now: Date().timeIntervalSince1970)]
         }
@@ -249,6 +251,11 @@ private final class GoldgramPluginRun: NSObject, WKNavigationDelegate, WKScriptM
                 guard latest.failure == nil, !latest.state.safe, let current = latest.record(record.id),
                       current.enabled, current.code == record.code, current.grants == record.grants else { return false }
                 return GoldgramPluginConfirmationPolicy.skipRequest(current.confirmationPolicy, grants: current.grants, event: event)
+            }, streamingOptions: {
+                guard valid(), record.grants.contains("network.fetch") else { return GoldgramStreamOptions() }
+                let latest = GoldgramPluginStore(account: account, isCurrent: valid)
+                guard latest.failure == nil, !latest.state.safe, let current = latest.record(record.id), current.enabled, current.code == record.code, current.grants == record.grants else { return GoldgramStreamOptions() }
+                return current.streamingOptions ?? GoldgramStreamOptions()
             })
         }
         let config = WKWebViewConfiguration()
@@ -270,6 +277,7 @@ private final class GoldgramPluginRun: NSObject, WKNavigationDelegate, WKScriptM
         guard let account = note.object as? String, lease.hasPrefix(account + ":") else { return }
         if !valid() { cancel() }
     }
+    func stopStream() -> Bool { broker?.stopStream() ?? false }
     func cancel() { finish(nil, "Выполнение остановлено.") }
     private func finish(_ result: [String: Any]?, _ error: String?) {
         guard let done = completion else { return }
@@ -308,7 +316,11 @@ private final class GoldgramPluginRun: NSObject, WKNavigationDelegate, WKScriptM
         if let rpc = object["rpc"] as? Int {
             guard interactive, let broker, let method = object["method"] as? String, let args = object["args"] as? [String: Any] else { replyRPC(rpc, result: ["error": "Permission denied"]); return }
             let callback: ([String: Any]) -> Void = { [weak self] response in self?.replyRPC(rpc, result: response) }
-            if method == "network.fetch", grants.contains("network.fetch") { broker.fetch(args, completion: callback) }
+            if method == "network.fetch", grants.contains("network.fetch") {
+                broker.fetch(args, progress: { [weak self] event in
+                    if args["progress"] as? Bool == true { self?.replyProgress(rpc, event: event) }
+                }, completion: callback)
+            }
             else if method == "ui.select", grants.contains("ui.mutate") { broker.select(args, completion: callback) }
             else if method == "files.pick", grants.contains("storage") { broker.pickJSON(completion: callback) }
             else if method == "files.share", grants.contains("storage") { broker.shareJSON(args, completion: callback) }
@@ -319,6 +331,10 @@ private final class GoldgramPluginRun: NSObject, WKNavigationDelegate, WKScriptM
         else { finish(object, nil) }
     }
 
+    private func replyProgress(_ id: Int, event: [String: Any]) {
+        guard completion != nil, valid(), let data = try? JSONSerialization.data(withJSONObject: ["rpcProgress":id,"event":event]), let json = String(data:data,encoding:.utf8) else { return }
+        web?.evaluateJavaScript("window.goldReply(" + json + ");", completionHandler: nil)
+    }
     private func replyRPC(_ id: Int, result: [String: Any]) {
         guard completion != nil, let data = try? JSONSerialization.data(withJSONObject: ["rpcResult": id, "result": result]), let json = String(data: data, encoding: .utf8) else { return }
         web?.evaluateJavaScript("window.goldReply(" + json + ");", completionHandler: nil)
@@ -331,9 +347,10 @@ private final class GoldgramPluginRun: NSObject, WKNavigationDelegate, WKScriptM
 // BEGIN GOLDGRAM_WORKER_V1
 function goldWorkerMain() {
   const send = self.postMessage.bind(self);
-  const pending = new Map(); let serial = 0;
+  const pending = new Map(), progressHandlers = new Map(); let serial = 0;
   self.onmessage = async function(e) {
-    if (e.data && e.data.rpcResult !== undefined) { const fn = pending.get(e.data.rpcResult); if(fn){pending.delete(e.data.rpcResult);fn(e.data.result);} return; }
+    if (e.data && e.data.rpcProgress !== undefined) { const fn=progressHandlers.get(e.data.rpcProgress); if(fn&&pending.has(e.data.rpcProgress)){try{fn(e.data.event);}catch(_){}} return; }
+    if (e.data && e.data.rpcResult !== undefined) { const fn = pending.get(e.data.rpcResult); if(fn){pending.delete(e.data.rpcResult);progressHandlers.delete(e.data.rpcResult);fn(e.data.result);} return; }
     const p = e.data;
     const grants = new Set(p.grants || []);
     const allowed = t => grants.has(t);
@@ -342,7 +359,7 @@ function goldWorkerMain() {
     const ctx = p.context || {}; let draft = typeof ctx.draft === "string" ? ctx.draft : null, changed = false, output = null, floating = null;
     const keyAlias = "sk-goldgram-managed";
     const isSecret = k => k === "apiKey" || k === "aicc_api_key_v2";
-    const rpc = (method,args) => new Promise((resolve,reject)=>{const id=++serial; pending.set(id,r=>r && r.error ? reject(Error(r.error)) : resolve(r)); send(JSON.stringify({rpc:id,method,args}));});
+    const rpc = (method,args,progress) => new Promise((resolve,reject)=>{const id=++serial; pending.set(id,r=>r && r.error ? reject(Error(r.error)) : resolve(r)); if(typeof progress==="function")progressHandlers.set(id,progress); send(JSON.stringify({rpc:id,method,args}));});
     const settings = Object.assign(Object.create(null), p.settings || {});
     const storage = Object.assign(Object.create(null), p.storage || {});
     const own = (o,k) => Object.prototype.hasOwnProperty.call(o,k);
@@ -386,7 +403,7 @@ function goldWorkerMain() {
     };
     const logging = Object.freeze({log,info:log,warn:log,error:log});
     const base = {
-      runtime:Object.freeze({apiVersion:()=>5,features:()=>({scopedChat:!!ctx.peerId,localOnly:!allowed("network.fetch"),modelDiscovery:allowed("network.fetch")}),pluginId:()=>p.pluginId||"",hasPermission:allowed,grants:()=>Array.from(grants)}),
+      runtime:Object.freeze({apiVersion:()=>5,features:()=>({scopedChat:!!ctx.peerId,localOnly:!allowed("network.fetch"),modelDiscovery:allowed("network.fetch"),streaming:allowed("network.fetch")&&p.streamingEnabled===true}),pluginId:()=>p.pluginId||"",hasPermission:allowed,grants:()=>Array.from(grants)}),
       settings:Object.freeze({addSection:section,define:section,getPlugin:(k,f)=>{need("settings.read");if(isSecret(k))return p.managedKey?keyAlias:f;return own(settings,k)?settings[k]:f;},setPlugin:(k,v)=>{need("settings.read");if(isSecret(k)){if(v===""||v===keyAlias)return true;throw Error("Use native secure field");}return write(settings,k,v);}}),
       storage:Object.freeze({get:k=>{need("storage");if(isSecret(k))return p.managedKey?keyAlias:null;return own(storage,k)?storage[k]:null;},set:(k,v)=>{need("storage");if(isSecret(k)){if(v===keyAlias&&p.managedKey)return true;throw Error("Use native secure field");}return write(storage,k,v);},getJSON:(k,f)=>{need("storage");return own(storage,k)?storage[k]:f;},setJSON:(k,v)=>{need("storage");return write(storage,k,v);},remove:k=>{need("storage");delete storage[k];}}),
       events:Object.freeze({on:(name,fn)=>{need("events");if (!["plugin.start","settings.changed","settings.action"].includes(name)||typeof fn!=="function")return null; const list=handlers[name]||(handlers[name]=[]);if(list.length<24)list.push(fn);return String(list.length);}}),
@@ -406,14 +423,15 @@ function goldWorkerMain() {
       const fetch=async(url,opt={})=>{
         if(!opt||opt.proxy)throw Error("Telegram proxy not supported");
         const u=String(url), method=String(opt.method||"GET").toUpperCase();
-        const r=await rpc("network.fetch",{url:u,method,body:opt.body,timeoutMs:opt.timeoutMs||opt.timeout||75000});
+        const progress=p.streamingEnabled===true&&typeof opt.onProgress==="function"?opt.onProgress:null;
+        const r=await rpc("network.fetch",{url:u,method,body:opt.body,timeoutMs:opt.timeoutMs||opt.timeout||75000,progress:!!progress},progress);
         if(u==="https://api.deepseek.com/models"&&method==="GET"&&r.status===200){
           const list=JSON.parse(r.body);
           catalog={models:list.data,updatedAt:Date.now()/1000,stale:false};
         }
         return {status:r.status,ok:r.status>=200&&r.status<300,text:()=>Promise.resolve(r.body),json:()=>Promise.resolve(JSON.parse(r.body))};
       };
-      base.network=Object.freeze({fetch,models:()=>copyCatalog(),refreshModels:async(force=false)=>{
+      base.network=Object.freeze({fetch,stream:(url,opt={},onProgress)=>fetch(url,{...opt,onProgress}),models:()=>copyCatalog(),refreshModels:async(force=false)=>{
         if(!force&&!catalog.stale&&catalog.models.length)return copyCatalog();
         const r=await fetch("https://api.deepseek.com/models",{method:"GET",timeoutMs:15000});
         if(!r.ok)throw Error("Model discovery HTTP "+r.status);
@@ -690,6 +708,71 @@ private extension UIViewController {
     }
 }
 
+private final class GoldgramPluginStreamingSettings: UITableViewController {
+    private let store: GoldgramPluginStore
+    private let id: UUID
+    private let config: GoldgramAIConfig
+    private let names = ["Потоковая генерация", "Показывать текст по мере генерации", "Индикатор рассуждения", "Сохранять неполный ответ при остановке", "Статистика токенов"]
+    init(store: GoldgramPluginStore, id: UUID, account: String) {
+        self.store = store; self.id = id; self.config = GoldgramAIConfig(account:account+"."+id.uuidString)
+        super.init(style:.insetGrouped)
+    }
+    required init?(coder: NSCoder) { return nil }
+    override func viewDidLoad() { super.viewDidLoad(); title = "Потоковая генерация" }
+    override func viewWillAppear(_ animated: Bool) { super.viewWillAppear(animated); store.refresh(); tableView.reloadData() }
+    private var record: GoldgramPluginRecord? {
+        guard store.isCurrent(), store.failure == nil, !store.state.safe, let p = store.record(id), p.enabled, p.grants.contains("network.fetch") else { return nil }
+        return p
+    }
+    override func numberOfSections(in tableView: UITableView) -> Int { 2 }
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? names.count : 1 }
+    override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
+        section == 0 ? "Настройки действуют только для этого плагина. При выключенном потоковом режиме ответы приходят целиком. Индикатор не меняет глубину рассуждений модели. Остановка отменяет сетевую задачу, но не гарантирует отмену начислений DeepSeek. Черновик защищён прежними проверками; отправка ручная." : "Только статистика последнего успешно завершённого потока, без текста запроса и ответа."
+    }
+    override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = UITableViewCell(style:.subtitle,reuseIdentifier:nil)
+        cell.textLabel?.numberOfLines = 0; cell.detailTextLabel?.numberOfLines = 0; cell.selectionStyle = .none
+        let p = record
+        let options = p?.streamingOptions ?? GoldgramStreamOptions()
+        if indexPath.section == 1 {
+            cell.textLabel?.text = "Последний завершённый поток"
+            if options.usage, let usage = config.lastStreamUsage {
+                cell.detailTextLabel?.text = ["prompt_tokens","completion_tokens","total_tokens"].compactMap { key in
+                    guard let n = usage[key] else { return nil }
+                    let name = key == "prompt_tokens" ? "Вход" : (key == "completion_tokens" ? "Выход" : "Всего")
+                    return name + ": " + String(n)
+                }.joined(separator:" · ")
+            } else { cell.detailTextLabel?.text = options.usage ? "Нет данных" : "Выключено" }
+            return cell
+        }
+        let row = indexPath.row
+        cell.textLabel?.text = names[row]
+        let toggle = UISwitch()
+        toggle.isOn = [options.enabled,options.preview,options.reasoning,options.partial,options.usage][row]
+        toggle.isEnabled = p != nil && (row == 0 || options.enabled)
+        toggle.accessibilityLabel = names[row]
+        toggle.addAction(UIAction { [weak self, weak toggle] _ in
+            guard let self, let toggle else { return }
+            self.store.refresh()
+            guard let p, var current = self.record, current.code == p.code, current.grants == p.grants else { self.tableView.reloadData(); return }
+            var next = current.streamingOptions ?? GoldgramStreamOptions()
+            switch row {
+            case 0: next.enabled = toggle.isOn
+            case 1: next.preview = toggle.isOn
+            case 2: next.reasoning = toggle.isOn
+            case 3: next.partial = toggle.isOn
+            default: next.usage = toggle.isOn
+            }
+            current.streamingOptions = next
+            if !self.store.put(current) { self.showPluginError("Не удалось сохранить.") }
+            else if !next.usage { self.config.clearStreamUsage() }
+            self.tableView.reloadData()
+        },for:.valueChanged)
+        cell.accessoryView = toggle
+        return cell
+    }
+}
+
 private final class GoldgramPluginDetail: UITableViewController {
     private let store: GoldgramPluginStore
     private let id: UUID
@@ -715,16 +798,17 @@ private final class GoldgramPluginDetail: UITableViewController {
     override func numberOfSections(in tableView: UITableView) -> Int { 1 + sections.count }
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? { section == 0 ? "Управление" : sections[section-1]["title"] as? String }
     private func items(_ section: Int) -> [[String: Any]] { sections[section-1]["items"] as? [[String: Any]] ?? [] }
-    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? (store.record(id)?.grants.contains("network.fetch") == true ? 9 : 8) : items(section).count }
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? (store.record(id)?.grants.contains("network.fetch") == true ? 10 : 8) : items(section).count }
     override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? { section == 0 ? status : nil }
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
         cell.textLabel?.numberOfLines = 0; cell.detailTextLabel?.numberOfLines = 2
         if indexPath.section == 0 {
             let enabled = store.record(id)?.enabled == true
-            cell.textLabel?.text = [enabled ? "Выключить" : "Включить и разрешить", run == nil ? "Запустить / обновить настройки" : "Остановить", "Редактор JavaScript", "Разрешения", "Консоль", "Откатить код", "Удалить плагин", "Показывать кнопку в чате", "Каталог моделей DeepSeek"][indexPath.row]
+            cell.textLabel?.text = [enabled ? "Выключить" : "Включить и разрешить", run == nil ? "Запустить / обновить настройки" : "Остановить", "Редактор JavaScript", "Разрешения", "Консоль", "Откатить код", "Удалить плагин", "Показывать кнопку в чате", "Каталог моделей DeepSeek", "Потоковая генерация"][indexPath.row]
             if indexPath.row == 7 { cell.detailTextLabel?.text = store.record(id)?.chatButtonHidden == true ? "Выключено" : "Включено" }
             if indexPath.row == 8 { cell.detailTextLabel?.text = "Доступные модели для ключа этого плагина" }
+            if indexPath.row == 9 { cell.detailTextLabel?.text = store.record(id)?.streamingOptions?.enabled == true ? "Включена" : "Выключена" }
         } else {
             let item = items(indexPath.section)[indexPath.row]
             let key = item["key"] as? String ?? ""
@@ -745,7 +829,7 @@ private final class GoldgramPluginDetail: UITableViewController {
         store.refresh()
         guard store.isCurrent(), var p = store.record(id) else { return }
         if indexPath.section > 0 { if run == nil && p.enabled && !store.state.safe { editSetting(items(indexPath.section)[indexPath.row], record: p) }; return }
-        if indexPath.row == 1, let run { run.cancel(); return }
+        if indexPath.row == 1, let run { if !run.stopStream() { run.cancel() }; return }
         guard run == nil else { return }
         switch indexPath.row {
         case 0:
@@ -766,7 +850,7 @@ private final class GoldgramPluginDetail: UITableViewController {
             navigationController?.pushViewController(GoldgramPluginEditor(title: "JavaScript", text: p.code) { [weak self] code in
                 guard let self else { return }; self.store.refresh()
                 guard self.store.isCurrent(), var current = self.store.record(self.id), current.code == p.code, !code.isEmpty, code.utf8.count <= GoldgramPluginStore.maxCode else { return }
-                current.previousCode = current.code; current.code = code; current.enabled = false; current.grants = []; current.settingsSchema = nil; current.floatingTitle = nil; current.contextActions = nil; current.confirmationPolicy = nil
+                current.previousCode = current.code; current.code = code; current.enabled = false; current.grants = []; current.settingsSchema = nil; current.floatingTitle = nil; current.contextActions = nil; current.confirmationPolicy = nil; current.streamingOptions = nil
                 if self.store.put(current) { self.sections = []; self.status = "Код обновлён; разрешите заново."; self.title = current.manifest.name; self.navigationController?.popViewController(animated: true); self.tableView.reloadData() }
                 else { (self.navigationController?.topViewController)?.showPluginError("Не удалось сохранить.") }
             }, animated: true)
@@ -774,8 +858,11 @@ private final class GoldgramPluginDetail: UITableViewController {
         case 4: showPluginError(logs.isEmpty ? "Нет записей." : logs.joined(separator: "\n"))
         case 5:
             guard let previous = p.previousCode else { showPluginError("Нет предыдущей версии."); return }
-            p.previousCode = p.code; p.code = previous; p.enabled = false; p.grants = []; p.settingsSchema = nil; p.floatingTitle = nil; p.contextActions = nil; p.confirmationPolicy = nil
+            p.previousCode = p.code; p.code = previous; p.enabled = false; p.grants = []; p.settingsSchema = nil; p.floatingTitle = nil; p.contextActions = nil; p.confirmationPolicy = nil; p.streamingOptions = nil
             if store.put(p) { sections = []; status = "Код восстановлен; разрешите заново."; title = p.manifest.name; tableView.reloadData() }
+        case 9:
+            guard p.enabled, !store.state.safe, p.grants.contains("network.fetch") else { return }
+            navigationController?.pushViewController(GoldgramPluginStreamingSettings(store: store, id: id, account: account), animated: true)
         case 8:
             guard p.enabled, !store.state.safe, p.grants.contains("network.fetch") else { return }
             let screen = GoldgramModelCatalogScreen(config: GoldgramAIConfig(account: account + "." + id.uuidString), valid: catalogValidity(p))
@@ -946,6 +1033,7 @@ final class GoldgramPluginChatRun {
             }
         }
     }
+    func stopStream() -> Bool { run?.stopStream() ?? false }
     func cancel() { let old = run; run = nil; old?.cancel() }
     func start(account: String, presenter: UIViewController, id: UUID, context: [String: Any], event: String = "floating.tap", key: String? = nil, valid: @escaping () -> Bool, completion: @escaping ([String: Any]?, String?) -> Void) {
         let store = GoldgramPluginStore(account: account, isCurrent: valid)

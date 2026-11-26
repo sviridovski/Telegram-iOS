@@ -9,7 +9,7 @@ import json
 harness = """
 const assert = require('node:assert/strict');
 let result, requests=[], failModels=false;
-global.self = {postMessage: raw => {const v=JSON.parse(raw);if(v.rpc!==undefined){requests.push(v);const isModels=v.args.url==="https://api.deepseek.com/models";const response=isModels?{status:failModels?503:200,body:JSON.stringify({object:"list",data:[{id:"fresh-model",object:"model"}]})}:{status:200,body:'{"choices":[{"message":{"content":"mock answer"}}]}'};self.onmessage({data:{rpcResult:v.rpc,result:response}});}else result=v;}};
+global.self = {postMessage: raw => {const v=JSON.parse(raw);if(v.rpc!==undefined){requests.push(v);const isModels=v.args.url==="https://api.deepseek.com/models";if(v.args.progress)self.onmessage({data:{rpcProgress:v.rpc,event:{text:"partial",thinking:false,done:false}}});const response=isModels?{status:failModels?503:200,body:JSON.stringify({object:"list",data:[{id:"fresh-model",object:"model"}]})}:{status:200,body:'{"choices":[{"message":{"content":"mock answer"}}]}'};self.onmessage({data:{rpcResult:v.rpc,result:response}});}else result=v;}};
 """ + worker + """
 goldWorkerMain();
 const sample = """ + json.dumps(example) + """;
@@ -61,6 +61,12 @@ assert.equal(result.storage.model,'cached-model'); failModels=false;
 await self.onmessage({data:{source:catalogScript,grants:compat.filter(x=>x!=='network.fetch'),event:'plugin.start'}});
 assert.equal(result.sections[0].items.length,0);
 console.log('Goldgram #272 declarative model selector, cache hit and permission gating OK');
+const streamScript='GGAPI.events.on("settings.action",async()=>{GGAPI.storage.set("enabled",GGAPI.runtime.features().streaming);const r=await GGAPI.network.stream("https://api.deepseek.com/chat/completions",{method:"POST",body:"{}"},e=>GGAPI.storage.set("delta",e.text));const j=await r.json();GGAPI.storage.set("answer",j.choices[0].message.content);});';
+await self.onmessage({data:{source:streamScript,grants:compat,event:'settings.action',streamingEnabled:true}});
+assert.equal(result.storage.enabled,true);assert.equal(result.storage.delta,'partial');assert.equal(result.storage.answer,'mock answer');
+await self.onmessage({data:{source:streamScript,grants:compat,event:'settings.action',streamingEnabled:false}});
+assert.equal(result.storage.enabled,false);assert.equal(result.storage.delta,undefined);assert.equal(requests.at(-1).args.progress,false);
+console.log('Goldgram #274 streaming callback and feature flag OK');
 })().catch(e=>{console.error(e);process.exit(1)});
 """
 with tempfile.TemporaryDirectory() as tmp:

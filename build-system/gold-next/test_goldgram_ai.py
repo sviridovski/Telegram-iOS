@@ -135,3 +135,55 @@ assert 'self.config.readKey() == key' in s and 'GoldgramAINoRedirect()' in s
 assert 'self.config.saveCatalog(models)' in s and 'if saved { clearCatalog() }' in s
 assert 'modelSource' in plugins and 'refreshModels' in plugins
 print("Goldgram #272 catalog and secure transport source contracts passed")
+
+
+# #274 SSE parser: actual helper source, packet split, CRLF, UTF-8,
+# bounded inputs, terminal usage and partial compatibility.
+stream = s.split("struct GoldgramStreamOptions:",1)[1].split("// URLSession owns the delegate",1)[0]
+fixture = r'''
+let options = GoldgramStreamOptions()
+precondition(!options.enabled && options.preview && options.reasoning && !options.partial && options.usage)
+let encoded = try! JSONEncoder().encode(options)
+precondition(try! JSONDecoder().decode(GoldgramStreamOptions.self, from: encoded) == options)
+struct OldPluginRecord: Codable { var streamingOptions: GoldgramStreamOptions? }
+precondition(try! JSONDecoder().decode(OldPluginRecord.self, from: Data("{}".utf8)).streamingOptions == nil)
+var p = GoldgramSSEParser()
+let chunks = ": keepalive\r\n\r\ndata: {\"choices\":[{\"delta\":{\"reasoning_content\":\"private\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"Привет 🌍\"}}]}\n\n"
+for byte in chunks.utf8 { precondition(p.feed(Data([byte]))) }
+precondition(p.text == "Привет 🌍" && !p.thinking && !p.done)
+precondition(p.feed(Data("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"total_tokens\":12,\"completion_tokens\":4}}\n\n".utf8)))
+precondition(p.usage["total_tokens"] == 12 && !p.done)
+precondition(p.feed(Data("data: [DONE]\n\n".utf8)) && p.done)
+let result = p.response(partial:false)
+precondition(result["goldgram_partial"] as? Bool == false)
+let msg = (result["choices"] as! [[String:Any]])[0]["message"] as! [String:String]
+precondition(msg["content"] == "Привет 🌍" && msg["reasoning_content"] == nil)
+precondition((p.response(partial:true)["choices"] as! [[String:Any]])[0]["finish_reason"] as? String == "cancelled")
+var q = GoldgramSSEParser()
+precondition(q.feed(Data("data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"private\"}}]}\n\n".utf8)) && q.thinking && q.text.isEmpty)
+precondition(!q.feed(Data("data: invalid\n\n".utf8)))
+var oversized = GoldgramSSEParser()
+precondition(!oversized.feed(Data(repeating:65,count:65537)))
+var error = GoldgramSSEParser()
+precondition(!error.feed(Data("data: {\"error\":{},\"choices\":[]}\n\n".utf8)))
+var incomplete = GoldgramSSEParser()
+precondition(incomplete.feed(Data("data: {\"choices\":[]}\n\n".utf8)) && !incomplete.done)
+var multi = GoldgramSSEParser()
+precondition(multi.feed(Data("data: {\"choices\":\ndata: []}\n\n".utf8)))
+var limit = GoldgramSSEParser()
+precondition(!limit.feed(Data(repeating:10,count:524289)))
+var invalidEnd = GoldgramSSEParser()
+precondition(!invalidEnd.feed(Data("data: [DONE]\n\n".utf8)))
+var filtered = GoldgramSSEParser()
+precondition(!filtered.feed(Data("data: {\"choices\":[{\"finish_reason\":\"content_filter\"}]}\n\n".utf8)))
+print("Goldgram #274 SSE parser and default options fixtures passed")
+'''
+with tempfile.TemporaryDirectory() as tmp:
+    path = pathlib.Path(tmp)/"main.swift"
+    path.write_text("import Foundation\nstruct GoldgramStreamOptions:"+stream+fixture)
+    subprocess.run(["swift",str(path)],check=True)
+assert "streamingOptions() == options" in s and "streamGuard?() == true" in s
+assert "task?.cancel(); session?.invalidateAndCancel()" in s
+assert "self?.replyProgress" in plugins and "progressHandlers.delete" in plugins
+assert "streamingOptions: GoldgramStreamOptions?" in plugins
+print("Goldgram #274 lifecycle and policy source contracts passed")
