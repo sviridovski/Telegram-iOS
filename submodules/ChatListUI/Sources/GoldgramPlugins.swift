@@ -52,6 +52,31 @@ private struct GoldgramPluginConfirmationPolicy: Codable, Equatable {
     }
 }
 
+struct GoldgramPluginUIOptions: Codable, Equatable {
+    var enhanced = true
+    var contextEnabled = true
+    var hiddenActions: [String] = []
+    var buttonTitle: String? = nil
+    func visibleActions(_ actions: [[String: String]]) -> [[String: String]] {
+        guard contextEnabled else { return [] }
+        return actions.filter { item in
+            guard let id = item["id"] else { return false }
+            return !hiddenActions.contains(id)
+        }
+    }
+}
+enum GoldgramPluginUIRules {
+    static func number(_ value: Double, min low: Double, max high: Double, step: Double) -> Double? {
+        guard value.isFinite, low.isFinite, high.isFinite, step.isFinite, abs(low) <= 1_000_000, abs(high) <= 1_000_000, high >= low, step >= 0.0001, step <= 2_000_000 else { return nil }
+        let bounded = max(low, Swift.min(high, value))
+        let rounded = low + ((bounded-low)/step).rounded()*step
+        return max(low, Swift.min(high, rounded))
+    }
+    static func text(_ value: String, limit: Int) -> String? {
+        guard limit > 0, limit <= 6000, value.count <= limit, value.utf8.count <= 8192 else { return nil }
+        return value
+    }
+}
 private struct GoldgramPluginRecord: Codable {
     var id = UUID()
     var code: String
@@ -68,6 +93,7 @@ private struct GoldgramPluginRecord: Codable {
     var confirmationPolicy: GoldgramPluginConfirmationPolicy?
     var chatButtonHidden: Bool?
     var streamingOptions: GoldgramStreamOptions?
+    var uiOptions: GoldgramPluginUIOptions?
     var manifest: GoldgramPluginManifest { GoldgramPluginManifest(code) }
 }
 
@@ -129,10 +155,17 @@ private final class GoldgramPluginStore {
         for section in input {
             guard let title = section["title"] as? String, title.count <= 160,
                   let items = section["items"] as? [[String: Any]], items.count <= 96 else { return nil }
+            if let group = section["group"], !(group is String) || (group as? String ?? "").count > 100 { return nil }
+            if let footer = section["footer"], !(footer is String) || (footer as? String ?? "").count > 600 { return nil }
             for item in items {
                 guard let key = item["key"] as? String, (safeKey(key) || (key == "apiKey" && item["type"] as? String == "secret")), seen.insert(key).inserted,
                       let title = item["title"] as? String, title.count <= 160,
-                      let kind = item["type"] as? String, ["toggle", "text", "textarea", "select", "slider", "stepper", "button", "secret"].contains(kind) else { return nil }
+                      let kind = item["type"] as? String, ["toggle", "text", "textarea", "select", "slider", "stepper", "button", "secret", "info", "card", "progress"].contains(kind) else { return nil }
+                if let detail = item["detail"], !(detail is String) || (detail as? String ?? "").count > 2000 { return nil }
+                if kind == "progress" { guard let fraction = item["fraction"] as? Double, fraction.isFinite, (0...1).contains(fraction) else { return nil } }
+                if kind == "slider" || kind == "stepper" {
+                    guard let low = item["min"] as? Double, let high = item["max"] as? Double, GoldgramPluginUIRules.number(low, min: low, max: high, step: item["step"] as? Double ?? 1) != nil else { return nil }
+                }
                 if let source = item["modelSource"] as? String, kind != "select" || source != "deepseek" { return nil }
                 if kind == "select" {
                     guard let options = item["options"] as? [[String: Any]], options.count <= 50,
@@ -356,6 +389,7 @@ function goldWorkerMain() {
     const allowed = t => grants.has(t);
     const need = t => { if (!allowed(t)) throw Error("Permission denied: " + t); };
     const sections = [], logs = [], handlers = Object.create(null), buttons = Object.create(null), actions = Object.create(null), actionTitles = Object.create(null);
+    let schemaCleared = false;
     const ctx = p.context || {}; let draft = typeof ctx.draft === "string" ? ctx.draft : null, changed = false, output = null, floating = null;
     const keyAlias = "sk-goldgram-managed";
     const isSecret = k => k === "apiKey" || k === "aicc_api_key_v2";
@@ -379,14 +413,20 @@ function goldWorkerMain() {
       if (!c || !Array.isArray(c.items) || sections.length >= 16) throw Error("Invalid settings section");
       const items = [];
       for (const it of c.items.slice(0,96)) {
-        if (!it || (!validKey(it.key) && it.key !== "apiKey") || !["toggle","text","textarea","select","slider","stepper","button"].includes(it.type)) continue;
+        if (!it || (!validKey(it.key) && it.key !== "apiKey") || !["toggle","text","textarea","select","slider","stepper","button","info","card","progress"].includes(it.type)) continue;
         if (it.key === "apiKey") { if(it.type==="text") items.push({type:"secret",key:"apiKey",title:String(it.title||"API key").slice(0,160)}); continue; }
         const i = {type:it.type,key:it.key,title:String(it.title || it.key).slice(0,160)};
+        if (typeof it.detail==="string") i.detail=it.detail.slice(0,2000);
+        if (["info","card","progress"].includes(it.type)) {
+          if(it.type==="progress") i.fraction=Math.max(0,Math.min(1,Number(it.fraction)||0));
+          items.push(i); continue;
+        }
         if (it.type === "toggle") i.default = !!it.default;
-        if (["text","textarea"].includes(it.type)) i.default = String(it.default || "").slice(0,6000);
+        if (["text","textarea"].includes(it.type)) { i.default = String(it.default || "").slice(0,6000); if(Number.isInteger(it.maxLength)&&it.maxLength>0&&it.maxLength<=6000)i.maxLength=it.maxLength; }
         if (["slider","stepper"].includes(it.type)) {
           i.min = Number.isFinite(it.min) ? it.min : 0; i.max = Number.isFinite(it.max) ? it.max : 100;
-          if (i.max < i.min) continue;
+          if (i.max < i.min || Math.abs(i.min)>1000000 || Math.abs(i.max)>1000000) continue;
+          i.step=Number.isFinite(it.step)&&it.step>=0.0001&&it.step<=2000000?it.step:1;
           i.default = Math.max(i.min,Math.min(i.max,Number(it.default)||0));
         }
         if (it.type === "select") {
@@ -398,13 +438,16 @@ function goldWorkerMain() {
         if (it.type !== "button" && !own(settings,i.key)) write(settings,i.key,i.default);
         items.push(i);
       }
-      sections.push({title:String(c.title||"Settings").slice(0,160),items});
+      const registered={title:String(c.title||"Settings").slice(0,160),items};
+      if(typeof c.group==="string"&&c.group.trim())registered.group=c.group.slice(0,100);
+      if(typeof c.footer==="string")registered.footer=c.footer.slice(0,600);
+      sections.push(registered);
       return true;
     };
     const logging = Object.freeze({log,info:log,warn:log,error:log});
     const base = {
-      runtime:Object.freeze({apiVersion:()=>5,features:()=>({scopedChat:!!ctx.peerId,localOnly:!allowed("network.fetch"),modelDiscovery:allowed("network.fetch"),streaming:allowed("network.fetch")&&p.streamingEnabled===true}),pluginId:()=>p.pluginId||"",hasPermission:allowed,grants:()=>Array.from(grants)}),
-      settings:Object.freeze({addSection:section,define:section,getPlugin:(k,f)=>{need("settings.read");if(isSecret(k))return p.managedKey?keyAlias:f;return own(settings,k)?settings[k]:f;},setPlugin:(k,v)=>{need("settings.read");if(isSecret(k)){if(v===""||v===keyAlias)return true;throw Error("Use native secure field");}return write(settings,k,v);}}),
+      runtime:Object.freeze({apiVersion:()=>5,features:()=>({scopedChat:!!ctx.peerId,localOnly:!allowed("network.fetch"),modelDiscovery:allowed("network.fetch"),declarativeUI:allowed("settings.read"),streaming:allowed("network.fetch")&&p.streamingEnabled===true}),pluginId:()=>p.pluginId||"",hasPermission:allowed,grants:()=>Array.from(grants)}),
+      settings:Object.freeze({addSection:section,define:section,clearSections:()=>{need("settings.read");sections.length=0;schemaCleared=true;return true;},getPlugin:(k,f)=>{need("settings.read");if(isSecret(k))return p.managedKey?keyAlias:f;return own(settings,k)?settings[k]:f;},setPlugin:(k,v)=>{need("settings.read");if(isSecret(k)){if(v===""||v===keyAlias)return true;throw Error("Use native secure field");}return write(settings,k,v);}}),
       storage:Object.freeze({get:k=>{need("storage");if(isSecret(k))return p.managedKey?keyAlias:null;return own(storage,k)?storage[k]:null;},set:(k,v)=>{need("storage");if(isSecret(k)){if(v===keyAlias&&p.managedKey)return true;throw Error("Use native secure field");}return write(storage,k,v);},getJSON:(k,f)=>{need("storage");return own(storage,k)?storage[k]:f;},setJSON:(k,v)=>{need("storage");return write(storage,k,v);},remove:k=>{need("storage");delete storage[k];}}),
       events:Object.freeze({on:(name,fn)=>{need("events");if (!["plugin.start","settings.changed","settings.action"].includes(name)||typeof fn!=="function")return null; const list=handlers[name]||(handlers[name]=[]);if(list.length<24)list.push(fn);return String(list.length);}}),
       console:logging,log,toast,app:Object.freeze({toast,alert:(title,text)=>toast(String(title)+"\n"+String(text))})
@@ -451,7 +494,7 @@ function goldWorkerMain() {
       if(p.event==="context.tap"&&actions[p.key])await actions[p.key]({message:ctx.selectedMessage});
       if(p.event==="settings.action"||p.event==="context.tap"){ await new Promise(resolve=>setTimeout(resolve,0)); let idle=0; while(idle<12){await new Promise(resolve=>setTimeout(resolve,100));idle=pending.size?0:idle+1;} }
       if(changed && !output)output={kind:"draft",title:"Результат плагина",text:draft};
-      const raw = JSON.stringify({sections,settings,storage,logs,floating,output,contextActions:Object.keys(actions).map(id=>({id,title:actionTitles[id]}))});
+      const raw = JSON.stringify({sections,schemaCleared,settings,storage,logs,floating,output,contextActions:Object.keys(actions).map(id=>({id,title:actionTitles[id]}))});
       if (raw.length>220000) throw Error("Result too large");
       send(raw);
     } catch (_) { send(JSON.stringify({error:"Ошибка JavaScript или отсутствующее разрешение/API. Проверьте код и совместимость."})); }
@@ -510,7 +553,7 @@ final class GoldgramPluginManager: UITableViewController, UIDocumentPickerDelega
     override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
         section == 0 ? (store.failure ?? "GGAPI: открытый чат и локальные настройки; подтверждения управляются для каждого плагина. Не все методы Ghostgram поддерживаются.") : "Импортируйте только доверенный код. Не вводите API-ключи в обычные настройки."
     }
-    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? (store.isCurrent() ? store.state.plugins.count : 0) : (section == 1 ? 6 : 1) }
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? (store.isCurrent() ? store.state.plugins.count : 0) : (section == 1 ? 7 : 1) }
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
         if indexPath.section == 0 {
@@ -519,11 +562,11 @@ final class GoldgramPluginManager: UITableViewController, UIDocumentPickerDelega
             cell.detailTextLabel?.text = p.manifest.version + " · " + (p.enabled ? "Разрешён" : "Выключен")
             cell.imageView?.image = UIImage(systemName: "puzzlepiece.extension")
         } else if indexPath.section == 2 {
-            cell.textLabel?.text = "AI Command Center · Native"
+            cell.textLabel?.text = "Резервный AI · Native"
             cell.detailTextLabel?.text = "DeepSeek · промпт и плавающая кнопка"
             cell.imageView?.image = UIImage(systemName: "sparkles")
         } else {
-            cell.textLabel?.text = ["Вставить JavaScript", "Импортировать .js из файлов", "Установить тестовый плагин", "Безопасный режим", "Подтверждения плагинов", "Установить тесты многоплагинности"][indexPath.row]
+            cell.textLabel?.text = ["Вставить JavaScript", "Импортировать .js из файлов", "Установить тестовый плагин", "Безопасный режим", "Подтверждения плагинов", "Установить тесты многоплагинности", "Установить тест интерфейса"][indexPath.row]
             if indexPath.row == 3 { cell.detailTextLabel?.text = store.state.safe ? "Включён — выполнение заблокировано" : "Выключен" }
             if indexPath.row == 4 { cell.detailTextLabel?.text = "Запросы к сервисам и вставка ответа" }
         }
@@ -561,6 +604,9 @@ final class GoldgramPluginManager: UITableViewController, UIDocumentPickerDelega
             for code in Self.multiExamples where !next.plugins.contains(where: { $0.code == code }) { next.plugins.append(GoldgramPluginRecord(code: code)) }
             if !store.save(next) { notice("Не удалось установить тесты.") }
             tableView.reloadData()
+        case 6:
+            store.refresh()
+            if !store.state.plugins.contains(where: { $0.code == Self.uiExample }) && !install(Self.uiExample) { notice("Не удалось установить тест интерфейса.") }
         default:
             store.refresh()
             var next = store.state; next.safe.toggle()
@@ -601,6 +647,34 @@ final class GoldgramPluginManager: UITableViewController, UIDocumentPickerDelega
         GGAPI.events.on("settings.action",p=>{if(p.key==="reset")GGAPI.storage.set("count",0);});
         """
     }
+    static let uiExample = #"""
+// @name Goldgram UI Test
+// @version 1.0
+// @permission.settings.read required
+// @permission.events required
+// @permission.ui.read required
+// @permission.ui.mutate required
+// @permission.messages.read required
+function render(){
+  GGAPI.settings.addSection({title:"Параметры",group:"Настройки",footer:"Изменения сохраняются после подтверждения.",items:[
+    {type:"toggle",key:"enabled",title:"Активность",default:true,detail:"Нативный переключатель"},
+    {type:"slider",key:"level",title:"Уровень",min:0,max:10,step:0.5,default:4},
+    {type:"stepper",key:"amount",title:"Количество",min:1,max:20,step:1,default:3},
+    {type:"select",key:"style",title:"Стиль",default:"a",options:[{value:"a",title:"Краткий"},{value:"b",title:"Подробный"},{value:"c",title:"Деловой"}]},
+    {type:"textarea",key:"prompt",title:"Промпт",default:"Ответь кратко",maxLength:500}
+  ]});
+  const n=GGAPI.settings.getPlugin("level",4);
+  GGAPI.settings.addSection({title:"Состояние",group:"Информация",items:[
+    {type:"card",key:"summary",title:"Текущий уровень",detail:String(n)},
+    {type:"progress",key:"meter",title:"Прогресс",fraction:n/10,detail:"Уровень из настроек"},
+    {type:"info",key:"note",title:"Подсказка",detail:"Без сети и доступа к архиву."}
+  ]});
+}
+render();
+GGAPI.ui.addFloatingButton({id:"ui",title:"UI"},()=>GGAPI.ui.showSheet({title:"UI",text:"Уровень: "+GGAPI.settings.getPlugin("level",4)}));
+GGAPI.ui.addMessageContextAction({id:"one",title:"UI: команда 1"},()=>GGAPI.ui.showSheet({title:"UI",text:"Команда 1"}));
+GGAPI.ui.addMessageContextAction({id:"two",title:"UI: команда 2"},()=>GGAPI.ui.showSheet({title:"UI",text:"Команда 2"}));
+"""#
     static let example = #"""
 // @name Тест Goldgram
 // @version 1.0.0
@@ -773,12 +847,195 @@ private final class GoldgramPluginStreamingSettings: UITableViewController {
     }
 }
 
+private final class GoldgramPluginUISettings: UITableViewController {
+    private let store: GoldgramPluginStore
+    private let id: UUID
+    private var actions: [[String:String]] = []
+    init(store: GoldgramPluginStore, id: UUID) { self.store = store; self.id = id; super.init(style:.insetGrouped) }
+    required init?(coder: NSCoder) { return nil }
+    override func viewDidLoad() { super.viewDidLoad(); title = "Интерфейс плагина" }
+    override func viewWillAppear(_ animated: Bool) { super.viewWillAppear(animated); reload() }
+    private var current: GoldgramPluginRecord? {
+        guard store.isCurrent(), store.failure == nil, !store.state.safe, let p = store.record(id), p.enabled else { return nil }
+        return p
+    }
+    private func reload() {
+        store.refresh()
+        actions = GoldgramPluginChatRun.validateActions(current?.contextActions)
+        tableView.reloadData()
+    }
+    private func change(_ record: GoldgramPluginRecord, _ update: (inout GoldgramPluginRecord, inout GoldgramPluginUIOptions) -> Void) {
+        store.refresh()
+        guard var p = current, p.code == record.code, p.grants == record.grants else { reload(); return }
+        var options = p.uiOptions ?? GoldgramPluginUIOptions()
+        update(&p,&options)
+        p.uiOptions = options
+        if !store.put(p) { showPluginError("Не удалось сохранить.") }
+        reload()
+    }
+    override func numberOfSections(in tableView: UITableView) -> Int { 2 }
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? 4 : actions.count }
+    override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? { section == 0 ? "Внешний вид" : "Команды контекстного меню" }
+    override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
+        section == 0 ? "Выключение расширенного интерфейса возвращает обычные строки настроек. Команды и кнопка управляются отдельно. Настройки не меняют код плагина." : "Скрытые команды не вызываются из меню. Разрешения плагина не расширяются."
+    }
+    override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = UITableViewCell(style:.subtitle,reuseIdentifier:nil)
+        cell.textLabel?.numberOfLines = 0; cell.detailTextLabel?.numberOfLines = 0
+        guard let p = current else { cell.textLabel?.text = "Плагин недоступен"; cell.selectionStyle = .none; return cell }
+        let options = p.uiOptions ?? GoldgramPluginUIOptions()
+        if indexPath.section == 0 && indexPath.row == 3 {
+            cell.textLabel?.text = "Название плавающей кнопки"
+            cell.detailTextLabel?.text = options.buttonTitle ?? p.floatingTitle ?? "Не зарегистрирована"
+            cell.accessoryType = .disclosureIndicator
+            return cell
+        }
+        let toggle = UISwitch()
+        let row = indexPath.row
+        if indexPath.section == 0 {
+            cell.textLabel?.text = ["Расширенные компоненты", "Плавающая кнопка", "Команды контекстного меню"][row]
+            toggle.isOn = [options.enhanced, p.chatButtonHidden != true, options.contextEnabled][row]
+            if row == 1 { toggle.isEnabled = p.floatingTitle != nil && p.grants.contains("ui.mutate") }
+            if row == 2 { toggle.isEnabled = p.grants.contains("ui.mutate") && p.grants.contains("messages.read") }
+            toggle.addAction(UIAction { [weak self,weak toggle] _ in
+                guard let self,let toggle else { return }
+                self.change(p) { record, ui in
+                    if row == 0 { ui.enhanced = toggle.isOn }
+                    else if row == 1 { record.chatButtonHidden = !toggle.isOn }
+                    else { ui.contextEnabled = toggle.isOn }
+                }
+            },for:.valueChanged)
+        } else {
+            let action = actions[row]
+            let key = action["id"] ?? ""
+            cell.textLabel?.text = action["title"]
+            toggle.isOn = !options.hiddenActions.contains(key)
+            toggle.isEnabled = options.contextEnabled && p.grants.contains("ui.mutate") && p.grants.contains("messages.read")
+            toggle.addAction(UIAction { [weak self,weak toggle] _ in
+                guard let self,let toggle else { return }
+                self.change(p) { record,ui in
+                    guard GoldgramPluginChatRun.validateActions(record.contextActions).contains(where:{$0["id"] == key}) else { return }
+                    var hidden = Set(ui.hiddenActions)
+                    if toggle.isOn { hidden.remove(key) } else { hidden.insert(key) }
+                    let valid = Set(GoldgramPluginChatRun.validateActions(record.contextActions).compactMap{$0["id"]})
+                    ui.hiddenActions = hidden.intersection(valid).sorted()
+                }
+            },for:.valueChanged)
+        }
+        cell.selectionStyle = .none; toggle.accessibilityLabel = cell.textLabel?.text; cell.accessoryView = toggle
+        return cell
+    }
+    override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at:indexPath,animated:true)
+        guard indexPath.section == 0,indexPath.row == 3,let p = current,p.floatingTitle != nil,p.grants.contains("ui.mutate") else { return }
+        let alert = UIAlertController(title:"Название кнопки",message:"До 12 символов. Пустое поле возвращает название из JavaScript.",preferredStyle:.alert)
+        alert.addTextField { $0.text = p.uiOptions?.buttonTitle ?? ""; $0.placeholder = p.floatingTitle }
+        alert.addAction(UIAlertAction(title:"Сохранить",style:.default) { [weak self,weak alert] _ in
+            guard let self,let value = alert?.textFields?.first?.text?.trimmingCharacters(in:.whitespacesAndNewlines) else { return }
+            guard value.count <= 12, value.utf8.count <= 64, value.rangeOfCharacter(from:.controlCharacters) == nil else { self.showPluginError("Допустимо до 12 символов без переводов строк."); return }
+            self.change(p) { _,ui in ui.buttonTitle = value.isEmpty ? nil : value }
+        })
+        alert.addAction(UIAlertAction(title:"Отмена",style:.cancel)); present(alert,animated:true)
+    }
+}
+
+private final class GoldgramPluginChoiceScreen: UITableViewController, UISearchResultsUpdating {
+    private let options: [[String:Any]]
+    private var visible: [[String:Any]]
+    private let selected: String?
+    private let choose: (Any) -> Void
+    init(title: String, options: [[String:Any]], selected: String?, choose: @escaping (Any) -> Void) {
+        self.options = options; self.visible = options; self.selected = selected; self.choose = choose
+        super.init(style:.insetGrouped); self.title = title
+    }
+    required init?(coder: NSCoder) { return nil }
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        let search = UISearchController(searchResultsController:nil)
+        search.searchResultsUpdater = self; search.obscuresBackgroundDuringPresentation = false
+        search.searchBar.placeholder = "Поиск"; navigationItem.searchController = search
+        navigationItem.hidesSearchBarWhenScrolling = false; definesPresentationContext = true
+    }
+    func updateSearchResults(for searchController: UISearchController) {
+        let query = searchController.searchBar.text?.trimmingCharacters(in:.whitespacesAndNewlines) ?? ""
+        visible = query.isEmpty ? options : options.filter { item in
+            (item["title"] as? String ?? "").localizedCaseInsensitiveContains(query) || (item["value"] as? String ?? "").localizedCaseInsensitiveContains(query)
+        }
+        tableView.reloadData()
+    }
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { visible.count }
+    override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = UITableViewCell(style:.default,reuseIdentifier:nil)
+        let item = visible[indexPath.row]
+        cell.textLabel?.text = item["title"] as? String ?? item["value"] as? String
+        cell.textLabel?.numberOfLines = 0
+        if item["value"] as? String == selected { cell.accessoryType = .checkmark }
+        return cell
+    }
+    override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        guard let value = visible[indexPath.row]["value"] as? String, let nav = navigationController else { return }
+        let callback = choose
+        navigationItem.searchController?.isActive = false
+        nav.popViewController(animated:false)
+        DispatchQueue.main.async { callback(value) }
+    }
+}
+
+private final class GoldgramPluginNumberScreen: UIViewController {
+    private let low: Double
+    private let high: Double
+    private let step: Double
+    private let stepperMode: Bool
+    private var value: Double
+    private let save: (Any) -> Void
+    private let label = UILabel()
+    init(title: String,item:[String:Any],value:Double,save:@escaping (Any)->Void) {
+        let low = item["min"] as? Double ?? 0, high = item["max"] as? Double ?? 100, step = item["step"] as? Double ?? 1
+        self.low = low; self.high = high; self.step = step
+        self.value = GoldgramPluginUIRules.number(value,min:low,max:high,step:step) ?? low
+        self.stepperMode = item["type"] as? String == "stepper"; self.save = save
+        super.init(nibName:nil,bundle:nil); self.title = title
+    }
+    required init?(coder: NSCoder) { return nil }
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .systemGroupedBackground
+        label.font = .preferredFont(forTextStyle:.title2); label.textAlignment = .center; label.adjustsFontForContentSizeCategory = true
+        updateLabel()
+        let control: UIControl
+        if stepperMode {
+            let stepper = UIStepper(); stepper.minimumValue = 0; stepper.maximumValue = max(1, ceil((high-low)/step)); stepper.stepValue = 1; stepper.value = (value-low)/step; stepper.isEnabled = high > low
+            stepper.accessibilityLabel = title
+            stepper.addAction(UIAction { [weak self,weak stepper] _ in guard let self,let stepper else { return }; self.change(self.low + stepper.value*self.step) },for:.valueChanged)
+            control = stepper
+        } else {
+            let slider = UISlider(); slider.minimumValue = 0; slider.maximumValue = 1; slider.value = high > low ? Float((value-low)/(high-low)) : 0; slider.isEnabled = high > low
+            slider.accessibilityLabel = title; slider.accessibilityValue = label.text
+            slider.addAction(UIAction { [weak self,weak slider] _ in guard let self,let slider else { return }; self.change(self.low + Double(slider.value)*(self.high-self.low)); slider.accessibilityValue = self.label.text },for:.valueChanged)
+            control = slider
+        }
+        let stack = UIStackView(arrangedSubviews:[label,control]); stack.axis = .vertical; stack.alignment = .fill; stack.spacing = 24; stack.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(stack)
+        NSLayoutConstraint.activate([stack.leadingAnchor.constraint(equalTo:view.safeAreaLayoutGuide.leadingAnchor,constant:24),stack.trailingAnchor.constraint(equalTo:view.safeAreaLayoutGuide.trailingAnchor,constant:-24),stack.topAnchor.constraint(equalTo:view.safeAreaLayoutGuide.topAnchor,constant:32)])
+        navigationItem.rightBarButtonItem = UIBarButtonItem(title:"Сохранить",style:.done,target:self,action:#selector(commit))
+    }
+    private func change(_ raw: Double) { if let next = GoldgramPluginUIRules.number(raw,min:low,max:high,step:step) { value = next; updateLabel() } }
+    private func updateLabel() { label.text = String(format:"%.4f",value).replacingOccurrences(of:"0+$",with:"",options:.regularExpression).replacingOccurrences(of:"\\.$",with:"",options:.regularExpression) }
+    @objc private func commit() {
+        guard let nav = navigationController else { return }
+        let callback = save, chosen = value
+        nav.popViewController(animated:false)
+        DispatchQueue.main.async { callback(chosen) }
+    }
+}
+
 private final class GoldgramPluginDetail: UITableViewController {
     private let store: GoldgramPluginStore
     private let id: UUID
     private let account: String
     private var run: GoldgramPluginRun?
     private var sections: [[String: Any]] = []
+    private var collapsedGroups = Set<String>()
     private var logs: [String] = []
     private var status = "Не запускался"
     init(store: GoldgramPluginStore, id: UUID, account: String) { self.store = store; self.id = id; self.account = account; super.init(style: .insetGrouped) }
@@ -794,25 +1051,62 @@ private final class GoldgramPluginDetail: UITableViewController {
     deinit { NotificationCenter.default.removeObserver(self) }
     @objc private func stopInBackground() { run?.cancel() }
     override func viewDidDisappear(_ animated: Bool) { super.viewDidDisappear(animated); if navigationController?.topViewController !== self || isBeingDismissed || navigationController?.isBeingDismissed == true { run?.cancel() } }
-    override func viewWillAppear(_ animated: Bool) { super.viewWillAppear(animated); store.refresh(); tableView.reloadData() }
+    override func viewWillAppear(_ animated: Bool) { super.viewWillAppear(animated); store.refresh(); reloadSchema(); tableView.reloadData() }
+    private func reloadSchema() {
+        guard store.failure == nil, !store.state.safe, let p = store.record(id), p.enabled, p.grants.contains("settings.read"), let data = p.settingsSchema, let raw = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]], let checked = GoldgramPluginStore.validatedSections(raw) else { sections = []; return }
+        sections = checked
+    }
+    private var enhanced: Bool { store.record(id)?.uiOptions?.enhanced ?? true }
+    private func group(_ section: Int) -> String? { sections[section-1]["group"] as? String }
+    private func groupCollapsed(_ section: Int) -> Bool { enhanced && group(section).map { collapsedGroups.contains($0) } == true }
+    private func managementRow(_ index: Int) -> Int { store.record(id)?.grants.contains("network.fetch") == true ? index : (index == 8 ? 10 : index) }
     override func numberOfSections(in tableView: UITableView) -> Int { 1 + sections.count }
-    override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? { section == 0 ? "Управление" : sections[section-1]["title"] as? String }
+    override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
+        guard section > 0 else { return "Управление" }
+        let title = sections[section-1]["title"] as? String ?? ""
+        return group(section).map { $0 + " / " + title } ?? title
+    }
     private func items(_ section: Int) -> [[String: Any]] { sections[section-1]["items"] as? [[String: Any]] ?? [] }
-    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? (store.record(id)?.grants.contains("network.fetch") == true ? 10 : 8) : items(section).count }
-    override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? { section == 0 ? status : nil }
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? (store.record(id)?.grants.contains("network.fetch") == true ? 11 : 9) : (enhanced && group(section) != nil ? 1 + (groupCollapsed(section) ? 0 : items(section).count) : items(section).count) }
+    override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? { section == 0 ? status : sections[section-1]["footer"] as? String }
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
         cell.textLabel?.numberOfLines = 0; cell.detailTextLabel?.numberOfLines = 2
         if indexPath.section == 0 {
             let enabled = store.record(id)?.enabled == true
-            cell.textLabel?.text = [enabled ? "Выключить" : "Включить и разрешить", run == nil ? "Запустить / обновить настройки" : "Остановить", "Редактор JavaScript", "Разрешения", "Консоль", "Откатить код", "Удалить плагин", "Показывать кнопку в чате", "Каталог моделей DeepSeek", "Потоковая генерация"][indexPath.row]
-            if indexPath.row == 7 { cell.detailTextLabel?.text = store.record(id)?.chatButtonHidden == true ? "Выключено" : "Включено" }
-            if indexPath.row == 8 { cell.detailTextLabel?.text = "Доступные модели для ключа этого плагина" }
-            if indexPath.row == 9 { cell.detailTextLabel?.text = store.record(id)?.streamingOptions?.enabled == true ? "Включена" : "Выключена" }
+            let row = managementRow(indexPath.row)
+            cell.textLabel?.text = [enabled ? "Выключить" : "Включить и разрешить", run == nil ? "Запустить / обновить настройки" : "Остановить", "Редактор JavaScript", "Разрешения", "Консоль", "Откатить код", "Удалить плагин", "Показывать кнопку в чате", "Каталог моделей DeepSeek", "Потоковая генерация", "Интерфейс плагина"][row]
+            if row == 7 { cell.detailTextLabel?.text = store.record(id)?.chatButtonHidden == true ? "Выключено" : "Включено" }
+            if row == 8 { cell.detailTextLabel?.text = "Доступные модели для ключа этого плагина" }
+            if row == 9 { cell.detailTextLabel?.text = store.record(id)?.streamingOptions?.enabled == true ? "Включена" : "Выключена" }
+            if row == 10 { cell.detailTextLabel?.text = "Компоненты, кнопка и команды меню" }
         } else {
-            let item = items(indexPath.section)[indexPath.row]
+            let grouped = enhanced && group(indexPath.section) != nil
+            if grouped && indexPath.row == 0 {
+                cell.textLabel?.text = groupCollapsed(indexPath.section) ? "Развернуть группу" : "Свернуть группу"
+                cell.detailTextLabel?.text = group(indexPath.section); cell.accessoryType = .disclosureIndicator; return cell
+            }
+            let item = items(indexPath.section)[indexPath.row - (grouped ? 1 : 0)]
             let key = item["key"] as? String ?? ""
             cell.textLabel?.text = item["title"] as? String
+            let kind = item["type"] as? String ?? ""
+            if ["info","card","progress"].contains(kind) {
+                cell.detailTextLabel?.numberOfLines = 0; cell.detailTextLabel?.text = item["detail"] as? String
+                cell.selectionStyle = .none
+                if kind == "card" && enhanced { cell.textLabel?.font = .preferredFont(forTextStyle: .headline) }
+                if kind == "progress", let fraction = item["fraction"] as? Double {
+                    if enhanced { let bar = UIProgressView(progressViewStyle: .default); bar.frame = CGRect(x:0,y:0,width:96,height:12); bar.progress = Float(fraction); bar.accessibilityLabel = cell.textLabel?.text; bar.accessibilityValue = String(Int(fraction*100))+"%"; cell.accessoryView = bar }
+                    else { cell.detailTextLabel?.text = (item["detail"] as? String ?? "") + " · " + String(Int(fraction*100))+"%" }
+                }
+                return cell
+            }
+            if enhanced, kind == "toggle", let p = store.record(id) {
+                let value = GoldgramPluginStore.decodeValues(p.settings)[key] ?? item["default"]
+                let toggle = UISwitch(); toggle.isOn = value as? Bool ?? false; toggle.isEnabled = run == nil && p.enabled && !store.state.safe && store.failure == nil
+                toggle.accessibilityLabel = cell.textLabel?.text
+                toggle.addAction(UIAction { [weak self, weak toggle] _ in guard let self, let toggle, self.run == nil else { return }; self.editSetting(item, record:p, supplied:toggle.isOn) }, for:.valueChanged)
+                cell.accessoryView = toggle; cell.detailTextLabel?.text = item["detail"] as? String; cell.selectionStyle = .none; return cell
+            }
             if item["type"] as? String == "secret" { cell.detailTextLabel?.text = GoldgramAIConfig(account: account + "." + id.uuidString).readKey() == nil ? "Не задан" : "Сохранён в Keychain" }
             else if item["type"] as? String != "button", let p = store.record(id) {
                 let value = GoldgramPluginStore.decodeValues(p.settings)[key] ?? item["default"] ?? ""
@@ -827,11 +1121,24 @@ private final class GoldgramPluginDetail: UITableViewController {
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
         store.refresh()
-        guard store.isCurrent(), var p = store.record(id) else { return }
-        if indexPath.section > 0 { if run == nil && p.enabled && !store.state.safe { editSetting(items(indexPath.section)[indexPath.row], record: p) }; return }
-        if indexPath.row == 1, let run { if !run.stopStream() { run.cancel() }; return }
+        guard store.isCurrent(), store.failure == nil, var p = store.record(id) else { return }
+        if indexPath.section > 0 {
+            let grouped = enhanced && group(indexPath.section) != nil
+            if grouped, indexPath.row == 0, let name = group(indexPath.section) { if !collapsedGroups.insert(name).inserted { collapsedGroups.remove(name) }; tableView.reloadData(); return }
+            if run == nil && p.enabled && !store.state.safe {
+                let itemIndex = indexPath.row - (grouped ? 1 : 0)
+                let rows = items(indexPath.section)
+                guard rows.indices.contains(itemIndex) else { tableView.reloadData(); return }
+                let item = rows[itemIndex]
+                if enhanced && item["type"] as? String == "toggle" { return }
+                editSetting(item, record:p)
+            }
+            return
+        }
+        let row = managementRow(indexPath.row)
+        if row == 1, let run { if !run.stopStream() { run.cancel() }; return }
         guard run == nil else { return }
-        switch indexPath.row {
+        switch row {
         case 0:
             if p.enabled { p.enabled = false; p.grants = []; p.floatingTitle = nil; p.contextActions = nil; p.confirmationPolicy = nil; if store.put(p) { sections = []; status = "Выключен" }; tableView.reloadData(); return }
             let unsupported = p.manifest.required.subtracting(GoldgramPluginManifest.supported)
@@ -850,7 +1157,7 @@ private final class GoldgramPluginDetail: UITableViewController {
             navigationController?.pushViewController(GoldgramPluginEditor(title: "JavaScript", text: p.code) { [weak self] code in
                 guard let self else { return }; self.store.refresh()
                 guard self.store.isCurrent(), var current = self.store.record(self.id), current.code == p.code, !code.isEmpty, code.utf8.count <= GoldgramPluginStore.maxCode else { return }
-                current.previousCode = current.code; current.code = code; current.enabled = false; current.grants = []; current.settingsSchema = nil; current.floatingTitle = nil; current.contextActions = nil; current.confirmationPolicy = nil; current.streamingOptions = nil
+                current.previousCode = current.code; current.code = code; current.enabled = false; current.grants = []; current.settingsSchema = nil; current.floatingTitle = nil; current.contextActions = nil; current.confirmationPolicy = nil; current.streamingOptions = nil; current.uiOptions = nil
                 if self.store.put(current) { self.sections = []; self.status = "Код обновлён; разрешите заново."; self.title = current.manifest.name; self.navigationController?.popViewController(animated: true); self.tableView.reloadData() }
                 else { (self.navigationController?.topViewController)?.showPluginError("Не удалось сохранить.") }
             }, animated: true)
@@ -858,8 +1165,11 @@ private final class GoldgramPluginDetail: UITableViewController {
         case 4: showPluginError(logs.isEmpty ? "Нет записей." : logs.joined(separator: "\n"))
         case 5:
             guard let previous = p.previousCode else { showPluginError("Нет предыдущей версии."); return }
-            p.previousCode = p.code; p.code = previous; p.enabled = false; p.grants = []; p.settingsSchema = nil; p.floatingTitle = nil; p.contextActions = nil; p.confirmationPolicy = nil; p.streamingOptions = nil
+            p.previousCode = p.code; p.code = previous; p.enabled = false; p.grants = []; p.settingsSchema = nil; p.floatingTitle = nil; p.contextActions = nil; p.confirmationPolicy = nil; p.streamingOptions = nil; p.uiOptions = nil
             if store.put(p) { sections = []; status = "Код восстановлен; разрешите заново."; title = p.manifest.name; tableView.reloadData() }
+        case 10:
+            guard p.enabled, !store.state.safe else { return }
+            navigationController?.pushViewController(GoldgramPluginUISettings(store:store,id:id),animated:true)
         case 9:
             guard p.enabled, !store.state.safe, p.grants.contains("network.fetch") else { return }
             navigationController?.pushViewController(GoldgramPluginStreamingSettings(store: store, id: id, account: account), animated: true)
@@ -900,16 +1210,19 @@ private final class GoldgramPluginDetail: UITableViewController {
                   let settingsEncoded = GoldgramPluginStore.encodeValues(values), let storageEncoded = GoldgramPluginStore.encodeValues(storage),
                   let rawSections = result["sections"] as? [[String: Any]],
                   let sections = GoldgramPluginStore.validatedSections(rawSections),
-                  let schema = try? JSONSerialization.data(withJSONObject: sections), schema.count <= 220000 else {
+                  let schema = try? JSONSerialization.data(withJSONObject: sections, options: [.sortedKeys]), schema.count <= 220000 else {
                 self.status = "Некорректные данные плагина."; self.tableView.reloadData(); return
             }
             guard let mergedSettings = GoldgramPluginRouting.merge(base: p.settings, latest: current.settings, proposed: settingsEncoded), let mergedStorage = GoldgramPluginRouting.merge(base: p.storage, latest: current.storage, proposed: storageEncoded) else { self.status = "Настройки изменились; повторите действие."; self.tableView.reloadData(); return }
-            if current.grants.contains("settings.read") { current.settings = mergedSettings; current.settingsSchema = schema }
+            if current.grants.contains("settings.read") {
+                current.settings = mergedSettings
+                if event == "plugin.start" || !sections.isEmpty || result["schemaCleared"] as? Bool == true { current.settingsSchema = schema }
+            }
             if current.grants.contains("storage") { current.storage = mergedStorage }
             current.floatingTitle = current.grants.contains("ui.mutate") ? (result["floating"] as? [String: Any])?["title"] as? String : nil
             current.contextActions = current.grants.contains("ui.mutate") ? GoldgramPluginChatRun.validateActions(result["contextActions"]) : nil
             guard self.store.put(current) else { self.status = "Не удалось сохранить настройки."; self.tableView.reloadData(); return }
-            self.sections = current.grants.contains("settings.read") ? sections : []
+            self.reloadSchema()
             self.logs = Array((self.logs + (result["logs"] as? [String] ?? [])).suffix(80))
             self.status = "Выполнено"; self.tableView.reloadData()
             if event == "settings.action" {
@@ -926,8 +1239,9 @@ private final class GoldgramPluginDetail: UITableViewController {
             return true
         }
     }
-    private func editSetting(_ item: [String: Any], record: GoldgramPluginRecord) {
+    private func editSetting(_ item: [String: Any], record: GoldgramPluginRecord, supplied: Any? = nil) {
         guard let key = item["key"] as? String, let kind = item["type"] as? String else { return }
+        if ["info","card","progress"].contains(kind) { return }
         let credential = GoldgramAIConfig(account: account + "." + id.uuidString)
         if kind == "secret", key == "apiKey" {
             let alert = UIAlertController(title: item["title"] as? String ?? "API key", message: "Ключ сохраняется только в Keychain. Плагин получает условный идентификатор, не сам ключ.", preferredStyle: .alert)
@@ -945,12 +1259,22 @@ private final class GoldgramPluginDetail: UITableViewController {
         let old = GoldgramPluginStore.decodeValues(record.settings)[key] ?? item["default"] ?? ""
         let apply: (Any) -> Void = { [weak self] value in
             guard let self else { return }; self.store.refresh()
-            guard self.store.isCurrent(), self.store.failure == nil, !self.store.state.safe, var current = self.store.record(self.id), current.enabled, current.code == record.code, current.grants == record.grants, current.grants.contains("settings.read") else { return }
-            var values = GoldgramPluginStore.decodeValues(current.settings); values[key] = value
+            guard self.run == nil, self.navigationController?.topViewController === self, self.store.isCurrent(), self.store.failure == nil, !self.store.state.safe, var current = self.store.record(self.id), current.enabled, current.code == record.code, current.grants == record.grants, current.settingsSchema == record.settingsSchema, current.grants.contains("settings.read") else { self.reloadSchema(); self.tableView.reloadData(); return }
+            let clean: Any
+            if kind == "toggle" { guard let flag = value as? Bool else { return }; clean = flag }
+            else if kind == "slider" || kind == "stepper" {
+                guard let number = value as? Double, let checked = GoldgramPluginUIRules.number(number,min:item["min"] as? Double ?? 0,max:item["max"] as? Double ?? 100,step:item["step"] as? Double ?? 1) else { return }; clean = checked
+            } else if kind == "text" || kind == "textarea" {
+                guard let text = value as? String, let checked = GoldgramPluginUIRules.text(text,limit:item["maxLength"] as? Int ?? 6000) else { self.showPluginError("Слишком длинный текст."); self.tableView.reloadData(); return }; clean = checked
+            } else if kind == "select" {
+                guard let text = value as? String, (item["modelSource"] as? String == "deepseek" ? GoldgramNetworkPolicy.modelID(text) : (item["options"] as? [[String:Any]] ?? []).contains(where: { $0["value"] as? String == text })) else { return }; clean = text
+            } else { return }
+            var values = GoldgramPluginStore.decodeValues(current.settings); values[key] = clean
             guard let encoded = GoldgramPluginStore.encodeValues(values) else { self.showPluginError("Слишком большое значение."); return }
             current.settings = encoded
-            if self.store.put(current) { self.execute(event: "settings.changed", key: key, value: value) }
+            if self.store.put(current) { self.execute(event: "settings.changed", key: key, value: clean) } else { self.showPluginError("Не удалось сохранить."); self.tableView.reloadData() }
         }
+        if let supplied { apply(supplied); return }
         if kind == "select", item["modelSource"] as? String == "deepseek", record.grants.contains("network.fetch") {
             let screen = GoldgramModelCatalogScreen(config: credential, valid: catalogValidity(record), fallback: item["options"] as? [[String: String]] ?? [], selected: old as? String, choose: { [weak self] model in
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
@@ -959,6 +1283,14 @@ private final class GoldgramPluginDetail: UITableViewController {
                 }
             })
             navigationController?.pushViewController(screen, animated: true); return
+        }
+        if enhanced, kind == "select" {
+            let screen = GoldgramPluginChoiceScreen(title:item["title"] as? String ?? key, options:item["options"] as? [[String:Any]] ?? [], selected:old as? String, choose:apply)
+            navigationController?.pushViewController(screen,animated:true); return
+        }
+        if enhanced, kind == "slider" || kind == "stepper" {
+            let screen = GoldgramPluginNumberScreen(title:item["title"] as? String ?? key,item:item,value:old as? Double ?? 0,save:apply)
+            navigationController?.pushViewController(screen,animated:true); return
         }
         if kind == "button" { execute(event: "settings.action", key: key); return }
         if kind == "toggle" { apply(!(old as? Bool ?? false)); return }
@@ -1002,8 +1334,9 @@ final class GoldgramPluginChatRun {
         guard store.failure == nil, !store.state.safe else { return [] }
         return store.state.plugins.compactMap { p in
             guard p.enabled, p.grants.contains("ui.mutate"), p.manifest.required.isSubset(of: Set(p.grants)), Set(p.grants).isSubset(of: GoldgramPluginManifest.supported) else { return nil }
-            let title = p.chatButtonHidden == true ? nil : p.floatingTitle
-            let actions = p.grants.contains("messages.read") ? validateActions(p.contextActions) : []
+            let ui = p.uiOptions ?? GoldgramPluginUIOptions()
+            let title = p.chatButtonHidden == true || p.floatingTitle == nil ? nil : (ui.buttonTitle ?? p.floatingTitle)
+            let actions = p.grants.contains("messages.read") ? ui.visibleActions(validateActions(p.contextActions)) : []
             guard title != nil || !actions.isEmpty else { return nil }
             return GoldgramPluginRegistration(id: p.id, name: p.manifest.name, title: title, actions: actions, code: p.code, grants: p.grants)
         }
@@ -1012,6 +1345,9 @@ final class GoldgramPluginChatRun {
         let store = GoldgramPluginStore(account: account, isCurrent: { true })
         guard store.failure == nil, !store.state.safe, let p = store.record(registration.id), p.enabled else { return false }
         return p.code == registration.code && p.grants == registration.grants
+    }
+    private static func visibleActions(_ record: GoldgramPluginRecord) -> [[String: String]] {
+        (record.uiOptions ?? GoldgramPluginUIOptions()).visibleActions(validateActions(record.contextActions))
     }
     static func validateActions(_ raw: Any?) -> [[String: String]] {
         guard let list = raw as? [[String: String]] else { return [] }
@@ -1039,14 +1375,14 @@ final class GoldgramPluginChatRun {
         let store = GoldgramPluginStore(account: account, isCurrent: valid)
         guard valid(), store.failure == nil, !store.state.safe, let p = store.record(id), p.enabled, p.grants.contains("ui.mutate"),
               p.manifest.required.isSubset(of: Set(p.grants)), Set(p.grants).isSubset(of: GoldgramPluginManifest.supported),
-              (event == "floating.tap" && p.floatingTitle != nil && p.chatButtonHidden != true) || (event == "context.tap" && p.grants.contains("messages.read") && Self.validateActions(p.contextActions).contains(where: { $0["id"] == key })) else { completion(nil, "Действие плагина недоступно."); return }
+              (event == "floating.tap" && p.floatingTitle != nil && p.chatButtonHidden != true) || (event == "context.tap" && p.grants.contains("messages.read") && Self.visibleActions(p).contains(where: { $0["id"] == key })) else { completion(nil, "Действие плагина недоступно."); return }
         guard let lease = GoldgramPluginRun.reserve(account: account, id: id) else { completion(nil, "Плагин занят или достигнут лимит 4 выполнений."); return }
         let stillValid = {
             guard valid() else { return false }
             let latest = GoldgramPluginStore(account: account, isCurrent: valid)
             guard latest.failure == nil, !latest.state.safe, let current = latest.record(id) else { return false }
             return current.enabled && current.code == p.code && current.grants == p.grants &&
-                ((event == "floating.tap" && current.floatingTitle != nil && current.chatButtonHidden != true) || (event == "context.tap" && Self.validateActions(current.contextActions).contains(where: { $0["id"] == key })))
+                ((event == "floating.tap" && current.floatingTitle != nil && current.chatButtonHidden != true) || (event == "context.tap" && Self.visibleActions(current).contains(where: { $0["id"] == key })))
         }
         var input = context
         if !p.grants.contains("messages.read") { input.removeValue(forKey: "messages"); input.removeValue(forKey: "selectedMessage") }
@@ -1058,7 +1394,11 @@ final class GoldgramPluginChatRun {
             guard var current = latest.record(id), let settings = result["settings"] as? [String: Any], let storage = result["storage"] as? [String: Any],
                   let encoded = GoldgramPluginStore.encodeValues(settings), let stored = GoldgramPluginStore.encodeValues(storage) else { completion(nil, "Некорректный результат."); return }
             guard let mergedSettings = GoldgramPluginRouting.merge(base: p.settings, latest: current.settings, proposed: encoded), let mergedStorage = GoldgramPluginRouting.merge(base: p.storage, latest: current.storage, proposed: stored) else { completion(nil, "Настройки изменились; повторите действие."); return }
-            if current.grants.contains("settings.read") { current.settings = mergedSettings }
+            if current.grants.contains("settings.read") {
+                guard let raw = result["sections"] as? [[String: Any]], let checked = GoldgramPluginStore.validatedSections(raw), let schema = try? JSONSerialization.data(withJSONObject: checked, options: [.sortedKeys]), schema.count <= 220000 else { completion(nil, "Некорректная схема настроек."); return }
+                current.settings = mergedSettings
+                if !checked.isEmpty || result["schemaCleared"] as? Bool == true { current.settingsSchema = schema }
+            }
             if current.grants.contains("storage") { current.storage = mergedStorage }
             if current.grants.contains("ui.mutate") { current.contextActions = Self.validateActions(result["contextActions"]); current.floatingTitle = (result["floating"] as? [String: Any])?["title"] as? String }
             guard latest.put(current) else { completion(nil, "Не удалось сохранить настройки."); return }

@@ -187,3 +187,39 @@ assert "task?.cancel(); session?.invalidateAndCancel()" in s
 assert "self?.replyProgress" in plugins and "progressHandlers.delete" in plugins
 assert "streamingOptions: GoldgramStreamOptions?" in plugins
 print("Goldgram #274 lifecycle and policy source contracts passed")
+
+
+# #275 UI options and bounds (exact native policy source, no UIKit).
+ui = plugins.split("struct GoldgramPluginUIOptions:",1)[1].split("\nprivate struct GoldgramPluginRecord",1)[0]
+fixture = '''
+let options = GoldgramPluginUIOptions()
+let actions = [["id":"one","title":"One"],["id":"two","title":"Two"]]
+precondition(options.enhanced && options.visibleActions(actions) == actions)
+var changed = options
+changed.hiddenActions = ["one"]
+precondition(changed.visibleActions(actions) == [actions[1]])
+changed.contextEnabled = false
+precondition(changed.visibleActions(actions).isEmpty)
+precondition(try! JSONDecoder().decode(GoldgramPluginUIOptions.self,from:JSONEncoder().encode(changed)) == changed)
+precondition(GoldgramPluginUIRules.number(7.3,min:0,max:10,step:0.5) == 7.5)
+precondition(GoldgramPluginUIRules.number(100,min:0,max:10,step:0.5) == 10)
+precondition(GoldgramPluginUIRules.number(-1,min:0,max:10,step:0.5) == 0)
+precondition(GoldgramPluginUIRules.number(.nan,min:0,max:10,step:1) == nil)
+precondition(GoldgramPluginUIRules.number(2,min:10,max:0,step:1) == nil)
+precondition(GoldgramPluginUIRules.number(2,min:0,max:10,step:0) == nil)
+precondition(GoldgramPluginUIRules.text("hello",limit:5) == "hello")
+precondition(GoldgramPluginUIRules.text("hello",limit:4) == nil)
+precondition(GoldgramPluginUIRules.text(String(repeating:"🌍",count:2100),limit:6000) == nil)
+struct OldUIRecord: Codable { var uiOptions: GoldgramPluginUIOptions? }
+precondition(try! JSONDecoder().decode(OldUIRecord.self,from:Data("{}".utf8)).uiOptions == nil)
+print("Goldgram #275 UI options, action routing and numeric/text bounds passed")
+'''
+with tempfile.TemporaryDirectory() as tmp:
+    path = pathlib.Path(tmp)/"main.swift"
+    path.write_text("import Foundation\nstruct GoldgramPluginUIOptions:"+ui+fixture)
+    subprocess.run(["swift",str(path)],check=True)
+assert "Self.visibleActions(p).contains" in plugins and "Self.visibleActions(current).contains" in plugins
+assert "current.settingsSchema = schema" in plugins and "current.settingsSchema == record.settingsSchema" in plugins
+assert "clearSections:" in plugins and 'result["schemaCleared"] as? Bool == true' in plugins
+assert "UISwitch()" in plugins and "UISlider()" in plugins and "UIStepper()" in plugins and "UIProgressView(" in plugins
+print("Goldgram #275 native UI and hidden-action source contracts passed")

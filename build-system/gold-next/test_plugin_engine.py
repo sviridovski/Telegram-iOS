@@ -6,6 +6,7 @@ source = (root / "submodules/ChatListUI/Sources/GoldgramPlugins.swift").read_tex
 worker = source.split("// BEGIN GOLDGRAM_WORKER_V1\n",1)[1].split("// END GOLDGRAM_WORKER_V1",1)[0]
 example = source.split('static let example = #"""\n',1)[1].split('\n"""#',1)[0]
 import json
+ui_sample = source.split('static let uiExample = #"""\n',1)[1].split('\n"""#',1)[0]
 harness = """
 const assert = require('node:assert/strict');
 let result, requests=[], failModels=false;
@@ -67,6 +68,22 @@ assert.equal(result.storage.enabled,true);assert.equal(result.storage.delta,'par
 await self.onmessage({data:{source:streamScript,grants:compat,event:'settings.action',streamingEnabled:false}});
 assert.equal(result.storage.enabled,false);assert.equal(result.storage.delta,undefined);assert.equal(requests.at(-1).args.progress,false);
 console.log('Goldgram #274 streaming callback and feature flag OK');
+const uiSample = """ + json.dumps(ui_sample) + """;
+await self.onmessage({data:{source:uiSample,grants:compat,event:'plugin.start'}});
+assert.ok(!result.error); assert.equal(result.sections[0].group,'Настройки');
+assert.equal(result.sections[0].items[1].step,0.5);
+assert.equal(result.sections[0].items[4].maxLength,500);
+assert.equal(result.sections[1].items[1].fraction,0.4);
+assert.equal(result.settings.summary,undefined);assert.equal(result.settings.meter,undefined);
+assert.equal(result.contextActions.length,2);
+await self.onmessage({data:{source:uiSample,grants:compat,event:'settings.changed',key:'level',value:7.5,settings:{level:7.5}}});
+assert.equal(result.sections[1].items[0].detail,'7.5');assert.equal(result.sections[1].items[1].fraction,0.75);
+await self.onmessage({data:{source:uiSample,grants:compat.filter(x=>x!=='settings.read'),event:'plugin.start'}});
+assert.ok(result.error);
+const reRender='GGAPI.settings.addSection({title:"Initial",items:[{type:"info",key:"initial",title:"Initial"}]}); GGAPI.events.on("settings.action",()=>{GGAPI.settings.clearSections();GGAPI.settings.addSection({title:"Updated",items:[{type:"info",key:"updated",title:"Updated"}]});});';
+await self.onmessage({data:{source:reRender,grants:compat,event:'settings.action'}});
+assert.equal(result.schemaCleared,true);assert.equal(result.sections.length,1);assert.equal(result.sections[0].title,'Updated');
+console.log('Goldgram #275 declarative UI, dynamic card/progress and permissions OK');
 })().catch(e=>{console.error(e);process.exit(1)});
 """
 with tempfile.TemporaryDirectory() as tmp:
@@ -83,3 +100,4 @@ assert 'base.network=Object.freeze' in source
 assert 'addFloatingButton' in source and 'contextActions:Object.keys(actions)' in source
 assert 'sk-goldgram-managed' in source and 'credential.readKey() != nil' in source
 print("Goldgram #269 scoped compatibility contracts present")
+
