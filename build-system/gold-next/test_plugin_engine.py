@@ -152,6 +152,20 @@ await self.onmessage({data:{source:channelScript,grants:compat,event:'context.ta
 assert.equal(result.storage.type,'group');assert.equal(result.storage.canSend,true);assert.equal(result.storage.isChannel,false);assert.equal(result.output.kind,'draft');
 console.log('Goldgram #278 channel context metadata and virtual draft output OK');
 
+const captionScript='GGAPI.ui.addMessageContextAction({id:"caption",title:"Caption"},p=>{const m=GGAPI.messages.getSelectedMessage();GGAPI.storage.set("text",p.message.text);GGAPI.storage.set("same",m.text===GGAPI.messages.get(m.id).text);GGAPI.storage.set("kind",p.message.mediaKind||null);GGAPI.storage.set("hasMedia",!!GGAPI.media);GGAPI.storage.set("mediaInfo",GGAPI.media?GGAPI.media.selected():null);GGAPI.chat.setDraftText(p.message.text);});';
+const captionContext={peerId:"discussion",type:"group",draft:"",draftWritable:true,selectedMessage:{id:"channel-post",text:"News caption",mediaKind:"video"}};
+await self.onmessage({data:{source:captionScript,grants:compat,event:"context.tap",key:"caption",context:captionContext}});
+assert.equal(result.storage.text,"News caption");assert.equal(result.storage.same,true);assert.equal(result.storage.kind,null);assert.equal(result.storage.hasMedia,false);assert.equal(result.storage.mediaInfo,null);assert.equal(result.output.kind,"draft");assert.equal(result.output.text,"News caption");
+await self.onmessage({data:{source:captionScript,grants:[...compat,"media.read"],event:"context.tap",key:"caption",context:captionContext}});
+assert.equal(result.storage.text,"News caption");assert.equal(result.storage.kind,"video");assert.equal(result.storage.mediaInfo.kind,"video");assert.equal(result.storage.mediaInfo.messageId,"channel-post");
+const mediaOnlyScript='GGAPI.ui.addMessageContextAction({id:"caption",title:"Caption"},p=>GGAPI.storage.set("selected",p.message));';
+await self.onmessage({data:{source:mediaOnlyScript,grants:compat,event:"context.tap",key:"caption",context:{selectedMessage:{id:"video",mediaKind:"video"}}}});
+assert.equal(result.storage.selected,null);
+await self.onmessage({data:{source:mediaOnlyScript,grants:[...compat,"media.read"].filter(x=>x!=="chat.read"),event:"context.tap",key:"caption",context:{selectedMessage:{id:"video",mediaKind:"video"}}}});
+assert.equal(result.storage.selected,null);
+console.log('Goldgram #280 caption text independent of media grant, metadata remains scoped');
+
+
 
 
 })().catch(e=>{console.error(e);process.exit(1)});
@@ -189,5 +203,10 @@ assert 'var allowTimedTextWithoutPrompt: Bool?' in source and 'skipTimedTextProm
 assert 'thread.channelMessageId == id || thread.effectiveMessageId == id' in chat
 assert 'thread.isChannelPost, !thread.isNotAvailable' in chat
 assert 'peer == message.id.peerId || self.goldgramPluginDiscussionRoot(message.id)' in chat
-assert 'message.media.allSatisfy { $0 is TelegramMediaWebpage }' in chat
+assert 'message.media.allSatisfy({ $0 is TelegramMediaWebpage })' in chat
 assert 'GoldgramAIButtonGroup.skipTimedTextPrompt' in chat
+
+assert '$0 is TelegramMediaImage || $0 is TelegramMediaFile' in chat
+assert 'if self.goldgramPluginSelectedText(message._asMessage())' in chat
+assert 'selected.removeValue(forKey: "mediaKind")' in source
+assert 'actions[p.key]({message:selectedSnapshot})' in source

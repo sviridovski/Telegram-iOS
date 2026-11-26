@@ -496,9 +496,15 @@ function goldWorkerMain() {
     if(allowed("chat.read")||allowed("chat.write")) base.chat=Object.freeze({
       currentPeerId:()=>{need("chat.read");return ctx.peerId||null;}, currentChatInfo:()=>{need("chat.read");return ctx.peerId?{peerId:ctx.peerId,type:ctx.type||"user",isGroup:ctx.type==="group",isChannel:ctx.type==="channel",canSend:ctx.draftWritable!==false}:null;},
       draftText:()=>{need("chat.read");return draft||"";},setDraftText:t=>{need("chat.write");if(draft===null)throw Error("Open a writable chat");draft=String(t).slice(0,4096);changed=true;return true;},insertText:t=>{need("chat.write");if(draft===null)throw Error("Open a writable chat");draft=(draft+String(t)).slice(0,4096);changed=true;return true;},setTyping:()=>{need("ui.mutate");return true;} });
+    const mediaAllowed=allowed("media.read")&&allowed("messages.read")&&allowed("chat.read");
+    let selectedSnapshot=!passive&&allowed("messages.read")&&ctx.selectedMessage?{...ctx.selectedMessage}:null;
+    if(selectedSnapshot&&selectedSnapshot.mediaKind&&!mediaAllowed){
+      if(typeof selectedSnapshot.text==="string"&&selectedSnapshot.text.length)delete selectedSnapshot.mediaKind;
+      else selectedSnapshot=null;
+    }
     if(allowed("messages.read")) {
       const rows=!passive&&Array.isArray(ctx.messages)?ctx.messages:[];
-      const selected=!passive&&ctx.selectedMessage&&(!ctx.selectedMessage.mediaKind||allowed("media.read"))?ctx.selectedMessage:null;
+      const selected=selectedSnapshot;
       const limit=(n,fallback=8)=>Math.max(1,Math.min(36,Math.floor(Number(n)||fallback)));
       const visible=n=>rows.slice(-limit(n));
       const get=id=>selected&&String(selected.id)===String(id)?selected:rows.find(m=>String(m.id)===String(id))||null;
@@ -513,9 +519,9 @@ function goldWorkerMain() {
       const fetch=async ids=>{if(!Array.isArray(ids)||ids.length>36)throw Error("Invalid message IDs");return ids.map(get).filter(Boolean);};
       base.messages=Object.freeze({visible,current:visible,get,getSelectedMessage:()=>selected,history,getHistory:history,fetch,getMessages:fetch});
     }
-    if(allowed("media.read")&&allowed("messages.read")&&!passive){
+    if(mediaAllowed&&!passive){
       const items=Array.isArray(ctx.mediaRows)?ctx.mediaRows:[];
-      const selected=ctx.selectedMessage&&ctx.selectedMessage.mediaKind?{messageId:ctx.selectedMessage.id,kind:ctx.selectedMessage.mediaKind}:null;
+      const selected=selectedSnapshot&&selectedSnapshot.mediaKind?{messageId:selectedSnapshot.id,kind:selectedSnapshot.mediaKind}:null;
       const lookup=id=>selected&&String(selected.messageId)===String(id)?selected:items.find(m=>String(m.messageId)===String(id))||null;
       base.media=Object.freeze({selected:()=>selected,forMessage:lookup,info:lookup,visible:n=>items.slice(-Math.max(1,Math.min(36,Math.floor(Number(n)||8))))});
     }
@@ -587,7 +593,7 @@ function goldWorkerMain() {
       const lifecycleSubscriptions=lifecycleNames.filter(name=>(handlers[name]||[]).length>0);
       await dispatch(p.event,{key:p.key,value:p.value,pluginId:p.pluginId,...(passive?{peerId:ctx.peerId,chatType:ctx.type}:{} )});
       if(p.event==="floating.tap"&&floating&&buttons[floating.id]) await buttons[floating.id]();
-      if(p.event==="context.tap"&&actions[p.key])await actions[p.key]({message:ctx.selectedMessage});
+      if(p.event==="context.tap"&&actions[p.key])await actions[p.key]({message:selectedSnapshot});
       if(p.event==="settings.action"||p.event==="context.tap"){ await new Promise(resolve=>setTimeout(resolve,0)); let idle=0; while(idle<12){await new Promise(resolve=>setTimeout(resolve,100));idle=pending.size?0:idle+1;} }
       while(emissions.length){const [name,value]=emissions.shift();await dispatch(name,value);}
       if(changed && !output)output={kind:"draft",title:"Результат плагина",text:draft};
@@ -1567,8 +1573,9 @@ final class GoldgramPluginChatRun {
         guard valid(), store.failure == nil, !store.state.safe, let p = store.record(id), p.enabled, p.grants.contains("ui.mutate"),
               p.manifest.required.isSubset(of: Set(p.grants)), Set(p.grants).isSubset(of: GoldgramPluginManifest.supported),
               (event == "floating.tap" && p.floatingTitle != nil && p.chatButtonHidden != true) || (event == "context.tap" && p.grants.contains("messages.read") && Self.visibleActions(p).contains(where: { $0["id"] == key })) else { completion(nil, "Действие плагина недоступно."); return }
-        if (context["selectedMessage"] as? [String: Any])?["mediaKind"] != nil &&
-            !["media.read", "messages.read", "chat.read"].allSatisfy({ p.grants.contains($0) }) { completion(nil, "Нет разрешения на медиа."); return }
+        let mediaAllowed = ["media.read", "messages.read", "chat.read"].allSatisfy { p.grants.contains($0) }
+        if let selected = context["selectedMessage"] as? [String: Any], selected["mediaKind"] != nil,
+            (selected["text"] as? String ?? "").isEmpty, !mediaAllowed { completion(nil, "Нет разрешения на медиа."); return }
         guard let lease = GoldgramPluginRun.reserve(account: account, id: id) else { completion(nil, "Плагин занят или достигнут лимит 4 выполнений."); return }
         let stillValid = {
             guard valid() else { return false }
@@ -1578,9 +1585,14 @@ final class GoldgramPluginChatRun {
                 ((event == "floating.tap" && current.floatingTitle != nil && current.chatButtonHidden != true) || (event == "context.tap" && Self.visibleActions(current).contains(where: { $0["id"] == key })))
         }
         var input = context
-        if !p.grants.contains("media.read") || !p.grants.contains("messages.read") || !p.grants.contains("chat.read") {
+        if !mediaAllowed {
             input.removeValue(forKey: "mediaRows")
-            if (input["selectedMessage"] as? [String: Any])?["mediaKind"] != nil { input.removeValue(forKey: "selectedMessage") }
+            if var selected = input["selectedMessage"] as? [String: Any], selected["mediaKind"] != nil {
+                if let text = selected["text"] as? String, !text.isEmpty {
+                    selected.removeValue(forKey: "mediaKind")
+                    input["selectedMessage"] = selected
+                } else { input.removeValue(forKey: "selectedMessage") }
+            }
         }
         if !p.grants.contains("messages.read") { input.removeValue(forKey: "messages"); input.removeValue(forKey: "selectedMessage") }
         if !p.grants.contains("chat.read") { input.removeValue(forKey: "draft"); input.removeValue(forKey: "peerId"); input.removeValue(forKey: "type"); input.removeValue(forKey: "draftWritable") }

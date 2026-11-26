@@ -8158,8 +8158,12 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
     }
 
     private func goldgramPluginSelectedText(_ message: Message) -> Bool {
-        // A web-page preview is not an attachment payload. Only the text is passed.
-        !message.text.isEmpty && message.media.allSatisfy { $0 is TelegramMediaWebpage }
+        // The caption of an ordinary cloud photo/video/document is text, not media access.
+        // Do not expose protected, short-lived, or unsupported attachment content.
+        guard !message.text.isEmpty else { return false }
+        if message.media.allSatisfy({ $0 is TelegramMediaWebpage }) { return true }
+        guard message.minAutoremoveOrClearTimeout == nil, !EngineMessage(message).containsSecretMedia else { return false }
+        return message.media.allSatisfy { $0 is TelegramMediaWebpage || $0 is TelegramMediaImage || $0 is TelegramMediaFile }
     }
 
     func goldgramPluginMessageMenu(_ message: EngineMessage) -> [[String: String]] {
@@ -8175,12 +8179,16 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
     }
     func goldgramInvokePluginMessageAction(_ key: String, message: EngineMessage) {
         guard self.goldgramPluginMessageMenu(message).contains(where: { $0["id"] == key }) else { return }
-        let snapshot: [String: Any]
-        if let kind = self.goldgramPluginMediaKind(message._asMessage()) {
-            snapshot = ["id": String(describing: message.id), "mediaKind": kind]
+        var selected: [String: Any]
+        if self.goldgramPluginSelectedText(message._asMessage()) {
+            selected = ["id":String(describing:message.id),"id_num":message.id.id,"timestamp":message.timestamp,"outgoing":!message._asMessage().flags.contains(.Incoming),"text":String(message.text.prefix(6000)),"authorPeerId":String(describing:message.author?.id)]
+            if let kind = self.goldgramPluginMediaKind(message._asMessage()) { selected["mediaKind"] = kind }
+        } else if let kind = self.goldgramPluginMediaKind(message._asMessage()) {
+            selected = ["id": String(describing: message.id), "mediaKind": kind]
         } else {
-            snapshot = ["id":String(describing:message.id),"id_num":message.id.id,"timestamp":message.timestamp,"outgoing":!message._asMessage().flags.contains(.Incoming),"text":String(message.text.prefix(6000)),"authorPeerId":String(describing:message.author?.id)]
+            return
         }
+        let snapshot = selected
         if self.goldgramPluginTimedText(message._asMessage()) &&
             !GoldgramAIButtonGroup.skipTimedTextPrompt(account: String(self.context.account.peerId.id._internalGetInt64Value()), actionKey: key) {
             guard let identity = self.goldgramPluginIdentity() else { return }
