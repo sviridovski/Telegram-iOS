@@ -1,6 +1,6 @@
 # CURRENT_STATUS — verified checkpoint
 
-  > **2026-11-26 local user date — #275 green/device-accepted; #276 Event Bus/lifecycle candidate.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
+  > **2026-11-26 local user date — #276 CI green; #275 last device-accepted; #276 lifecycle device testing pending.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
 
 ## P0 development priority (user-approved 2026-11-25)
 
@@ -13,12 +13,12 @@
 | Item | Latest confirmed status |
 | --- | --- |
 | Feature branch | `gold-next-243-author-search` |
-| HEAD | `ce7db08f07db254d132f88b99accaaee1233636a` (#276 candidate), direct parent #275 |
-| Last green CI | [#275](https://github.com/sviridovski/Telegram-iOS/actions/runs/45751521153), success, 20m06s wall |
+| HEAD | `ce7db08f07db254d132f88b99accaaee1233636a` (#276 CI green), direct parent #275 |
+| Last green CI | [#276](https://github.com/sviridovski/Telegram-iOS/actions/runs/45756006091), success, 31m11s wall |
 | Last installed | #275 — user confirms UI controls/context menu and button editing work; other tested functions also reported working. |
 | Failed candidate | #272 both attempts: wallet-engine Git LFS test snapshot timeout; no native compile. |
-| Next task | **P0 Engine 2.0**: verify #276 CI and device lifecycle/command flows; then extended GGAPI (target #277). |
-| Recovery | #275 green/device-accepted current baseline; #274 prior streaming checkpoint. Earlier #263 navigation checkpoint and older archive/media limitations remain historical. |
+| Next task | **P0 Engine 2.0**: verify #276 device lifecycle/command flows; then extended GGAPI (target #277). |
+| Recovery | #276 latest green CI; #275 device-accepted recovery baseline; #274 prior streaming checkpoint. Earlier #263 navigation checkpoint and older archive/media limitations remain historical. |
 
 ## #252 corrections retained in #253
 
@@ -382,3 +382,8 @@ Source published: [ce7db08f07db254d132f88b99accaaee1233636a](https://github.com/
 - Optional per-account/plugin lifecycleEnabled defaults off and is controlled in Interface settings; enabling requires existing grants. Run/update plugin settings once to register subscriptions for older installed plugins. Disabling clears subscriptions; re-enable registers again; code replace/rollback resets preferences/subscriptions. Automatic delivery is best-effort foreground only in the existing eligible, writable, non-protected chat scope; metadata only (scoped peer ID/type), no draft/messages; no RPC/network/output/auto-send. At most four existing global slots, no queue, busy plugins skipped, new transition cancels previous batch. Closing callback may be lost on fast navigation, app background or controller destruction. Current code/grants/account/safe mode/preference rechecked before accepting results. Passive results can only merge authorized settings/storage; no registry/schema change or new DB. Worker termination and background cancellation provide native teardown; full Ghostgram plugin.stop/onUnload semantics, durable delivery and global runtime are NOT implemented.
 - GGAPI.commands.register/unregister/list supports explicit context-menu commands, scoped aliases (ASCII letters/digits/underscore), requires chat.write + messages.read + ui.mutate, shares existing action cap/visibility/routing, no automatic slash interception or command argument parsing. Existing AICC untouched. Added bundled Goldgram Lifecycle Test: install from Plugins > Установить тест событий, enable, turn on chat events under Interface, open and leave eligible chat; return to plugin and tap Проверить счётчики (or refresh settings), compare counters. Test /lifecycle via message context menu, hide action via existing controls. Test switch off, restart, safe mode, rapid navigation (best-effort losses allowed), account isolation, #275 controls and #274 streaming. No network/archives needed for sample.
 - Test evidence: exact committed Worker and all test_plugin_engine.py JS fixtures executed in local V8 with simulated RPC responses and accelerated timers: 73 assertions passed (57 prior + 16 new). This is not macOS Swift/UIKit/WebKit compilation, Python/Node CI execution or iPhone validation. CI will run full existing suite. Preserve warm-cache parent lookup and LFS fix from prior builds; no new speed optimization or duration claimed. Next P0 after CI and device acceptance: extended GGAPI messages/files/media (target #277).
+
+## #276 CI green — device acceptance pending (2026-11-26)
+
+- [CI #276](https://github.com/sviridovski/Telegram-iOS/actions/runs/45756006091) completed successfully at 05:05:02 UTC, source `ce7db08f07db254d132f88b99accaaee1233636a`, matching live HEAD of `gold-next-243-author-search`. All three jobs (native, mx, build) successful; IPA artifact 15089146519 present and not expired at verification. Wall time 31m11s versus #275 20m06s. Native cache resolve/restore/save and Mx cached validation succeeded; exact hit counts and cause of longer duration not established. The 15–20 minute target remains unmet on this run.
+- #276 is the latest green CI, not yet user-confirmed on device. #275 remains last installed/device-accepted recovery baseline. Follow the #276 lifecycle test checklist above (event counters, opt-in/opt-out, manual command and prior feature regressions). Extended GGAPI messages/files/media (target #277) follows device acceptance. No source or architecture changes, workflow dispatch, or new build for this documentation checkpoint.
