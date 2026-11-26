@@ -107,3 +107,10 @@ Following the prior 1/1 screenshot, user confirmed all works after being asked t
 
 ### #277 target — extended GGAPI candidate
 [CI #277](https://github.com/sviridovski/Telegram-iOS/actions/runs/45793342815) in_progress at verification; source 79e8a85b416b0c2048e39023ab834e664de849a6. Scoped visible-snapshot text history (not full server history), optional metadata-only media, bounded persistent logical text/JSON files in the existing plugin record. Test on iPhone before moving to further GGAPI/GoldAPI work. See CURRENT_STATUS and DECISIONS_LOG for acceptance and gaps.
+
+## #277 CI and device checkpoint (2026-11-26)
+
+[CI #277](https://github.com/sviridovski/Telegram-iOS/actions/runs/45793342815) succeeded (all three jobs, IPA artifact 15106681972, unexpired when checked); wall time 39m09s, source `79e8a85b416b0c2048e39023ab834e664de849a6`. User reports installing and completing all requested Data Test checks successfully. However, user reports shared plugin context actions missing in group chats and channels; personal messages and comments work. Screenshot shows ordinary text in a group with remaining auto-delete six days and no plugin actions. #277 remains latest green and installed baseline with extended GGAPI tested, but not full context-menu acceptance. No screenshot or private text published.
+
+### #278 target — context menu regression before GoldAPI
+[CI #278](https://github.com/sviridovski/Telegram-iOS/actions/runs/45803588004), source db6e30beea52703503994cc571272048803942b5. Separate read-only chat from writable composer, selected ordinary group TTL text with explicit native confirmation. Preserve private/protected/ephemeral boundaries. Verify device before resuming GoldAPI stage.

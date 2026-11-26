@@ -250,3 +250,7 @@ Following the prior 1/1 screenshot, user confirmed all works after being asked t
 ## #277 candidate — bounded GGAPI data services
 
 Extend only the existing foreground snapshot boundary: text history is explicitly incomplete, selected media is kind/ID metadata behind optional media.read plus chat/messages grants, and logical UTF-8 files use optional bounded fileData in the existing account/plugin JSON record (atomic validated merge, no arbitrary filesystem or new database). No native archive, read-state, session or send bridge. See CURRENT_STATUS and DECISIONS_LOG for evidence and limits.
+
+## #278 candidate — separate read-only context and writable composer
+
+The plugin host may run foreground explicit actions in eligible ordinary read-only cloud chats; actual composer writes/native fallback and passive lifecycle retain writable-chat gate. Read-only draft proposals are local output only. Ordinary long-lived group/channel auto-delete text may enter only explicitly selected plugin callback after native per-action warning/consent and expiry checks; visible history, media and passive callbacks still exclude TTL. No secret/protected/ephemeral expansion. See CURRENT_STATUS/DECISIONS_LOG for test evidence and limits.
