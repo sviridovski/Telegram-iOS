@@ -77,3 +77,7 @@ Registry, independent controls/actions and bounded isolated execution implemente
 
 ### #273 numbering adjustment
 #272 failed twice in dependency checkout. #273 is a CI-only fix, retains Network Engine code, and is not the SSE stage. Proceed to SSE only after CI/device validation; subsequent build numbers shift.
+
+
+### #273 accepted — Network Engine complete for tested flow
+User confirms plugin catalog/generation work; screenshot confirms JS context menu registration. CI green. Next SSE/Streaming Engine (#274 target); individual actions and remaining negative-path tests remain in regression matrix.

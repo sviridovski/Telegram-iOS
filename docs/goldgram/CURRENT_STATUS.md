@@ -1,6 +1,6 @@
 # CURRENT_STATUS — verified checkpoint
 
-  > **2026-11-26 local user date — #273 green and installed; native model catalog verified, plugin-specific checks pending.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
+  > **2026-11-26 local user date — #273 green and device-accepted; next P0 Streaming Engine.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
 
 ## P0 development priority (user-approved 2026-11-25)
 
@@ -15,9 +15,9 @@
 | Feature branch | `gold-next-243-author-search` |
 | HEAD | `e3b9b0796a7b34d1c844285f02e73fa924931997` (#273 CI-only fix), direct parent #272 |
 | Last green CI | [#273](https://github.com/sviridovski/Telegram-iOS/actions/runs/45730780334), success, 32m24s wall |
-| Last installed | #273 — native catalog live refresh confirmed; plugin settings/independent button observed; full acceptance pending. |
+| Last installed | #273 — user confirms catalog and AI generation work; screenshot shows JS-defined context actions. |
 | Failed candidate | #272 both attempts: wallet-engine Git LFS test snapshot timeout; no native compile. |
-| Next task | **P0 Engine 2.0**: confirm original AICC plugin-specific catalog and generation on #273; then SSE streaming (target #274). |
+| Next task | **P0 Engine 2.0**: SSE streaming, cancellation and request lifecycle (target #274), following approved roadmap. |
 | Recovery | #263 green and swipe confirmed, media completeness issue open. #260 earlier broadly user-confirmed baseline; original port/telegram-13.2 unchanged. |
 
 ## #252 corrections retained in #253
@@ -330,3 +330,8 @@ CI run [#272](https://github.com/sviridovski/Telegram-iOS/actions/runs/457188231
 ## #273 green; partial Network Engine device verification (2026-11-26)
 
 CI [#273](https://github.com/sviridovski/Telegram-iOS/actions/runs/45730780334) completed success, 32m24s wall, source e3b9b0796a7b34d1c844285f02e73fa924931997. User installed #273. Screenshots show native fallback catalog initially missing its own API key, then successful catalog update at 04:26 local, DeepSeek-V4.1-Flash (deepseek-flash, image/text) and DeepSeek-V4-Pro (deepseek-v4-pro, text), both context 1048576 as returned/displayed by API. Native fallback floating button switched off; original plugin button remains visible. The original AICC 2.1.8 settings show its own saved Keychain credential and two JS-defined model options. Source confirms independent native config keyed by account, plugin credential keyed by account + plugin UUID, and native fallback only when no eligible plugin registration and fallback enabled. Original JS has hardcoded model options and normalization, so selecting a model or disabling button in native fallback does not modify plugin settings. This is expected separation, but UI labels are confusing. Explain using Plugins > AI Командный центр 2.1.8 > Каталог моделей DeepSeek (plugin-specific catalog) and Показывать кнопку в чате, and plugin's own model setting for actual generation. Do not request duplicate key if already saved in plugin, do not merge secrets or force overriding JS settings. Proposed later UI clarification: label native assistant as reserve, emphasize plugin-specific catalog and upgrade original JS to dynamic model selector in AICC 3.0. No source changes or new CI triggered for this checkpoint. Native live model discovery confirmed; plugin-specific catalog refresh and generation regression on #273 not yet explicitly reported; streaming stage awaits these checks. Image modality metadata does not establish image-input support in current text-only broker. No changes to SQLite/Ghost/Collector/Live Bridge.
+
+
+## #273 accepted — Network Engine checkpoint (2026-11-26)
+
+User replied that everything works after being asked to check the imported AICC 2.1.8 plugin's own catalog and ordinary AI generation. Treat both as user-reported successful, not independently instrumented. Screenshot additionally shows seven plugin-defined message context actions: reply, translate, manipulation check, scam check, explain simply, communication profile, clear draft. This confirms registration/display of these actions, not individual execution of all seven. CI #273 success at e3b9b0796a7b34d1c844285f02e73fa924931997, 32m24s wall; #273 becomes current green/device-accepted baseline for tested flows. Next P0 stage: SSE/Streaming Engine (target #274), including bounded incremental parsing, cancellation, request/context isolation, foreground-only execution and backward-compatible nonstreaming API. Preserve original AICC JS until later plugin upgrade; a streaming-capable test plugin can validate the new API. Native reserve labeling remains a later UI clarification. No application changes or build triggered for this documentation checkpoint. Keep remaining lifecycle, error-cache, permissions and individual menu-action regression tests in the acceptance matrix.

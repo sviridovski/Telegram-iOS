@@ -220,3 +220,7 @@ Scoped native route dispatcher, sanitized provider metadata, key-scoped cache, e
 ## #273 — native fallback versus JS plugin settings
 
 Native reserve assistant and imported plugins have independent credentials and settings. Native configuration is keyed by account; plugin credentials are keyed by account and plugin UUID. Plugin UI/commands are JS-owned; the generic catalog does not overwrite legacy JS model choices. Native button switch does not disable plugin registrations. See CURRENT_STATUS for partial device verification.
+
+
+## #273 accepted checkpoint
+Network Engine and plugin generation accepted by user; JS-defined message actions visible on device. Next stage: SSE, maintaining native reserve/plugin separation and scoped permissions.
