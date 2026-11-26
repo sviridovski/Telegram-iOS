@@ -165,8 +165,24 @@ jobs:
           set -euo pipefail
           # Preserve full ROOT history for the existing build number.
           # Dependencies need their exact pinned revisions, not their histories.
-          if ! git submodule update --init --recursive --depth 1 --jobs 4; then
-            git submodule update --init --recursive --jobs 4
+          # Only example-app visual test baselines are excluded from LFS hydration.
+          lfs_exclude='examples/swift/WalletEngineAppUITests/Snapshots/**/*.png,examples/web/e2e/scenarios/snapshots/**/*.png'
+          checkout_pinned() {
+            git -c "lfs.fetchexclude=$lfs_exclude" submodule update --init --recursive --checkout --jobs 4 "$@"
+          }
+          if ! checkout_pinned --depth 1; then
+            # Fresh CI checkout only: force replaces files from partial failed checkout.
+            sleep 5
+            if ! checkout_pinned --force; then
+              sleep 15
+              checkout_pinned --force
+            fi
+          fi
+          status=$(git submodule status --recursive)
+          printf '%s\n' "$status"
+          if printf '%s\n' "$status" | grep -Eq '^[-+U]'; then
+            echo '::error::A submodule is missing or not at its pinned revision.'
+            exit 1
           fi
 
       - name: Select project Xcode
