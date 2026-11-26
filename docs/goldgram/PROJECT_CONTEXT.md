@@ -254,3 +254,7 @@ Extend only the existing foreground snapshot boundary: text history is explicitl
 ## #278 candidate — separate read-only context and writable composer
 
 The plugin host may run foreground explicit actions in eligible ordinary read-only cloud chats; actual composer writes/native fallback and passive lifecycle retain writable-chat gate. Read-only draft proposals are local output only. Ordinary long-lived group/channel auto-delete text may enter only explicitly selected plugin callback after native per-action warning/consent and expiry checks; visible history, media and passive callbacks still exclude TTL. No secret/protected/ephemeral expansion. See CURRENT_STATUS/DECISIONS_LOG for test evidence and limits.
+
+## #279 candidate — scoped discussion-root access and TTL consent preference
+
+Native confirmation policy adds a backward-compatible optional per-plugin TTL warning opt-out, explicit consent once, same eligible selected ordinary text only, current grants/action/account checks and existing reset behavior. Linked-discussion selected-message access admits the exact available current thread channelMessageId/effectiveMessageId, not arbitrary foreign peer IDs. Selected text with webpage preview is treated as text only. Existing protected/secret/ephemeral exclusions, history and composer boundaries remain intact. See CURRENT_STATUS/DECISIONS_LOG for limits and acceptance.

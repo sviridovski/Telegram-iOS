@@ -114,3 +114,10 @@ Following the prior 1/1 screenshot, user confirmed all works after being asked t
 
 ### #278 target — context menu regression before GoldAPI
 [CI #278](https://github.com/sviridovski/Telegram-iOS/actions/runs/45803588004), source db6e30beea52703503994cc571272048803942b5. Separate read-only chat from writable composer, selected ordinary group TTL text with explicit native confirmation. Preserve private/protected/ephemeral boundaries. Verify device before resuming GoldAPI stage.
+
+## #278 CI and partial device checkpoint (2026-11-26)
+
+[CI #278](https://github.com/sviridovski/Telegram-iOS/actions/runs/45803588004) succeeded (all three jobs; IPA artifact 15111380378 unexpired when checked); wall time 36m54s, source `db6e30beea52703503994cc571272048803942b5`. User reports installing and shows the new selected TTL text consent alert in a group, confirming that the action is now accessible there. Requests an independent on/off toggle for this alert and reports missing plugin menu on the original channel post within its comments thread. No full acceptance of all channel/group or generation flows yet. Screenshots are evidence but not published.
+
+### #279 — finish context-menu fixes before GoldAPI
+[CI #279](https://github.com/sviridovski/Telegram-iOS/actions/runs/45811725164), source 0d047b339d9521f4c82b27635c98286bbb35ab2a. Per-plugin TTL warning toggle and exact current linked-discussion root ID; selected webpage preview text only. Device acceptance required before GoldAPI.
