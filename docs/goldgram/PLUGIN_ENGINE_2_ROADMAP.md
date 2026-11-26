@@ -89,3 +89,7 @@ User requested independent on/off controls for new features. Scoped opt-in SSE, 
 
 ### #274 accepted — Streaming Engine
 CI green and user reports working streaming generation on device. Individual toggles, cancellation, partial answer and negative paths remain in regression matrix. Next extended UI Engine (#275 target); preserve user-controlled optional features and JS-owned settings. No new source build for this checkpoint.
+
+
+### #275 candidate — configurable UI Engine
+Native switches, numeric editors, searchable selections, optional grouped/settings schema and read-only UI, per-plugin action/button visibility/title, enhanced UI switch, explicit schema re-render and bundled UI test. [CI #275](https://github.com/sviridovski/Telegram-iOS/actions/runs/45751521153) in_progress. #274 fallback. Full UIKit/device verification and remaining advanced UI scope pending. Next P0 Event Bus after acceptance.

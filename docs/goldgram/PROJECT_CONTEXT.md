@@ -233,3 +233,8 @@ Native bounded SSE parser/delegate, per-plugin streamingOptions, local optional 
 
 ## #274 accepted checkpoint
 Streaming transport accepted for the tested on-device generation flow; optional per-plugin controls remain an architectural requirement for new features. Next P0: extended declarative UI Engine. See CURRENT_STATUS and DECISIONS_LOG for evidence and remaining regression checks.
+
+
+## #275 candidate — declarative plugin UI
+
+Native controls and validated JS-owned schema, optional UI preferences scoped by account/plugin, explicit re-render and action filtering. No new permissions or storage database; see CURRENT_STATUS and DECISIONS_LOG for limits and test gates.
