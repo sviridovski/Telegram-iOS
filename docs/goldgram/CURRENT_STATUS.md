@@ -1,6 +1,6 @@
 # CURRENT_STATUS — verified checkpoint
 
-  > **2026-11-26 local user date — #275 CI green; #274 device-accepted; #275 device acceptance pending.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
+  > **2026-11-26 local user date — #275 CI green and device-accepted; #276 Event Bus/lifecycle next.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
 
 ## P0 development priority (user-approved 2026-11-25)
 
@@ -15,10 +15,10 @@
 | Feature branch | `gold-next-243-author-search` |
 | HEAD | `1699a18cbf304a3884f8b8a538cc8edfd0915f99` (#275 CI green), direct parent #274 |
 | Last green CI | [#275](https://github.com/sviridovski/Telegram-iOS/actions/runs/45751521153), success, 20m06s wall |
-| Last installed | #274 — user confirms streaming generation works excellently; individual controls and negative-path tests not separately confirmed. |
+| Last installed | #275 — user confirms UI controls/context menu and button editing work; other tested functions also reported working. |
 | Failed candidate | #272 both attempts: wallet-engine Git LFS test snapshot timeout; no native compile. |
-| Next task | **P0 Engine 2.0**: verify #275 on-device native controls, dynamic settings and visibility; then Event Bus/lifecycle (target #276). |
-| Recovery | #263 green and swipe confirmed, media completeness issue open. #260 earlier broadly user-confirmed baseline; original port/telegram-13.2 unchanged. |
+| Next task | **P0 Engine 2.0**: Event Bus/lifecycle (target #276); #275 device acceptance confirmed. |
+| Recovery | #275 green/device-accepted current baseline; #274 prior streaming checkpoint. Earlier #263 navigation checkpoint and older archive/media limitations remain historical. |
 
 ## #252 corrections retained in #253
 
@@ -369,3 +369,7 @@ User approved development of #275 after device acceptance of streaming in #274. 
 
 - [CI #275](https://github.com/sviridovski/Telegram-iOS/actions/runs/45751521153) completed successfully at 04:11:19 UTC, attempt 1, source `1699a18cbf304a3884f8b8a538cc8edfd0915f99`. Verified HEAD of `gold-next-243-author-search` matches. All three jobs (native, mx, build) success; IPA artifact 15086731319 present, not expired at check. Wall time 20m06s vs #274 36m10s; native cache restore/save and Mx validation steps succeeded, exact cache hit rate and cause of improvement not established in this check. Do not treat a single faster run as a guaranteed speedup.
 - Latest green CI is #275; latest device-accepted baseline remains #274 until the user confirms #275 UI tests. Follow the candidate acceptance checklist above. Next P0 is Event Bus/lifecycle (target #276) only after device acceptance. No source changes, architecture changes, or workflow dispatch for this checkpoint.
+
+## #275 accepted — extended UI Engine checkpoint (2026-11-26)
+
+User reports #275 works very well, sliders change the context menu, button editing works, and other tested functions work. This is user-reported device acceptance of the tested UI flows, not a separately instrumented pass of every acceptance-matrix case. CI [#275](https://github.com/sviridovski/Telegram-iOS/actions/runs/45751521153) remains green (all three jobs; 20m06s wall), feature HEAD `1699a18cbf304a3884f8b8a538cc8edfd0915f99`. #275 is now the current green/device-accepted recovery baseline. Remaining individual persistence, isolation, failure and regression tests stay in the matrix. Next P0 stage: Event Bus/lifecycle (target #276), typed scoped events, subscriptions/once/off and command registration, teardown and bounded disposable execution; exact implementation subject to source review. Preserve plugin-owned UI, optional controls, privacy, SQLite, Ghost, Collector, Live Bridge and cache/test configuration. No application code changes or new build for this checkpoint.
