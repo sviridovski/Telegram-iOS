@@ -344,7 +344,7 @@ with tempfile.TemporaryDirectory() as tmp:
 assert "connect-src 'none'" in source
 assert ".nonPersistent()" in source and "worker.terminate()" in source
 assert "startAccessingSecurityScopedResource" in source
-assert "current.previousCode = current.code" in source
+assert "next.previousCode = current.code" in source
 assert "GoldgramPluginManifest.supported" in source
 
 assert 'base.network=Object.freeze' in source
@@ -488,3 +488,49 @@ print("Goldgram #285 native document fixtures passed")
         subprocess.run(["swiftc",str(p/"main.swift"),"-o",str(p/"reader-test")],check=True,timeout=90)
         subprocess.run([str(p/"reader-test"),str(p)],check=True,timeout=30)
     subprocess.run(["swiftc","-frontend","-parse",str(root/"submodules/ChatListUI/Sources/GoldgramPluginDocuments.swift")],check=True,timeout=30)
+
+
+# Compile the actual native manifest/update policy with Foundation-only record stubs.
+# No UIKit, no WebKit, no device storage or Keychain access in this test.
+if sys.platform == "darwin":
+    manifest = source.split("private struct GoldgramPluginManifest {",1)[1].split("private struct GoldgramPluginConfirmationPolicy",1)[0]
+    rules = source.split("private enum GoldgramPluginUpdate {",1)[1].split("private struct GoldgramPluginState",1)[0]
+    stub = r'''
+private struct GoldgramPluginRecord {
+    var id = UUID(); var code: String
+    var enabled = true; var grants = ["storage"]
+    var settings = ["label":"test"]; var storage = ["count":"7"]; var fileData: [String:String]? = ["note.txt":"text"]
+    var settingsSchema: Data? = Data(); var floatingTitle: String? = "old"; var contextActions: [[String:String]]? = []
+    var confirmationPolicy: Bool? = true; var lifecycleEnabled: Bool? = true; var lifecycleSubscriptions: [String]? = ["chat.opened"]
+}
+'''
+    checks = r'''
+func check(_ condition: Bool, _ label: String) { if !condition { fatalError(label) } }
+func script(_ version: String, _ name: String = "Test", _ author: String = "Owner", _ more: String = "") -> String {
+    "// @name \(name)\n// @author \(author)\n// @version \(version)\n\(more)\nconst x = 1;"
+}
+private let old = GoldgramPluginManifest(script("1.9"))
+func valid(_ next: String) -> Bool { GoldgramPluginUpdate.validate(old, GoldgramPluginManifest(next)) == nil }
+check(valid(script("1.10.0")), "numeric comparison")
+check(!valid(script("1.9.0")), "equal version")
+check(!valid(script("1.8")), "downgrade")
+check(!valid(script("2.0-beta")), "unsupported version")
+check(!valid(script("2.0","Other")), "name mismatch")
+check(!valid(script("2.0","Test","Other")), "author mismatch")
+check(!valid(script("2.0","Test","Owner","// @requiresGoldAPI 9.0")), "future API")
+check(!valid(script("2.0","Test","Owner","// @permission.unknown required")), "unsupported grant")
+check(valid(script("2.0","Test","Owner","// @permission.clipboard optional\n// @requiresGoldAPI 1.3.0")), "supported addition")
+private let current = GoldgramPluginRecord(code: script("1.9"))
+private let next = GoldgramPluginUpdate.replacement(current,code:script("2.0"))
+check(next.id == current.id && next.settings == current.settings && next.storage == current.storage && next.fileData == current.fileData, "preserved data")
+check(!next.enabled && next.grants.isEmpty && next.settingsSchema == nil && next.floatingTitle == nil && next.contextActions == nil && next.confirmationPolicy == nil && next.lifecycleSubscriptions == nil && next.lifecycleEnabled == nil, "reset execution state")
+check(next.previousCode == current.code, "rollback code")
+private let reverted = GoldgramPluginUpdate.replacement(next,code:current.code)
+check(reverted.code == current.code && reverted.previousCode == next.code && reverted.id == current.id, "rollback and redo")
+print("Goldgram native plugin update policy passed (13 checks)")
+'''
+    with tempfile.TemporaryDirectory() as tmp:
+        p = pathlib.Path(tmp)
+        (p/"main.swift").write_text("import Foundation\nprivate struct GoldgramPluginManifest {"+manifest+stub+"\nprivate enum GoldgramPluginUpdate {"+rules+checks)
+        subprocess.run(["swiftc",str(p/"main.swift"),"-o",str(p/"update-test")],check=True,timeout=90)
+        subprocess.run([str(p/"update-test")],check=True,timeout=30)

@@ -11,6 +11,8 @@ private struct GoldgramPluginManifest {
     let name: String
     let version: String
     let author: String
+    let explicitIdentity: Bool
+    let minimumGoldAPI: String?
     let required: Set<String>
     let optional: Set<String>
 
@@ -36,6 +38,8 @@ private struct GoldgramPluginManifest {
         name = String((fields["name"] ?? "Без названия").prefix(100))
         version = String((fields["version"] ?? "1.0").prefix(40))
         author = String((fields["author"] ?? "").prefix(100))
+        explicitIdentity = !(fields["name"] ?? "").isEmpty && (fields["name"] ?? "").count <= 100 && !(fields["version"] ?? "").isEmpty && (fields["version"] ?? "").count <= 40 && (fields["author"] ?? "").count <= 100
+        minimumGoldAPI = fields["requiresGoldAPI"]
         self.required = required
         self.optional = optional.subtracting(required)
     }
@@ -106,6 +110,51 @@ private struct GoldgramPluginRecord: Codable {
     // Bounded logical files in the existing account/plugin record; no filesystem bridge.
     var fileData: [String: String]?
     var manifest: GoldgramPluginManifest { GoldgramPluginManifest(code) }
+}
+
+// Explicit update of a selected local plugin; never infer identity from a file name.
+private enum GoldgramPluginUpdate {
+    static let hostVersion = "1.3.0"
+    static func version(_ value: String) -> [Int]? {
+        let parts = value.split(separator: ".", omittingEmptySubsequences: false)
+        guard (1...3).contains(parts.count) else { return nil }
+        var numbers: [Int] = []
+        for part in parts {
+            guard !part.isEmpty, part.count <= 6,
+                  part.utf8.allSatisfy({ (48...57).contains($0) }),
+                  let number = Int(part) else { return nil }
+            numbers.append(number)
+        }
+        return numbers + Array(repeating: 0, count: 3 - numbers.count)
+    }
+    static func compatibility(_ manifest: GoldgramPluginManifest) -> String? {
+        let unsupported = manifest.required.subtracting(GoldgramPluginManifest.supported)
+        if !unsupported.isEmpty { return "Не поддерживаются обязательные разрешения: " + unsupported.sorted().joined(separator: ", ") }
+        if let minimum = manifest.minimumGoldAPI {
+            guard let requested = version(minimum), let available = version(hostVersion),
+                  !available.lexicographicallyPrecedes(requested) else { return "Требуется совместимый GoldAPI: " + String(minimum.prefix(40)) }
+        }
+        return nil
+    }
+    static func validate(_ old: GoldgramPluginManifest, _ new: GoldgramPluginManifest) -> String? {
+        guard old.explicitIdentity, new.explicitIdentity, old.name == new.name, old.author == new.author else {
+            return "Имя и автор должны совпадать с установленным плагином; нужны явные @name и @version."
+        }
+        guard let before = version(old.version), let after = version(new.version), before.lexicographicallyPrecedes(after) else {
+            return "Нужна более новая числовая версия (например, 1.2.0). Для ручных изменений используйте редактор."
+        }
+        return compatibility(new)
+    }
+    static func replacement(_ current: GoldgramPluginRecord, code: String) -> GoldgramPluginRecord {
+        var next = current
+        next.previousCode = current.code; next.code = code
+        // Keep UUID, settings, storage, logical files, UI preferences and Keychain namespace.
+        // Never carry executable registrations, grants or consent across code changes.
+        next.enabled = false; next.grants = []; next.settingsSchema = nil
+        next.floatingTitle = nil; next.contextActions = nil; next.confirmationPolicy = nil
+        next.lifecycleEnabled = nil; next.lifecycleSubscriptions = nil
+        return next
+    }
 }
 
 private struct GoldgramPluginState: Codable {
@@ -384,6 +433,7 @@ private final class GoldgramPluginRun: NSObject, WKNavigationDelegate, WKScriptM
     static func reserve(account: String, id: UUID) -> String? {
         slots.reserve(account: account, id: id)
     }
+    static func releaseUpdateLease(_ lease: String) { slots.release(lease) }
 
     init(lease: String, host: UIView, record: GoldgramPluginRecord, event: String, key: String?, value: Any?, account: String = "", presenter: UIViewController? = nil, context: [String: Any] = [:], valid: @escaping () -> Bool = { true }, completion: @escaping ([String: Any]?, String?) -> Void) {
         self.lease = lease; self.valid = valid
@@ -967,7 +1017,7 @@ final class GoldgramPluginManager: UITableViewController, UIDocumentPickerDelega
     override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
         section == 0 ? (store.failure ?? "GGAPI: открытый чат и локальные настройки; подтверждения управляются для каждого плагина. Не все методы Ghostgram поддерживаются.") : "Импортируйте только доверенный код. Не вводите API-ключи в обычные настройки."
     }
-    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? (store.isCurrent() ? store.state.plugins.count : 0) : (section == 1 ? 13 : 1) }
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? (store.isCurrent() ? store.state.plugins.count : 0) : (section == 1 ? 14 : 1) }
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
         if indexPath.section == 0 {
@@ -980,7 +1030,7 @@ final class GoldgramPluginManager: UITableViewController, UIDocumentPickerDelega
             cell.detailTextLabel?.text = "DeepSeek · промпт и плавающая кнопка"
             cell.imageView?.image = UIImage(systemName: "sparkles")
         } else {
-            cell.textLabel?.text = ["Вставить JavaScript", "Импортировать .js из файлов", "Установить тестовый плагин", "Безопасный режим", "Подтверждения плагинов", "Установить тесты многоплагинности", "Установить тест интерфейса", "Установить тест событий", "Установить тест GGAPI", "Установить тест GoldAPI", "Установить тест озвучивания", "Установить / обновить тест избранного и контактов", "Установить тест поиска и документов"][indexPath.row]
+            cell.textLabel?.text = ["Вставить JavaScript", "Импортировать .js из файлов", "Установить тестовый плагин", "Безопасный режим", "Подтверждения плагинов", "Установить тесты многоплагинности", "Установить тест интерфейса", "Установить тест событий", "Установить тест GGAPI", "Установить тест GoldAPI", "Установить тест озвучивания", "Установить / обновить тест избранного и контактов", "Установить тест поиска и документов", "Установить тест обновления плагина"][indexPath.row]
             if indexPath.row == 3 { cell.detailTextLabel?.text = store.state.safe ? "Включён — выполнение заблокировано" : "Выключен" }
             if indexPath.row == 4 { cell.detailTextLabel?.text = "Запросы к сервисам и вставка ответа" }
         }
@@ -1050,6 +1100,10 @@ final class GoldgramPluginManager: UITableViewController, UIDocumentPickerDelega
         case 12:
             store.refresh()
             if !store.state.plugins.contains(where: { $0.code == Self.searchDocumentsExample }) && !install(Self.searchDocumentsExample) { notice("Не удалось установить тест поиска и документов.") }
+        case 13:
+            store.refresh()
+            if store.state.plugins.contains(where: { $0.code == Self.updateExampleV1 || $0.code == Self.updateExampleV2 }) { notice("Тест обновления уже установлен.") }
+            else if !install(Self.updateExampleV1) { notice("Не удалось установить тест обновления.") }
         default:
             store.refresh()
             var next = store.state; next.safe.toggle()
@@ -1073,6 +1127,24 @@ final class GoldgramPluginManager: UITableViewController, UIDocumentPickerDelega
         tableView.reloadData(); return result
     }
     private func notice(_ text: String) { showPluginError(text) }
+    static let updateExampleV1 = #"""
+// @name Goldgram Update Test
+// @author Goldgram
+// @version 1.0
+// @requiresGoldAPI 1.3.0
+// @permission.settings.read required
+// @permission.events required
+// @permission.storage required
+// @permission.ui.mutate required
+GGAPI.settings.addSection({title:"Тест обновления",items:[{type:"text",key:"label",title:"Метка",default:"Goldgram"},{type:"button",key:"increment",title:"Увеличить счётчик"},{type:"button",key:"inspect",title:"Показать данные"}]});
+GGAPI.events.on("settings.action",p=>{
+  if(p.key==="increment"){GGAPI.storage.set("count",Number(GGAPI.storage.get("count")||0)+1);GGAPI.files.writeText("update-test.txt","saved");}
+  if(p.key==="inspect"||p.key==="increment")GGAPI.ui.showSheet({title:"Update Test 1.0",text:GGAPI.settings.getPlugin("label","Goldgram")+" · "+Number(GGAPI.storage.get("count")||0)+" · "+(GGAPI.files.readText("update-test.txt")||"empty")});
+});
+"""#
+    static let updateExampleV2 = updateExampleV1
+        .replacingOccurrences(of: "// @version 1.0", with: "// @version 2.0\n// @permission.clipboard optional")
+        .replacingOccurrences(of: "Update Test 1.0", with: "Update Test 2.0")
     static let multiExamples: [String] = ["A", "B"].map { suffix in
         """
         // @name Goldgram Test \(suffix)
@@ -1750,7 +1822,7 @@ private final class GoldgramPluginNumberScreen: UIViewController {
     }
 }
 
-private final class GoldgramPluginDetail: UITableViewController {
+private final class GoldgramPluginDetail: UITableViewController, UIDocumentPickerDelegate {
     private let store: GoldgramPluginStore
     private let id: UUID
     private let account: String
@@ -1759,6 +1831,7 @@ private final class GoldgramPluginDetail: UITableViewController {
     private var collapsedGroups = Set<String>()
     private var logs: [String] = []
     private var status = "Не запускался"
+    private var updateBaseCode: String?
     init(store: GoldgramPluginStore, id: UUID, account: String) { self.store = store; self.id = id; self.account = account; super.init(style: .insetGrouped) }
     required init?(coder: NSCoder) { return nil }
     override func viewDidLoad() {
@@ -1780,7 +1853,7 @@ private final class GoldgramPluginDetail: UITableViewController {
     private var enhanced: Bool { store.record(id)?.uiOptions?.enhanced ?? true }
     private func group(_ section: Int) -> String? { sections[section-1]["group"] as? String }
     private func groupCollapsed(_ section: Int) -> Bool { enhanced && group(section).map { collapsedGroups.contains($0) } == true }
-    private func managementRow(_ index: Int) -> Int { store.record(id)?.grants.contains("network.fetch") == true ? index : (index == 8 ? 10 : index) }
+    private func managementRow(_ index: Int) -> Int { store.record(id)?.grants.contains("network.fetch") == true ? index : (index >= 8 ? index + 2 : index) }
     override func numberOfSections(in tableView: UITableView) -> Int { 1 + sections.count }
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
         guard section > 0 else { return "Управление" }
@@ -1788,7 +1861,7 @@ private final class GoldgramPluginDetail: UITableViewController {
         return group(section).map { $0 + " / " + title } ?? title
     }
     private func items(_ section: Int) -> [[String: Any]] { sections[section-1]["items"] as? [[String: Any]] ?? [] }
-    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? (store.record(id)?.grants.contains("network.fetch") == true ? 11 : 9) : (enhanced && group(section) != nil ? 1 + (groupCollapsed(section) ? 0 : items(section).count) : items(section).count) }
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? (store.record(id)?.grants.contains("network.fetch") == true ? 12 : 10) : (enhanced && group(section) != nil ? 1 + (groupCollapsed(section) ? 0 : items(section).count) : items(section).count) }
     override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? { section == 0 ? status : sections[section-1]["footer"] as? String }
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
@@ -1796,11 +1869,13 @@ private final class GoldgramPluginDetail: UITableViewController {
         if indexPath.section == 0 {
             let enabled = store.record(id)?.enabled == true
             let row = managementRow(indexPath.row)
-            cell.textLabel?.text = [enabled ? "Выключить" : "Включить и разрешить", run == nil ? "Запустить / обновить настройки" : "Остановить", "Редактор JavaScript", "Разрешения", "Консоль", "Откатить код", "Удалить плагин", "Показывать кнопку в чате", "Каталог моделей DeepSeek", "Потоковая генерация", "Интерфейс плагина"][row]
+            cell.textLabel?.text = [enabled ? "Выключить" : "Включить и разрешить", run == nil ? "Запустить / обновить настройки" : "Остановить", "Редактор JavaScript", "Разрешения", "Консоль", "Откатить код", "Удалить плагин", "Показывать кнопку в чате", "Каталог моделей DeepSeek", "Потоковая генерация", "Интерфейс плагина", "Обновление плагина"][row]
             if row == 7 { cell.detailTextLabel?.text = store.record(id)?.chatButtonHidden == true ? "Выключено" : "Включено" }
             if row == 8 { cell.detailTextLabel?.text = "Доступные модели для ключа этого плагина" }
             if row == 9 { cell.detailTextLabel?.text = store.record(id)?.streamingOptions?.enabled == true ? "Включена" : "Выключена" }
             if row == 10 { cell.detailTextLabel?.text = "Компоненты, кнопка и команды меню" }
+            if row == 11 { cell.detailTextLabel?.text = "Установлена " + (store.record(id)?.manifest.version ?? "—") }
+            if row == 5, let previous = store.record(id)?.previousCode { cell.detailTextLabel?.text = GoldgramPluginManifest(previous).version }
         } else {
             let grouped = enhanced && group(indexPath.section) != nil
             if grouped && indexPath.row == 0 {
@@ -1862,8 +1937,7 @@ private final class GoldgramPluginDetail: UITableViewController {
         switch row {
         case 0:
             if p.enabled { p.enabled = false; p.grants = []; p.floatingTitle = nil; p.contextActions = nil; p.lifecycleSubscriptions = nil; p.confirmationPolicy = nil; if store.put(p) { sections = []; status = "Выключен" }; tableView.reloadData(); return }
-            let unsupported = p.manifest.required.subtracting(GoldgramPluginManifest.supported)
-            guard unsupported.isEmpty else { showPluginError("Не поддерживаются обязательные разрешения: " + unsupported.sorted().joined(separator: ", ")); return }
+            if let error = GoldgramPluginUpdate.compatibility(p.manifest) { showPluginError(error); return }
             let grants = p.manifest.required.union(p.manifest.optional.intersection(GoldgramPluginManifest.supported)).sorted()
             let alert = UIAlertController(title: "Разрешить выполнение плагина?", message: (grants.isEmpty ? "Без нативных разрешений" : grants.joined(separator: "\n")) + "\nТолько открытый разрешённый чат, локальный черновик и подтверждённый запрос к DeepSeek. Без автоотправки и доступа к секретам.", preferredStyle: .alert)
             alert.addAction(UIAlertAction(title: "Разрешить", style: .default) { [weak self] _ in
@@ -1877,17 +1951,17 @@ private final class GoldgramPluginDetail: UITableViewController {
         case 2:
             navigationController?.pushViewController(GoldgramPluginEditor(title: "JavaScript", text: p.code) { [weak self] code in
                 guard let self else { return }; self.store.refresh()
-                guard self.store.isCurrent(), var current = self.store.record(self.id), current.code == p.code, !code.isEmpty, code.utf8.count <= GoldgramPluginStore.maxCode else { return }
-                current.previousCode = current.code; current.code = code; current.enabled = false; current.grants = []; current.settingsSchema = nil; current.floatingTitle = nil; current.contextActions = nil; current.confirmationPolicy = nil; current.streamingOptions = nil; current.uiOptions = nil; current.lifecycleEnabled = nil; current.lifecycleSubscriptions = nil
-                if self.store.put(current) { self.sections = []; self.status = "Код обновлён; разрешите заново."; self.title = current.manifest.name; self.navigationController?.popViewController(animated: true); self.tableView.reloadData() }
-                else { (self.navigationController?.topViewController)?.showPluginError("Не удалось сохранить.") }
+                guard self.store.isCurrent(), let current = self.store.record(self.id), current.code == p.code else { return }
+                if code == current.code { self.navigationController?.popViewController(animated: true); return }
+                if self.applyReplacement(code, expected: current.code, editor: true) { self.navigationController?.popViewController(animated: true) }
             }, animated: true)
         case 3: showPluginError("Запрошено: " + p.manifest.required.sorted().joined(separator: ", ") + "\nДополнительно: " + p.manifest.optional.sorted().joined(separator: ", ") + "\nРазрешено: " + p.grants.joined(separator: ", "))
         case 4: showPluginError(logs.isEmpty ? "Нет записей." : logs.joined(separator: "\n"))
         case 5:
             guard let previous = p.previousCode else { showPluginError("Нет предыдущей версии."); return }
-            p.previousCode = p.code; p.code = previous; p.enabled = false; p.grants = []; p.settingsSchema = nil; p.floatingTitle = nil; p.contextActions = nil; p.confirmationPolicy = nil; p.streamingOptions = nil; p.uiOptions = nil; p.lifecycleEnabled = nil; p.lifecycleSubscriptions = nil
-            if store.put(p) { sections = []; status = "Код восстановлен; разрешите заново."; title = p.manifest.name; tableView.reloadData() }
+            confirmReplacement(previous, expected: p.code, rollback: true)
+        case 11:
+            showUpdateOptions(p)
         case 10:
             guard p.enabled, !store.state.safe else { return }
             navigationController?.pushViewController(GoldgramPluginUISettings(store:store,id:id),animated:true)
@@ -1910,6 +1984,94 @@ private final class GoldgramPluginDetail: UITableViewController {
             })
             alert.addAction(UIAlertAction(title: "Отмена", style: .cancel)); present(alert, animated: true)
         }
+    }
+    private func showUpdateOptions(_ record: GoldgramPluginRecord) {
+        let alert = UIAlertController(title: "Обновление · " + record.manifest.name, message: "Установлена версия " + record.manifest.version + "\nВыберите доверенный локальный JS. Автоматической загрузки нет.", preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Выбрать .js из файлов", style: .default) { [weak self] _ in
+            guard let self else { return }
+            self.updateBaseCode = record.code
+            let picker = UIDocumentPickerViewController(forOpeningContentTypes: [UTType(filenameExtension: "js") ?? .plainText], asCopy: true)
+            picker.delegate = self; picker.allowsMultipleSelection = false
+            self.present(picker, animated: true)
+        })
+        alert.addAction(UIAlertAction(title: "Вставить новый JavaScript", style: .default) { [weak self] _ in
+            guard let self else { return }
+            let editor = GoldgramPluginEditor(title: "Новая версия", text: "") { [weak self] code in
+                guard let self else { return }
+                if let error = self.updateError(code, expected: record.code) { self.navigationController?.topViewController?.showPluginError(error); return }
+                self.navigationController?.popViewController(animated: false)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self = self] in
+                    self?.confirmReplacement(code, expected: record.code)
+                }
+            }
+            self.navigationController?.pushViewController(editor, animated: true)
+        })
+        if record.code == GoldgramPluginManager.updateExampleV1 {
+            alert.addAction(UIAlertAction(title: "Тест: обновить до 2.0", style: .default) { [weak self] _ in
+                self?.confirmReplacement(GoldgramPluginManager.updateExampleV2, expected: record.code)
+            })
+        }
+        alert.addAction(UIAlertAction(title: "Отмена", style: .cancel))
+        present(alert, animated: true)
+    }
+    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) { updateBaseCode = nil }
+    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        let expected = updateBaseCode; updateBaseCode = nil
+        guard store.isCurrent(), let expected, let url = urls.first, url.pathExtension.lowercased() == "js" else { showPluginError("Выберите файл .js."); return }
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        do {
+            let file = try FileHandle(forReadingFrom: url); defer { try? file.close() }
+            let data = try file.read(upToCount: GoldgramPluginStore.maxCode + 1) ?? Data()
+            guard data.count <= GoldgramPluginStore.maxCode, let code = String(data: data, encoding: .utf8) else { showPluginError("Нужен UTF-8 .js до 512 КБ."); return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                self?.confirmReplacement(code, expected: expected)
+            }
+        } catch { showPluginError("Не удалось прочитать файл.") }
+    }
+    private func updateError(_ code: String, expected: String) -> String? {
+        store.refresh()
+        guard store.isCurrent(), store.failure == nil, let current = store.record(id), current.code == expected else { return "Плагин или аккаунт изменился." }
+        guard !code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, code.utf8.count <= GoldgramPluginStore.maxCode else { return "Нужен непустой JS до 512 КБ." }
+        return GoldgramPluginUpdate.validate(current.manifest, GoldgramPluginManifest(code))
+    }
+    private func confirmReplacement(_ code: String, expected: String, rollback: Bool = false) {
+        guard viewIfLoaded?.window != nil, presentedViewController == nil, UIApplication.shared.applicationState == .active else { return }
+        if !rollback, let error = updateError(code, expected: expected) { showPluginError(error); return }
+        store.refresh()
+        guard store.isCurrent(), store.failure == nil, run == nil, let current = store.record(id), current.code == expected,
+              !rollback || current.previousCode == code else { showPluginError("Плагин изменился или занят."); return }
+        let old = current.manifest, new = GoldgramPluginManifest(code)
+        let newPermissions = new.required.union(new.optional).subtracting(Set(current.grants))
+        let message = old.version + " → " + new.version + "\nНовые или ранее не выданные разрешения: " + (newPermissions.isEmpty ? "нет" : newPermissions.sorted().joined(separator: ", ")) +
+            "\nОбязательные: " + (new.required.isEmpty ? "нет" : new.required.sorted().joined(separator: ", ")) +
+            "\nНастройки, локальные файлы и ключ сохраняются. Плагин будет выключен до повторного разрешения. Откат меняет код, но не восстанавливает прежнее содержимое данных."
+        let alert = UIAlertController(title: rollback ? "Откатить код?" : "Установить обновление?", message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: rollback ? "Откатить" : "Обновить", style: .default) { [weak self] _ in
+            guard let self else { return }
+            if !rollback, let error = self.updateError(code, expected: expected) { self.showPluginError(error); return }
+            self.store.refresh()
+            guard !rollback || self.store.record(self.id)?.previousCode == code else { self.showPluginError("Версия отката изменилась."); return }
+            _ = self.applyReplacement(code, expected: expected)
+        })
+        alert.addAction(UIAlertAction(title: "Отмена", style: .cancel))
+        present(alert, animated: true)
+    }
+    @discardableResult private func applyReplacement(_ code: String, expected: String, editor: Bool = false) -> Bool {
+        let presenter = editor ? (navigationController?.topViewController ?? self) : self
+        store.refresh()
+        guard store.isCurrent(), store.failure == nil, run == nil, UIApplication.shared.applicationState == .active,
+              let current = store.record(id), current.code == expected,
+              !code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, code.utf8.count <= GoldgramPluginStore.maxCode else {
+            presenter.showPluginError("Плагин изменился, занят или неверный код."); return false
+        }
+        if let error = GoldgramPluginUpdate.compatibility(GoldgramPluginManifest(code)) { presenter.showPluginError(error); return false }
+        guard let lease = GoldgramPluginRun.reserve(account: account, id: id) else { presenter.showPluginError("Плагин занят. Повторите после завершения."); return false }
+        defer { GoldgramPluginRun.releaseUpdateLease(lease) }
+        let next = GoldgramPluginUpdate.replacement(current, code: code)
+        guard store.put(next) else { presenter.showPluginError("Не удалось сохранить."); return false }
+        sections = []; logs = []; status = "Код заменён; разрешите заново."; title = next.manifest.name; tableView.reloadData()
+        return true
     }
     private func execute(event: String, key: String? = nil, value: Any? = nil) {
         store.refresh()
