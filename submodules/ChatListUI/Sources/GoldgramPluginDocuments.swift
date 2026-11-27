@@ -174,7 +174,7 @@ final class GoldgramPluginDocumentSession: NSObject, UIDocumentPickerDelegate {
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls:[URL]) {
         guard busy, valid(), let url = urls.first else { finish(["error":"Контекст изменился."]); return }
         picker = nil
-        DispatchQueue.global(qos:.userInitiated).async {
+        DispatchQueue.global(qos:.userInitiated).async { [weak self] in
             let access = url.startAccessingSecurityScopedResource()
             defer { if access { url.stopAccessingSecurityScopedResource() } }
             let answer: [String: Any]
@@ -190,7 +190,7 @@ final class GoldgramPluginDocumentSession: NSObject, UIDocumentPickerDelegate {
             } catch {
                 answer = ["error":"Не удалось прочитать документ. Проверьте формат, пароль и лимит 8 МБ."]
             }
-            DispatchQueue.main.async { [weak self] in
+            DispatchQueue.main.async { [weak self = self] in
                 guard let self, self.busy else { return }
                 guard self.valid(), UIApplication.shared.applicationState == .active else { self.finish(["error":"Контекст изменился."]); return }
                 self.finish(answer)
