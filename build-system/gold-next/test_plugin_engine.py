@@ -12,6 +12,7 @@ speech_sample = source.split('static let speechExample = #"""\n',1)[1].split('\n
 personal_sample = source.split('static let personalExample = #"""\n',1)[1].split('\n"""#',1)[0]
 searchdoc_sample = source.split('static let searchDocumentsExample = #"""\n',1)[1].split('\n"""#',1)[0]
 update_sample = source.split('static let updateExampleV1 = #"""\n',1)[1].split('\n"""#',1)[0]
+diag_sample = source.split('static let diagnosticsExample = #"""\n',1)[1].split('\n"""#',1)[0]
 harness = """
 const assert = require('node:assert/strict');
 let result, requests=[], failModels=false, personalChoice="favorites";
@@ -345,6 +346,14 @@ assert.ok(!result.error);assert.equal(result.output.title,"Update Test 2.0");ass
 await self.onmessage({data:{source:updateV1,grants:updateGrants,event:"settings.action",key:"inspect",...updateData}});
 assert.ok(!result.error);assert.equal(result.output.title,"Update Test 1.0");assert.equal(result.output.text,"persisted · 6 · saved");
 console.log("Goldgram update sample preserves settings/storage/files across version and rollback");
+const diagSample = """ + json.dumps(diag_sample) + """;
+const diagGrants=Array.from(diagSample.matchAll(/^\\/\\/ @permission\\.([^\\s]+) required$/gm),m=>m[1]);
+await self.onmessage({data:{source:diagSample,grants:diagGrants,event:"plugin.start"}});
+assert.ok(!result.error);assert.equal(result.sections[0].items.length,4);
+await self.onmessage({data:{source:diagSample,grants:diagGrants,event:"settings.action",key:"success"}});
+assert.equal(result.output.text,"OK");
+await self.onmessage({data:{source:diagSample,grants:diagGrants,event:"settings.action",key:"error"}});
+assert.ok(result.error);assert.ok(!result.error.includes("synthetic diagnostic test"));
 
 
 
@@ -551,3 +560,45 @@ print("Goldgram native plugin update policy passed (13 checks)")
         (p/"main.swift").write_text("import Foundation\nprivate struct GoldgramPluginManifest {"+manifest+stub+"\nprivate enum GoldgramPluginUpdate {"+rules+checks)
         subprocess.run(["swiftc",str(p/"main.swift"),"-o",str(p/"update-test")],check=True,timeout=90)
         subprocess.run([str(p/"update-test")],check=True,timeout=30)
+
+# Foundation-only diagnostics fixture, identical to the local Swift smoke test.
+if sys.platform == "darwin":
+    diagnostics = source.split("// BEGIN GOLDGRAM_DIAGNOSTICS_V1\n", 1)[1].split("// END GOLDGRAM_DIAGNOSTICS_V1", 1)[0]
+    fixture = r'''
+func check(_ value: Bool, _ label: String) { precondition(value, label) }
+private var run = GoldgramPluginDiagnosticRun(event: "private secret", started: Date(timeIntervalSince1970: 0), uptime: 10)
+run.rpcReceived(); run.rpcFailed(); run.networkStarted()
+run.networkFinished(from: 10, to: 10.25, status: 429, failed: false)
+run.networkFinished(from: 10, to: 10.5, status: 999, failed: true)
+private let entry = run.finish(.timeout, uptime: 11)
+check(entry.event == "other" && entry.milliseconds == 1000 && entry.outcome == .timeout, "typed outcome and event whitelist")
+check(entry.rpcCount == 1 && entry.rpcErrors == 1 && entry.networkAttempts == 1, "counters")
+check(entry.network[0].httpStatus == 429 && entry.network[0].failed && entry.network[0].milliseconds == 250, "HTTP and elapsed")
+check(entry.network[1].httpStatus == nil && entry.network[1].failed, "invalid HTTP")
+check(GoldgramPluginDiagnosticRun.milliseconds(from: 2, to: 1) == 0, "negative uptime")
+check(GoldgramPluginDiagnosticRun.milliseconds(from: 0, to: .infinity) == 0, "nonfinite uptime")
+private var journal = GoldgramPluginDiagnosticJournal()
+for _ in 0..<40 { journal.append(key: "private-account-A", entry: entry) }
+check(journal.entries(key: "private-account-A").count == 32, "per plugin cap")
+journal.append(key: "private-account-B", entry: entry)
+check(journal.entries(key: "private-account-B").count == 1, "isolation")
+private let report = journal.report(key: "private-account-A")
+check(!report.contains("private secret") && !report.contains("private-account-A") && !report.contains("private-account-B"), "no untrusted text or keys")
+check(report.contains("HTTP 429") && report.contains("timeout"), "report")
+journal.clear(key: "private-account-A")
+check(journal.entries(key: "private-account-A").isEmpty && journal.entries(key: "private-account-B").count == 1, "isolated clear")
+for i in 0..<300 { journal.append(key: "key-\(i)", entry: entry) }
+check(journal.entries(key: "key-0").isEmpty && journal.entries(key: "key-299").count == 1, "global cap")
+for _ in 0..<20 { run.networkFinished(from: 10, to: 11, status: 200, failed: false) }
+check(run.finish(.completed, uptime: 11).network.count == 8, "network cap")
+print("Goldgram native diagnostics policy passed (13 checks)")
+'''
+    with tempfile.TemporaryDirectory() as tmp:
+        p = pathlib.Path(tmp)
+        (p/"main.swift").write_text("import Foundation\n"+diagnostics+fixture)
+        subprocess.run(["swiftc",str(p/"main.swift"),"-o",str(p/"diagnostics-test")],check=True,timeout=90)
+        subprocess.run([str(p/"diagnostics-test")],check=True,timeout=30)
+    subprocess.run(["swiftc","-frontend","-parse",str(root/"submodules/ChatListUI/Sources/GoldgramPlugins.swift")],check=True,timeout=30)
+assert "Self.journal.append(key: lease, entry: diagnostics.finish(outcome))" in source
+assert "diagnosticNetworkCallback(callback)" in source
+assert "UIActivityViewController(activityItems: [text]" in source

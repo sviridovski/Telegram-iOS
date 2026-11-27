@@ -411,6 +411,81 @@ private final class GoldgramPluginSpeech {
     }
 }
 
+// BEGIN GOLDGRAM_DIAGNOSTICS_V1
+private enum GoldgramDiagnosticOutcome: String, Codable {
+    case completed, cancelled, timeout, scriptError, invalidResponse, webProcessEnded, launchFailed, contextChanged
+}
+private struct GoldgramDiagnosticNetwork: Codable {
+    let milliseconds: Int
+    let httpStatus: Int?
+    let failed: Bool
+}
+private struct GoldgramDiagnosticEntry: Codable {
+    let started: Date
+    let event: String
+    let outcome: GoldgramDiagnosticOutcome
+    let milliseconds: Int
+    let rpcCount: Int
+    let rpcErrors: Int
+    let networkAttempts: Int
+    let network: [GoldgramDiagnosticNetwork]
+}
+private struct GoldgramPluginDiagnosticRun {
+    private let started: Date
+    private let uptime: TimeInterval
+    private let event: String
+    private var rpcCount = 0
+    private var rpcErrors = 0
+    private var networkAttempts = 0
+    private var network: [GoldgramDiagnosticNetwork] = []
+    init(event: String, started: Date = Date(), uptime: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        self.started = started; self.uptime = uptime
+        self.event = ["plugin.start", "settings.changed", "settings.action", "floating.tap", "context.tap", "chat.opened", "chat.closed"].contains(event) ? event : "other"
+    }
+    static func milliseconds(from: TimeInterval, to: TimeInterval) -> Int {
+        let elapsed = (to - from) * 1000
+        guard elapsed.isFinite else { return 0 }
+        return Int(max(0, min(3_600_000, elapsed.rounded())))
+    }
+    mutating func rpcReceived() { rpcCount = min(10_000, rpcCount + 1) }
+    mutating func rpcFailed() { rpcErrors = min(10_000, rpcErrors + 1) }
+    mutating func networkStarted() { networkAttempts = min(10_000, networkAttempts + 1) }
+    mutating func networkFinished(from: TimeInterval, to: TimeInterval, status: Int?, failed: Bool) {
+        guard network.count < 8 else { return }
+        let http = status.flatMap { (100...599).contains($0) ? $0 : nil }
+        network.append(GoldgramDiagnosticNetwork(milliseconds: Self.milliseconds(from: from, to: to), httpStatus: http, failed: failed || (http.map { $0 >= 400 } ?? false)))
+    }
+    func finish(_ outcome: GoldgramDiagnosticOutcome, uptime: TimeInterval = ProcessInfo.processInfo.systemUptime) -> GoldgramDiagnosticEntry {
+        GoldgramDiagnosticEntry(started: started, event: event, outcome: outcome, milliseconds: Self.milliseconds(from: self.uptime, to: uptime), rpcCount: rpcCount, rpcErrors: rpcErrors, networkAttempts: networkAttempts, network: network)
+    }
+}
+private struct GoldgramPluginDiagnosticJournal {
+    private var rows: [(key: String, entry: GoldgramDiagnosticEntry)] = []
+    mutating func append(key: String, entry: GoldgramDiagnosticEntry) {
+        if rows.lazy.filter({ $0.key == key }).count >= 32, let first = rows.firstIndex(where: { $0.key == key }) { rows.remove(at: first) }
+        rows.append((key: key, entry: entry))
+        if rows.count > 256 { rows.removeFirst(rows.count - 256) }
+    }
+    func entries(key: String) -> [GoldgramDiagnosticEntry] { rows.filter { $0.key == key }.map { $0.entry } }
+    mutating func clear(key: String) { rows.removeAll { $0.key == key } }
+    func report(key: String) -> String {
+        let entries = entries(key: key)
+        let completed = entries.filter { $0.outcome == .completed }.count
+        let average = entries.isEmpty ? 0 : entries.reduce(0) { $0 + $1.milliseconds } / entries.count
+        let formatter = ISO8601DateFormatter()
+        var lines = ["Goldgram Diagnostics 1.0", "Session only; latest retained runs: \(entries.count)", "Worker completed: \(completed); other outcomes: \(entries.count - completed); average: \(average) ms", "Limits: 4 workers; start/change/passive 8 s; interactive up to 300 s; network up to 3 requests per run.", "Network timing includes confirmation and broker processing; no exact CPU/RAM metrics.", "No message contents, keys, URLs, plugin/account identifiers or raw logs."]
+        for entry in entries.reversed() {
+            lines.append("\(formatter.string(from: entry.started)) | \(entry.event) | \(entry.outcome.rawValue) | \(entry.milliseconds) ms | RPC \(entry.rpcCount), errors \(entry.rpcErrors) | network attempts \(entry.networkAttempts)")
+            for sample in entry.network {
+                let status = sample.httpStatus.map { String($0) } ?? "none"
+                lines.append("  network: \(sample.milliseconds) ms; HTTP \(status); failed \(sample.failed)")
+            }
+        }
+        return lines.joined(separator: "\n")
+    }
+}
+// END GOLDGRAM_DIAGNOSTICS_V1
+
 // A disposable WebKit worker, with no document or native objects in the script.
 // A separate WebContent process and a worker termination deadline avoid putting
 // imported loops on the UI thread. CSP denies external resource connections.
@@ -430,6 +505,14 @@ private final class GoldgramPluginRun: NSObject, WKNavigationDelegate, WKScriptM
     private let interactive: Bool
     private let lease: String
     private let valid: () -> Bool
+    private var diagnostics: GoldgramPluginDiagnosticRun
+    private static var journal = GoldgramPluginDiagnosticJournal()
+    static func diagnosticReport(account: String, id: UUID) -> String {
+        journal.report(key: account + ":" + id.uuidString)
+    }
+    static func clearDiagnostics(account: String, id: UUID) {
+        journal.clear(key: account + ":" + id.uuidString)
+    }
     private static var slots = GoldgramPluginExecutionSlots()
     static func reserve(account: String, id: UUID) -> String? {
         slots.reserve(account: account, id: id)
@@ -438,6 +521,7 @@ private final class GoldgramPluginRun: NSObject, WKNavigationDelegate, WKScriptM
 
     init(lease: String, host: UIView, record: GoldgramPluginRecord, event: String, key: String?, value: Any?, account: String = "", presenter: UIViewController? = nil, context: [String: Any] = [:], valid: @escaping () -> Bool = { true }, completion: @escaping ([String: Any]?, String?) -> Void) {
         self.lease = lease; self.valid = valid
+        self.diagnostics = GoldgramPluginDiagnosticRun(event: event)
         grants = Set(record.grants)
         interactive = event == "settings.action" || event == "floating.tap" || event == "context.tap"
         let credential = GoldgramAIConfig(account: account + "." + record.id.uuidString)
@@ -506,7 +590,7 @@ private final class GoldgramPluginRun: NSObject, WKNavigationDelegate, WKScriptM
         web = view
         view.navigationDelegate = self
         let seconds: Double = event == "plugin.start" || event == "settings.changed" ? 8 : (broker == nil ? 8 : 300)
-        let timeout = DispatchWorkItem { [weak self] in self?.finish(nil, "Превышено время выполнения.") }
+        let timeout = DispatchWorkItem { [weak self] in self?.finish(nil, "Превышено время выполнения.", outcome: .timeout) }
         timer = timeout
         DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: timeout)
         view.loadHTMLString(Self.page, baseURL: nil)
@@ -517,10 +601,11 @@ private final class GoldgramPluginRun: NSObject, WKNavigationDelegate, WKScriptM
         if !valid() { cancel() }
     }
     func stopStream() -> Bool { broker?.stopStream() ?? false }
-    func cancel() { finish(nil, "Выполнение остановлено.") }
-    private func finish(_ result: [String: Any]?, _ error: String?) {
+    func cancel() { finish(nil, "Выполнение остановлено.", outcome: .cancelled) }
+    private func finish(_ result: [String: Any]?, _ error: String?, outcome: GoldgramDiagnosticOutcome) {
         guard let done = completion else { return }
         completion = nil
+        Self.journal.append(key: lease, entry: diagnostics.finish(outcome))
         Self.slots.release(lease)
         NotificationCenter.default.removeObserver(self)
         speech?.cancel(); speech = nil
@@ -541,22 +626,23 @@ private final class GoldgramPluginRun: NSObject, WKNavigationDelegate, WKScriptM
         guard webView === web else { return }
         guard valid() else { cancel(); return }
         webView.evaluateJavaScript("window.goldRun(" + payload + ");") { [weak self] _, error in
-            if error != nil { self?.finish(nil, "Не удалось запустить JavaScript.") }
+            if error != nil { self?.finish(nil, "Не удалось запустить JavaScript.", outcome: .launchFailed) }
         }
     }
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         let url = navigationAction.request.url
         decisionHandler(url == nil || url?.absoluteString == "about:blank" ? .allow : .cancel)
     }
-    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { finish(nil, "JavaScript-процесс остановлен.") }
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { finish(nil, "JavaScript-процесс остановлен.", outcome: .webProcessEnded) }
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard valid() else { finish(nil, "Контекст плагина изменился."); return }
+        guard valid() else { finish(nil, "Контекст плагина изменился.", outcome: .contextChanged); return }
         guard message.name == "goldgramResult", message.frameInfo.isMainFrame,
               let raw = message.body as? String, raw.utf8.count <= 256 * 1024,
               let object = try? JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any] else {
-            finish(nil, "Некорректный ответ плагина."); return
+            finish(nil, "Некорректный ответ плагина.", outcome: .invalidResponse); return
         }
         if let rpc = object["rpc"] as? Int {
+            diagnostics.rpcReceived()
             guard interactive, let broker, let method = object["method"] as? String, let args = object["args"] as? [String: Any] else { replyRPC(rpc, result: ["error": "Permission denied"]); return }
             let callback: ([String: Any]) -> Void = { [weak self] response in self?.replyRPC(rpc, result: response) }
             if method == "gold.speech.voices", grants.contains("gold.speech"), let speech {
@@ -593,13 +679,13 @@ private final class GoldgramPluginRun: NSObject, WKNavigationDelegate, WKScriptM
             if method == "network.fetch", grants.contains("network.fetch") {
                 broker.fetch(args, progress: { [weak self] event in
                     if args["progress"] as? Bool == true { self?.replyProgress(rpc, event: event) }
-                }, completion: callback)
+                }, completion: diagnosticNetworkCallback(callback))
             }
             else if method == "gold.ai.complete", grants.contains("gold.ai"), grants.contains("network.fetch"),
                     args["url"] as? String == "https://api.deepseek.com/chat/completions", args["method"] as? String == "POST" {
                 broker.fetch(args, progress: { [weak self] event in
                     if args["progress"] as? Bool == true { self?.replyProgress(rpc, event: event) }
-                }, completion: callback)
+                }, completion: diagnosticNetworkCallback(callback))
             }
             else if method == "ui.select", grants.contains("ui.mutate") { broker.select(args, completion: callback) }
             else if method == "files.pick", grants.contains("storage") { broker.pickJSON(completion: callback) }
@@ -607,16 +693,27 @@ private final class GoldgramPluginRun: NSObject, WKNavigationDelegate, WKScriptM
             else { replyRPC(rpc, result: ["error": "Permission denied"]) }
             return
         }
-        if let error = object["error"] as? String { finish(nil, String(error.prefix(500))) }
-        else { finish(object, nil) }
+        if let error = object["error"] as? String { finish(nil, String(error.prefix(500)), outcome: .scriptError) }
+        else { finish(object, nil, outcome: .completed) }
     }
 
+    private func diagnosticNetworkCallback(_ callback: @escaping ([String: Any]) -> Void) -> ([String: Any]) -> Void {
+        let started = ProcessInfo.processInfo.systemUptime
+        diagnostics.networkStarted()
+        return { [weak self] response in
+            guard let self, self.completion != nil else { return }
+            self.diagnostics.networkFinished(from: started, to: ProcessInfo.processInfo.systemUptime, status: response["status"] as? Int, failed: response["error"] != nil)
+            callback(response)
+        }
+    }
     private func replyProgress(_ id: Int, event: [String: Any]) {
         guard completion != nil, valid(), let data = try? JSONSerialization.data(withJSONObject: ["rpcProgress":id,"event":event]), let json = String(data:data,encoding:.utf8) else { return }
         web?.evaluateJavaScript("window.goldReply(" + json + ");", completionHandler: nil)
     }
     private func replyRPC(_ id: Int, result: [String: Any]) {
-        guard completion != nil, let data = try? JSONSerialization.data(withJSONObject: ["rpcResult": id, "result": result]), let json = String(data: data, encoding: .utf8) else { return }
+        guard completion != nil else { return }
+        if result["error"] != nil { diagnostics.rpcFailed() }
+        guard let data = try? JSONSerialization.data(withJSONObject: ["rpcResult": id, "result": result]), let json = String(data: data, encoding: .utf8) else { return }
         web?.evaluateJavaScript("window.goldReply(" + json + ");", completionHandler: nil)
     }
 
@@ -1018,7 +1115,7 @@ final class GoldgramPluginManager: UITableViewController, UIDocumentPickerDelega
     override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
         section == 0 ? (store.failure ?? "GGAPI: открытый чат и локальные настройки; подтверждения управляются для каждого плагина. Не все методы Ghostgram поддерживаются.") : "Импортируйте только доверенный код. Не вводите API-ключи в обычные настройки."
     }
-    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? (store.isCurrent() ? store.state.plugins.count : 0) : (section == 1 ? 14 : 1) }
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? (store.isCurrent() ? store.state.plugins.count : 0) : (section == 1 ? 15 : 1) }
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
         if indexPath.section == 0 {
@@ -1031,7 +1128,7 @@ final class GoldgramPluginManager: UITableViewController, UIDocumentPickerDelega
             cell.detailTextLabel?.text = "DeepSeek · промпт и плавающая кнопка"
             cell.imageView?.image = UIImage(systemName: "sparkles")
         } else {
-            cell.textLabel?.text = ["Вставить JavaScript", "Импортировать .js из файлов", "Установить тестовый плагин", "Безопасный режим", "Подтверждения плагинов", "Установить тесты многоплагинности", "Установить тест интерфейса", "Установить тест событий", "Установить тест GGAPI", "Установить тест GoldAPI", "Установить тест озвучивания", "Установить / обновить тест избранного и контактов", "Установить тест поиска и документов", "Установить тест обновления плагина"][indexPath.row]
+            cell.textLabel?.text = ["Вставить JavaScript", "Импортировать .js из файлов", "Установить тестовый плагин", "Безопасный режим", "Подтверждения плагинов", "Установить тесты многоплагинности", "Установить тест интерфейса", "Установить тест событий", "Установить тест GGAPI", "Установить тест GoldAPI", "Установить тест озвучивания", "Установить / обновить тест избранного и контактов", "Установить тест поиска и документов", "Установить тест обновления плагина", "Установить тест диагностики"][indexPath.row]
             if indexPath.row == 3 { cell.detailTextLabel?.text = store.state.safe ? "Включён — выполнение заблокировано" : "Выключен" }
             if indexPath.row == 4 { cell.detailTextLabel?.text = "Запросы к сервисам и вставка ответа" }
         }
@@ -1105,6 +1202,9 @@ final class GoldgramPluginManager: UITableViewController, UIDocumentPickerDelega
             store.refresh()
             if store.state.plugins.contains(where: { $0.code == Self.updateExampleV1 || $0.code == Self.updateExampleV2 }) { notice("Тест обновления уже установлен.") }
             else if !install(Self.updateExampleV1) { notice("Не удалось установить тест обновления.") }
+        case 14:
+            store.refresh()
+            if !store.state.plugins.contains(where: { $0.code == Self.diagnosticsExample }) && !install(Self.diagnosticsExample) { notice("Не удалось установить тест диагностики.") }
         default:
             store.refresh()
             var next = store.state; next.safe.toggle()
@@ -1128,6 +1228,25 @@ final class GoldgramPluginManager: UITableViewController, UIDocumentPickerDelega
         tableView.reloadData(); return result
     }
     private func notice(_ text: String) { showPluginError(text) }
+    static let diagnosticsExample = #"""
+// @name Goldgram Diagnostics Test
+// @version 1.0
+// @permission.settings.read required
+// @permission.events required
+// @permission.ui.read required
+GGAPI.settings.addSection({title:"Диагностика",items:[
+  {type:"button",key:"success",title:"Успешное действие"},
+  {type:"button",key:"error",title:"Тестовая ошибка"},
+  {type:"toggle",key:"timeout",title:"Тайм-аут при следующем запуске",default:false},
+  {type:"button",key:"wait",title:"Ожидание для ручной остановки"}
+]});
+GGAPI.events.on("plugin.start",async()=>{if(GGAPI.settings.getPlugin("timeout",false))await new Promise(()=>{});});
+GGAPI.events.on("settings.action",async p=>{
+  if(p.key==="success")GGAPI.ui.showSheet({title:"Diagnostics",text:"OK"});
+  if(p.key==="error")throw Error("synthetic diagnostic test");
+  if(p.key==="wait")await new Promise(()=>{});
+});
+"""#
     static let updateExampleV1 = #"""
 // @name Goldgram Update Test
 // @author Goldgram
@@ -1824,6 +1943,57 @@ private final class GoldgramPluginNumberScreen: UIViewController {
     }
 }
 
+private final class GoldgramPluginDiagnosticsScreen: UIViewController {
+    private let report: () -> String?
+    private let clear: () -> Bool
+    private let output = UITextView()
+    init(report: @escaping () -> String?, clear: @escaping () -> Bool) {
+        self.report = report; self.clear = clear
+        super.init(nibName: nil, bundle: nil)
+    }
+    required init?(coder: NSCoder) { return nil }
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        title = "Диагностика"
+        view.backgroundColor = .systemBackground
+        output.isEditable = false
+        output.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
+        output.backgroundColor = .systemBackground
+        output.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(output)
+        NSLayoutConstraint.activate([output.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            output.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+            output.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            output.trailingAnchor.constraint(equalTo: view.trailingAnchor)])
+        navigationItem.rightBarButtonItems = [
+            UIBarButtonItem(barButtonSystemItem: .action, target: self, action: #selector(shareReport)),
+            UIBarButtonItem(title: "Очистить", style: .plain, target: self, action: #selector(clearReport))
+        ]
+    }
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        reload()
+    }
+    private func reload() {
+        output.text = report() ?? "Плагин или аккаунт недоступен."
+    }
+    @objc private func shareReport() {
+        guard let text = report() else { reload(); return }
+        let activity = UIActivityViewController(activityItems: [text], applicationActivities: nil)
+        activity.popoverPresentationController?.barButtonItem = navigationItem.rightBarButtonItems?.first
+        present(activity, animated: true)
+    }
+    @objc private func clearReport() {
+        let alert = UIAlertController(title: "Очистить диагностику?", message: "Только журнал этого плагина за текущий сеанс. Настройки не изменятся.", preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Очистить", style: .destructive) { [weak self] _ in
+            guard let self else { return }
+            _ = self.clear(); self.reload()
+        })
+        alert.addAction(UIAlertAction(title: "Отмена", style: .cancel))
+        present(alert, animated: true)
+    }
+}
+
 private final class GoldgramPluginDetail: UITableViewController, UIDocumentPickerDelegate {
     private let store: GoldgramPluginStore
     private let id: UUID
@@ -1863,7 +2033,7 @@ private final class GoldgramPluginDetail: UITableViewController, UIDocumentPicke
         return group(section).map { $0 + " / " + title } ?? title
     }
     private func items(_ section: Int) -> [[String: Any]] { sections[section-1]["items"] as? [[String: Any]] ?? [] }
-    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? (store.record(id)?.grants.contains("network.fetch") == true ? 12 : 10) : (enhanced && group(section) != nil ? 1 + (groupCollapsed(section) ? 0 : items(section).count) : items(section).count) }
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? (store.record(id)?.grants.contains("network.fetch") == true ? 13 : 11) : (enhanced && group(section) != nil ? 1 + (groupCollapsed(section) ? 0 : items(section).count) : items(section).count) }
     override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? { section == 0 ? status : sections[section-1]["footer"] as? String }
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
@@ -1871,12 +2041,13 @@ private final class GoldgramPluginDetail: UITableViewController, UIDocumentPicke
         if indexPath.section == 0 {
             let enabled = store.record(id)?.enabled == true
             let row = managementRow(indexPath.row)
-            cell.textLabel?.text = [enabled ? "Выключить" : "Включить и разрешить", run == nil ? "Запустить / обновить настройки" : "Остановить", "Редактор JavaScript", "Разрешения", "Консоль", "Откатить код", "Удалить плагин", "Показывать кнопку в чате", "Каталог моделей DeepSeek", "Потоковая генерация", "Интерфейс плагина", "Обновление плагина"][row]
+            cell.textLabel?.text = [enabled ? "Выключить" : "Включить и разрешить", run == nil ? "Запустить / обновить настройки" : "Остановить", "Редактор JavaScript", "Разрешения", "Консоль", "Откатить код", "Удалить плагин", "Показывать кнопку в чате", "Каталог моделей DeepSeek", "Потоковая генерация", "Интерфейс плагина", "Обновление плагина", "Диагностика"][row]
             if row == 7 { cell.detailTextLabel?.text = store.record(id)?.chatButtonHidden == true ? "Выключено" : "Включено" }
             if row == 8 { cell.detailTextLabel?.text = "Доступные модели для ключа этого плагина" }
             if row == 9 { cell.detailTextLabel?.text = store.record(id)?.streamingOptions?.enabled == true ? "Включена" : "Выключена" }
             if row == 10 { cell.detailTextLabel?.text = "Компоненты, кнопка и команды меню" }
             if row == 11 { cell.detailTextLabel?.text = "Установлена " + (store.record(id)?.manifest.version ?? "—") }
+            if row == 12 { cell.detailTextLabel?.text = "Журнал сеанса, ошибки и время выполнения" }
             if row == 5, let previous = store.record(id)?.previousCode { cell.detailTextLabel?.text = GoldgramPluginManifest(previous).version }
         } else {
             let grouped = enhanced && group(indexPath.section) != nil
@@ -1964,6 +2135,20 @@ private final class GoldgramPluginDetail: UITableViewController, UIDocumentPicke
             confirmReplacement(previous, expected: p.code, rollback: true)
         case 11:
             showUpdateOptions(p)
+        case 12:
+            let screen = GoldgramPluginDiagnosticsScreen(report: { [weak self] in
+                guard let self else { return nil }
+                self.store.refresh()
+                guard self.store.isCurrent(), self.store.failure == nil, self.store.record(self.id) != nil else { return nil }
+                return GoldgramPluginRun.diagnosticReport(account: self.account, id: self.id)
+            }, clear: { [weak self] in
+                guard let self else { return false }
+                self.store.refresh()
+                guard self.store.isCurrent(), self.store.failure == nil, self.store.record(self.id) != nil else { return false }
+                GoldgramPluginRun.clearDiagnostics(account: self.account, id: self.id)
+                return true
+            })
+            navigationController?.pushViewController(screen, animated: true)
         case 10:
             guard p.enabled, !store.state.safe else { return }
             navigationController?.pushViewController(GoldgramPluginUISettings(store:store,id:id),animated:true)
@@ -1982,7 +2167,7 @@ private final class GoldgramPluginDetail: UITableViewController, UIDocumentPicke
             alert.addAction(UIAlertAction(title: "Удалить", style: .destructive) { [weak self] _ in
                 guard let self else { return }; self.store.refresh(); var next = self.store.state
                 next.plugins.removeAll { $0.id == self.id }
-                if self.store.save(next) { GoldgramAIConfig(account: self.account + "." + self.id.uuidString).clearCatalog(); self.navigationController?.popViewController(animated: true) }
+                if self.store.save(next) { GoldgramPluginRun.clearDiagnostics(account: self.account, id: self.id); GoldgramAIConfig(account: self.account + "." + self.id.uuidString).clearCatalog(); self.navigationController?.popViewController(animated: true) }
             })
             alert.addAction(UIAlertAction(title: "Отмена", style: .cancel)); present(alert, animated: true)
         }
