@@ -274,3 +274,7 @@ GoldAPI.speech adds an independent gold.speech grant, bounded system voice enume
 ## #283 candidate — scoped personal services and private TTL text
 
 GoldAPI 1.2.0 uses existing GoldgramPersonalUI and references-v1.json for selected ordinary non-expiring message bookmark references and current-peer metadata search; explicit confirmed add/remove, no message copying, no new database. Current user or selected actual user-author contact metadata and existing local alias/note only. Native-only scope descriptors removed from JS payload; separate grants, active context/account rechecks, no caller-controlled IDs. Ordinary nonempty cloud private-chat plain text with long unexpired server auto-delete now uses the existing explicit selected-message TTL consent gate; all other protection and snapshot exclusions remain. See status/reference for limitations and pending tests.
+
+## #284 candidate — Personal Hotfix
+
+GoldAPI 1.2.1 preserves #283 service signatures and existing references store. Adds a narrowly scoped native-only expiring reference descriptor for the already eligible ordinary private TTL text selection; no author scope, no message copy or archive lookup. Expiry rechecked before native confirmation and write. Built-in Personal Test 1.1 renders selectable lists and readable details through existing system UI. Explicit manager upgrade matches exact prior built-in source, retains ID/settings/storage/grants and resets consent. See status/reference for limitations.
