@@ -2,7 +2,7 @@
 
 > **Canonical project passport (part 1/3).** Project: **Swiftgram Gold / Goldgram**, source repository [sviridovski/Telegram-iOS](https://github.com/sviridovski/Telegram-iOS). This documentation branch deliberately has **no Actions build trigger**. Updated: **2026-11-23**. Primary language: Russian. This public repository must never contain private messages, account IDs, secret keys, credentials, personal IP/VPS endpoints, .session files, p12 or mobileprovision.
 
-**Other parts:** [CURRENT_STATUS](./CURRENT_STATUS.md) · [DECISIONS_LOG](./DECISIONS_LOG.md). **Read all three before continuing the project in a new chat.** The live repository, CI and device tests are always more authoritative than a stale status snapshot.
+**Other parts:** [CURRENT_STATUS](./CURRENT_STATUS.md) · [DECISIONS_LOG](./DECISIONS_LOG.md). **Start with [START_HERE.md](./START_HERE.md); read only relevant sections of the canonical documents as needed.** The live repository, CI and device tests are always more authoritative than a stale status snapshot.
 
 ## P0 development priority (user-approved 2026-11-25)
 

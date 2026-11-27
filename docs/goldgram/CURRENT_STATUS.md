@@ -1,6 +1,6 @@
 # CURRENT_STATUS — verified checkpoint
 
-  > **2026-11-27 local user date — #284 accepted for reported UI/private TTL bookmark flows; #285 GoldAPI Search & Documents 2.0 candidate in CI.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
+  > **2026-11-27 local user date — #284 accepted for reported UI/private TTL bookmark flows; #285 GoldAPI Search & Documents 2.0 failed native compilation.** Start with [START_HERE.md](./START_HERE.md); consult relevant sections of [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
 
 ## P0 development priority (user-approved 2026-11-25)
 
@@ -16,8 +16,8 @@
 | HEAD | `2b33ec756b15def83dab2786e4e5f24b8610798f` (#285 search/documents candidate), direct parent #284 |
 | Last green CI | [#284](https://github.com/sviridovski/Telegram-iOS/actions/runs/45959123469), success, 34m01s, IPA available |
 | Last installed | #284 — formatted Personal list/detail verified on video, private TTL bookmark saving confirmed by user; other unlisted tests pending. |
-| Failed candidate | #280 attempt 1 packaging cancelled (reason unknown), resolved by successful retry. Historical #272: wallet-engine Git LFS test snapshot timeout. |
-| Next task | **P0 Engine 2.0**: verify #285 native document CI fixtures and iPhone search/PDF/DOCX/TXT/JSON checks; retain accepted #284 behavior; then Plugin Update Engine (next available run). |
+| Failed candidate | #285 native Swift compilation, GoldgramPluginDocuments.swift:193:46, weak self capture ownership; final build skipped. Earlier #280 packaging cancellation resolved by retry. |
+| Next task | **P0 Engine 2.0**: fix #285 Swift capture ownership error, verify CI, then iPhone search/PDF/DOCX/TXT/JSON checks; retain accepted #284 behavior; then Plugin Update Engine (next available run). |
 | Recovery |  #284 green/device-accepted reported Personal UI/TTL saving baseline; #282 prior speech checkpoint (nine checks); #281 prior GoldAPI foundation checkpoint; #280 prior context-menu checkpoint; #279 prior TTL opt-out checkpoint; #277 Data Test accepted; #276 prior lifecycle baseline; #275 prior UI and #274 prior streaming checkpoints. Earlier #263 navigation checkpoint and older archive/media limitations remain historical. |
 
 ## #252 corrections retained in #253
@@ -547,3 +547,9 @@ After completing and accepting the currently planned plugin sequence (including 
 - Use synthetic ordinary non-expiring unprotected messages in a controlled test dialog/discussion to isolate delivery vs display failures, compare collector and main-phone SQLite records and event order with account/peer/message identity, edit/delete batch cursor and commit outcome. Avoid logging private message text, secrets, session data or personal IDs in public docs. Confirm only legitimate existing archive scope; do not expand capture of secret, protected, disappearing/view-once or otherwise excluded content or bypass access boundaries. Preserve Ghost, independent Collector, Live Bridge and existing SQLite; no reset or second database. No speculative transport switch or modification until evidence.
 - Check live update of an already-open discussion after successful authorized import, without opening archive list or restarting. Exercise startup/resume, reconnect, local/remote route if applicable, duplicate replay and interruption, existing originals vs unknown originals. For unavailable originals, distinguish pending synchronization from genuinely absent data; never fabricate original text or promise reconstruction if no valid retained source exists. Preserve already-known real originals and accurate revision ordering, deduplication and cursor-after-commit guarantees. Test deleted list freshness within existing authorized scope as well; user has not separately demonstrated a deleted-list defect.
 - Acceptance: ordinary test results update in archive and corresponding open chat/discussion without manually entering Edited; missing-original classifications explained by traceable pipeline state, no false completeness claims; no regressions in privacy, account isolation, storage integrity, battery/network use, or accepted plugin behavior. Keep CI 15–20 min goal. No implementation or device tests performed for this newly reported issue yet.
+
+## 2026-11-27 — START_HERE entry point and #285 CI failure
+
+User approved a compact permanent handoff file, [START_HERE.md](./START_HERE.md). Read it first in new chats; fetch relevant sections of detailed docs only as required. Refresh its checkpoint, blockers and next action after every meaningful code/CI/device/roadmap change in the same documentation commit as affected canonical records; replace its status snapshot, retain history in DECISIONS_LOG, verify branch and report SHA. This supersedes earlier blanket read-all instructions; canonical documentation remains authoritative for details. No app code or CI dispatch for this documentation change.
+
+Live CI verification: #285 run 45966802832, exact SHA 2b33ec756b15def83dab2786e4e5f24b8610798f, failure. mx success, native failure (job 140397309806, Build clean Swiftgram), final build skipped. Actual native log identifies GoldgramPluginDocuments.swift:193:46, Swift diagnostic: 'weak' ownership of capture 'self' differs from implicitly-captured strong reference in outer scope. Next code task when authorized: inspect exact closure, fix capture ownership, rerun CI via new source commit and verify before device tests. No source fix made now; #284 remains recovery baseline. Do not infer other tests or native runtime acceptance.

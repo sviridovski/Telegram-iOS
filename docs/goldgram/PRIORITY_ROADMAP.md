@@ -16,7 +16,7 @@ Resume both development tracks, choosing next features with the user:
 - Native Goldgram feature improvements: archive, media, search, UX and other agreed additions. Public Discussion Reader remains a deferred idea for genuinely public content via official widget, respecting access boundaries.
 - Expand native APIs when justified by reusable requirements, with scoped permissions, tests and docs.
 
-Read this roadmap at the start of future project chats along with the three canonical project docs. The user explicitly approved engine-first priority. Update milestones and decisions after each verified stage; never trigger an IPA build for documentation-only changes.
+Start new project chats with [START_HERE.md](./START_HERE.md), then consult this roadmap and relevant canonical sections when needed. Refresh START_HERE together with affected records after meaningful project changes. The user explicitly approved engine-first priority. Update milestones and decisions after each verified stage; never trigger an IPA build for documentation-only changes.
 
 
 ### #269 device checkpoint / #270 usability step
