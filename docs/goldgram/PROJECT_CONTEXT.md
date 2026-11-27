@@ -262,3 +262,7 @@ Native confirmation policy adds a backward-compatible optional per-plugin TTL wa
 ## #280 candidate — text and media access are independent
 
 For explicit ordinary selected-message actions, text captions on supported image/file attachments are treated as text when non-expiring and otherwise eligible. Native permission filtering and worker callback sanitization remove mediaKind when media grants are missing, without discarding the caption. Existing media-only gate, exact discussion root scope, secret/protected/ephemeral exclusions, history scope and composer safety remain. See CURRENT_STATUS/DECISIONS_LOG for limits and tests.
+
+## #281 candidate — GoldAPI 1.0 foundation
+
+GoldAPI is a separate frozen JS namespace injected into the existing worker alongside GGAPI/GG; no new persistent engine. Versioned runtime discovery, separately granted DeepSeek AI wrapper through existing native validated broker, scoped literal search over permitted current snapshots and bounded document text/file helpers. Existing storage and native context restrictions are unchanged. No raw database, archive or session bridge. See [GOLDAPI_1_REFERENCE.md](./GOLDAPI_1_REFERENCE.md) and current status for implemented methods and limits.
