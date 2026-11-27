@@ -188,3 +188,7 @@ Next after #285 acceptance: Plugin Update Engine (target #286), Diagnostics Engi
 ## After current plugin milestones
 
 User's next priority is archive ingestion and discussion freshness stabilization, not further optional features. See PRIORITY_ROADMAP.md and CURRENT_STATUS.md (2026-11-27 post-plugin regression). Continue existing plugin sequence until accepted; then investigate independently reported import-on-Edited-entry and missing originals in comments, with evidence before changes.
+
+## Plugin Update Engine 1.0 (#288 candidate)
+
+Local manual import/paste into selected existing plugin, explicit version and permission review, preserved data and code-only rollback implemented as candidate. #287 preliminary commit superseded by #288 fixture/presentation correction. Verify CI and device acceptance before Diagnostics Engine. Remote update discovery, signed catalog and automatic data migrations remain outside this implementation; do not claim complete remote marketplace/update support. See CURRENT_STATUS.md for details.

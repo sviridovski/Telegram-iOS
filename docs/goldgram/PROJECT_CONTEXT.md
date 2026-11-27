@@ -282,3 +282,7 @@ GoldAPI 1.2.1 preserves #283 service signatures and existing references store. A
 ## #285 candidate — confirmed history search and local document reader
 
 GoldAPI 1.3.0 adds separate history/import grants. Native-only current top-level dialog identity for one confirmed bounded Telegram search; results filtered to ordinary non-expiring text, no cross-peer, topic, archive, background or full-history bridge. New local document session presents native file picker; PDFKit text-layer extraction and bounded conventional DOCX main XML parser with CRC, size, XML safety checks, TXT/JSON. No new store, binary/path exposure, OCR, or automatic external transfer. Cancellation drops late results. Native fixtures and device acceptance pending. See status and reference.
+
+## Plugin Update Engine 1.0 — #288 candidate
+
+Explicit selected-record source replacement, numeric version/identity and optional minimum GoldAPI validation, existing account-local atomic store and execution lease. Same UUID retains settings/storage/logical files, Keychain namespace and user UI/stream preferences. Code-only single-version rollback, not data rollback. Clear old executable schema/actions, grants, lifecycle and confirmation bypass; user must re-enable/re-grant. No remote catalog, automatic download, trusted signature, or migration runner. No change to SQLite/archive/Collector/Live Bridge/Ghost. See CURRENT_STATUS.md for CI and device acceptance.
