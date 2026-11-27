@@ -278,3 +278,7 @@ GoldAPI 1.2.0 uses existing GoldgramPersonalUI and references-v1.json for select
 ## #284 candidate — Personal Hotfix
 
 GoldAPI 1.2.1 preserves #283 service signatures and existing references store. Adds a narrowly scoped native-only expiring reference descriptor for the already eligible ordinary private TTL text selection; no author scope, no message copy or archive lookup. Expiry rechecked before native confirmation and write. Built-in Personal Test 1.1 renders selectable lists and readable details through existing system UI. Explicit manager upgrade matches exact prior built-in source, retains ID/settings/storage/grants and resets consent. See status/reference for limitations.
+
+## #285 candidate — confirmed history search and local document reader
+
+GoldAPI 1.3.0 adds separate history/import grants. Native-only current top-level dialog identity for one confirmed bounded Telegram search; results filtered to ordinary non-expiring text, no cross-peer, topic, archive, background or full-history bridge. New local document session presents native file picker; PDFKit text-layer extraction and bounded conventional DOCX main XML parser with CRC, size, XML safety checks, TXT/JSON. No new store, binary/path exposure, OCR, or automatic external transfer. Cancellation drops late results. Native fixtures and device acceptance pending. See status and reference.
