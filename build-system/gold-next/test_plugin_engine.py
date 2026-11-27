@@ -7,6 +7,7 @@ worker = source.split("// BEGIN GOLDGRAM_WORKER_V1\n",1)[1].split("// END GOLDGR
 example = source.split('static let example = #"""\n',1)[1].split('\n"""#',1)[0]
 import json
 ui_sample = source.split('static let uiExample = #"""\n',1)[1].split('\n"""#',1)[0]
+gold_sample = source.split('static let goldExample = #"""\n',1)[1].split('\n"""#',1)[0]
 harness = """
 const assert = require('node:assert/strict');
 let result, requests=[], failModels=false;
@@ -165,6 +166,61 @@ await self.onmessage({data:{source:mediaOnlyScript,grants:[...compat,"media.read
 assert.equal(result.storage.selected,null);
 console.log('Goldgram #280 caption text independent of media grant, metadata remains scoped');
 
+const goldGrants=[...compat,'gold.ai','gold.documents','gold.search'];
+const goldCapsScript='GGAPI.storage.set("version",GoldAPI.runtime.apiVersion());GGAPI.storage.set("caps",GoldAPI.runtime.capabilities());GGAPI.storage.set("fake",GoldAPI.runtime.has("speech.say"));';
+await self.onmessage({data:{source:goldCapsScript,grants:compat,event:"settings.action"}});
+assert.equal(result.storage.version,"1.0.0");assert.equal(result.storage.caps.length,9);assert.equal(result.storage.caps.every(c=>!c.available),true);assert.equal(result.storage.fake,false);
+await self.onmessage({data:{source:goldCapsScript,grants:goldGrants,event:"settings.action",managedKey:true}});
+assert.equal(result.storage.caps.find(c=>c.name==="ai.complete").available,true);assert.equal(result.storage.caps.find(c=>c.name==="search.messages").available,false);
+await self.onmessage({data:{source:goldCapsScript,grants:goldGrants,event:"plugin.start",managedKey:true}});
+assert.equal(result.storage.caps.find(c=>c.name==="ai.complete").available,false);
+const gDocs='GGAPI.events.on("settings.action",()=>{GoldAPI.documents.saveText("gold.txt","Привет мир"+String.fromCharCode(10)+"Тест");GGAPI.storage.set("stats",GoldAPI.documents.analyze(GoldAPI.documents.readText("gold.txt")));});';
+const expectedDoc="Привет мир"+String.fromCharCode(10)+"Тест";
+await self.onmessage({data:{source:gDocs,grants:goldGrants,event:"settings.action"}});
+assert.equal(result.files["gold.txt"],expectedDoc);assert.deepEqual(result.storage.stats,{characters:15,bytes:28,words:3,lines:2});
+await self.onmessage({data:{source:'GGAPI.events.on("settings.action",()=>GGAPI.storage.set("text",GoldAPI.documents.readText("gold.txt")));',grants:goldGrants,event:"settings.action",files:result.files}});
+assert.equal(result.storage.text,expectedDoc);
+await self.onmessage({data:{source:gDocs,grants:goldGrants.filter(g=>g!=="storage"),event:"settings.action"}});
+assert.ok(result.error);
+await self.onmessage({data:{source:'GoldAPI.documents.analyze("x")',grants:goldGrants,event:"chat.opened"}});
+assert.ok(result.error);
+const gs='GGAPI.ui.addMessageContextAction({id:"find",title:"Find"},()=>GGAPI.storage.set("found",GoldAPI.search.messages("TeSt",{limit:2})));';
+const searchContext={peerId:"p",messages:[{id:"1",text:"test one"},{id:"2",text:"test two"},{id:"3",text:"else"}],selectedMessage:{id:"2",text:"TEST caption",mediaKind:"photo"}};
+await self.onmessage({data:{source:gs,grants:goldGrants,event:"context.tap",key:"find",context:searchContext}});
+assert.equal(result.storage.found.matched,2);assert.equal(result.storage.found.complete,false);assert.equal(result.storage.found.items[0].source,"selected");assert.equal(result.storage.found.items[0].text,"TEST caption");assert.equal(result.storage.found.items[0].mediaKind,undefined);
+await self.onmessage({data:{source:'GGAPI.events.on("settings.action",()=>GoldAPI.search.messages("test",{peerId:"foreign"}));',grants:goldGrants,event:"settings.action",context:searchContext}});
+assert.ok(result.error);
+await self.onmessage({data:{source:gs,grants:goldGrants.filter(g=>g!=="messages.read"),event:"context.tap",key:"find",context:searchContext}});
+assert.ok(result.error);
+const gAI='GGAPI.events.on("settings.action",async()=>{const r=await GoldAPI.ai.complete({model:"mock-model",prompt:"test",text:"synthetic",maxTokens:32},e=>GGAPI.storage.set("delta",e.text));GGAPI.storage.set("answer",r);});';
+const beforeGoldAI=requests.length;
+await self.onmessage({data:{source:gAI,grants:goldGrants,event:"settings.action",managedKey:true,streamingEnabled:true}});
+assert.equal(result.storage.answer.text,"mock answer");assert.equal(result.storage.answer.partial,false);assert.equal(result.storage.delta,"partial");assert.equal(result.output,null);
+assert.equal(requests.at(-1).method,"gold.ai.complete");assert.equal(JSON.parse(requests.at(-1).args.body).messages[1].content,"synthetic");
+await self.onmessage({data:{source:gAI,grants:goldGrants.filter(g=>g!=="gold.ai"),event:"settings.action",managedKey:true}});
+assert.ok(result.error);
+await self.onmessage({data:{source:gAI,grants:goldGrants,event:"settings.action",managedKey:false}});
+assert.ok(result.error);
+await self.onmessage({data:{source:'return GoldAPI.ai.complete({model:"m",prompt:"p",text:"t"})',grants:goldGrants,event:"plugin.start",managedKey:true}});
+assert.ok(result.error);
+assert.equal(requests.length,beforeGoldAI+1);
+console.log('Goldgram #281 GoldAPI scoped services and permission gates OK');
+
+const builtInGold=""" + json.dumps(gold_sample) + """;
+await self.onmessage({data:{source:builtInGold,grants:goldGrants,event:"plugin.start"}});
+assert.ok(!result.error);assert.equal(result.floating.title,"Gold");assert.equal(result.contextActions[0].id,"gold-inspect");
+await self.onmessage({data:{source:builtInGold,grants:goldGrants,event:"settings.action",key:"write"}});
+assert.equal(result.files["gold-test.txt"],expectedDoc);
+const builtInFiles=result.files;
+await self.onmessage({data:{source:builtInGold,grants:goldGrants,event:"settings.action",key:"read",files:builtInFiles}});
+assert.equal(JSON.parse(result.output.text).words,3);
+await self.onmessage({data:{source:builtInGold,grants:goldGrants,event:"context.tap",key:"gold-inspect",context:searchContext}});
+assert.equal(JSON.parse(result.output.text).words,2);
+await self.onmessage({data:{source:builtInGold,grants:goldGrants,event:"floating.tap",context:searchContext,settings:{query:"test"}}});
+assert.ok(result.output.text.includes("TEST caption"));
+
+
+
 
 
 
@@ -210,3 +266,7 @@ assert '$0 is TelegramMediaImage || $0 is TelegramMediaFile' in chat
 assert 'if self.goldgramPluginSelectedText(message._asMessage())' in chat
 assert 'selected.removeValue(forKey: "mediaKind")' in source
 assert 'actions[p.key]({message:selectedSnapshot})' in source
+
+assert 'method == "gold.ai.complete", grants.contains("gold.ai"), grants.contains("network.fetch")' in source
+assert 'new Function("GGAPI","GG","console","GoldAPI",p.source)' in source
+assert 'static let goldExample' in source
