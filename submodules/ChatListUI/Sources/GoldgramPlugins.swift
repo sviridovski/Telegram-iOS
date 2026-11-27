@@ -7,7 +7,7 @@ import AVFoundation
 // #267: deliberately foreground, on-demand and local-only. Never expose Telegram,
 // account objects, credentials, filesystem or network to imported JavaScript.
 private struct GoldgramPluginManifest {
-    static let supported: Set<String> = ["settings.read", "events", "console", "ui.read", "storage", "chat.read", "chat.write", "messages.read", "network.fetch", "ui.mutate", "clipboard", "media.read", "gold.ai", "gold.search", "gold.documents", "gold.speech"]
+    static let supported: Set<String> = ["settings.read", "events", "console", "ui.read", "storage", "chat.read", "chat.write", "messages.read", "network.fetch", "ui.mutate", "clipboard", "media.read", "gold.ai", "gold.search", "gold.documents", "gold.speech", "gold.favorites", "gold.contacts"]
     let name: String
     let version: String
     let author: String
@@ -373,6 +373,7 @@ private final class GoldgramPluginRun: NSObject, WKNavigationDelegate, WKScriptM
     private var completion: (([String: Any]?, String?) -> Void)?
     private var broker: GoldgramPluginNetwork?
     private var speech: GoldgramPluginSpeech?
+    private var personal: GoldgramPluginPersonalSession?
     private let grants: Set<String>
     private let interactive: Bool
     private let lease: String
@@ -389,12 +390,25 @@ private final class GoldgramPluginRun: NSObject, WKNavigationDelegate, WKScriptM
         let credential = GoldgramAIConfig(account: account + "." + record.id.uuidString)
         var input: [String: Any] = ["source": record.code, "grants": record.grants, "event": event,
             "settings": GoldgramPluginStore.decodeValues(record.settings), "storage": GoldgramPluginStore.decodeValues(record.storage)]
-        input["context"] = context
+        var safeContext = context
+        let personalScope = safeContext.removeValue(forKey: "_goldPersonalScope") as? [String: Any] ?? [:]
+        var personalSelection: [String: Any] = [:]
+        if var selected = safeContext["selectedMessage"] as? [String: Any] {
+            personalSelection = selected.removeValue(forKey: "_goldPersonalSelection") as? [String: Any] ?? [:]
+            safeContext["selectedMessage"] = selected
+        }
+        input["context"] = safeContext
         if grants.contains("storage"), event != "chat.opened", event != "chat.closed" { input["files"] = record.fileData ?? [:] }
         input["pluginId"] = record.id.uuidString
         input["managedKey"] = !account.isEmpty && credential.readKey() != nil
         input["streamingEnabled"] = record.streamingOptions?.enabled == true && grants.contains("network.fetch") && interactive
         input["speechAvailable"] = presenter != nil && interactive && grants.contains("gold.speech")
+        let personalAllowed = presenter != nil && interactive && grants.contains("chat.read") && (grants.contains("gold.favorites") || grants.contains("gold.contacts"))
+        let selectedAllowed = personalAllowed && event == "context.tap" && grants.contains("messages.read")
+        input["personalPeerAvailable"] = personalAllowed && !personalScope.isEmpty
+        input["personalSelectionAvailable"] = selectedAllowed && !personalSelection.isEmpty
+        input["personalCurrentContactAvailable"] = personalAllowed && personalScope["contact"] != nil
+        input["personalSelectedContactAvailable"] = selectedAllowed && personalSelection["contact"] != nil
         if grants.contains("network.fetch"), !account.isEmpty, let cache = credential.modelCatalog {
             input["modelCatalog"] = ["models": cache.models, "updatedAt": cache.updated, "stale": !GoldgramNetworkPolicy.fresh(updated: cache.updated, now: Date().timeIntervalSince1970)]
         }
@@ -407,6 +421,7 @@ private final class GoldgramPluginRun: NSObject, WKNavigationDelegate, WKScriptM
         NotificationCenter.default.addObserver(self, selector: #selector(backgrounded), name: UIApplication.didEnterBackgroundNotification, object: nil)
         if let presenter, interactive {
             if grants.contains("gold.speech") { speech = GoldgramPluginSpeech(presenter: presenter, valid: valid) }
+            if personalAllowed { personal = GoldgramPluginPersonalSession(account: account, presenter: presenter, scope: personalScope, selected: selectedAllowed ? personalSelection : [:], valid: valid) }
             let skipRequest = GoldgramPluginConfirmationPolicy.skipRequest(record.confirmationPolicy, grants: record.grants, event: event)
             broker = GoldgramPluginNetwork(config: credential, presenter: presenter, valid: valid, skipRequestConfirmation: {
                 guard skipRequest, valid() else { return false }
@@ -449,6 +464,7 @@ private final class GoldgramPluginRun: NSObject, WKNavigationDelegate, WKScriptM
         Self.slots.release(lease)
         NotificationCenter.default.removeObserver(self)
         speech?.cancel(); speech = nil
+        personal?.cancel(); personal = nil
         broker?.cancel(); broker = nil
         timer?.cancel(); timer = nil
         if let web {
@@ -490,11 +506,19 @@ private final class GoldgramPluginRun: NSObject, WKNavigationDelegate, WKScriptM
                 return
             }
             if method == "gold.speech.speak", grants.contains("gold.speech"), let speech {
-                guard !broker.isBusy else { callback(["error": "Другое действие плагина выполняется."]); return }
+                guard !broker.isBusy, personal?.busy != true else { callback(["error": "Другое действие плагина выполняется."]); return }
                 speech.speak(args, completion: callback)
                 return
             }
             guard speech?.active != true else { callback(["error": "Сначала остановите озвучивание."]); return }
+            guard personal?.busy != true else { callback(["error": "Сначала завершите подтверждение личных данных."]); return }
+            if method.hasPrefix("gold.favorites.") || method.hasPrefix("gold.contacts.") {
+                let favorites = method.hasPrefix("gold.favorites.")
+                let selectedMethod = method != "gold.favorites.search" && method != "gold.contacts.current"
+                guard !broker.isBusy, grants.contains("chat.read"), grants.contains(favorites ? "gold.favorites" : "gold.contacts"),
+                      !selectedMethod || grants.contains("messages.read"), let personal else { callback(["error": "Permission denied"]); return }
+                personal.perform(method, args: args, completion: callback); return
+            }
             if method == "network.fetch", grants.contains("network.fetch") {
                 broker.fetch(args, progress: { [weak self] event in
                     if args["progress"] as? Bool == true { self?.replyProgress(rpc, event: event) }
@@ -723,12 +747,18 @@ function goldWorkerMain() {
       "documents.shareJSON":{grants:["gold.documents","storage"],scope:"userSelectedJSON",active:goldInteractive},
       "speech.voices":{grants:["gold.speech"],scope:"systemVoices",active:goldInteractive&&p.speechAvailable===true},
       "speech.speak":{grants:["gold.speech"],scope:"foregroundProvidedText",active:goldInteractive&&p.speechAvailable===true},
-      "speech.stop":{grants:["gold.speech"],scope:"ownExecution",active:goldInteractive&&p.speechAvailable===true}
+      "speech.stop":{grants:["gold.speech"],scope:"ownExecution",active:goldInteractive&&p.speechAvailable===true},
+      "favorites.search":{grants:["gold.favorites","chat.read"],scope:"currentPeerMetadata",active:goldInteractive&&p.personalPeerAvailable===true},
+      "favorites.selected":{grants:["gold.favorites","chat.read","messages.read"],scope:"selectedReference",active:goldInteractive&&p.personalSelectionAvailable===true},
+      "favorites.addSelected":{grants:["gold.favorites","chat.read","messages.read"],scope:"confirmedSelectedReference",active:goldInteractive&&p.personalSelectionAvailable===true},
+      "favorites.removeSelected":{grants:["gold.favorites","chat.read","messages.read"],scope:"confirmedSelectedReference",active:goldInteractive&&p.personalSelectionAvailable===true},
+      "contacts.current":{grants:["gold.contacts","chat.read"],scope:"currentCloudUser",active:goldInteractive&&p.personalCurrentContactAvailable===true},
+      "contacts.selected":{grants:["gold.contacts","chat.read","messages.read"],scope:"selectedCloudUserAuthor",active:goldInteractive&&p.personalSelectedContactAvailable===true}
     };
     const goldHas=name=>own(goldPolicy,name)&&goldPolicy[name].active&&goldPolicy[name].grants.every(allowed);
     const goldNeed=name=>{if(!goldHas(name))throw Error("GoldAPI unavailable: "+name);};
     const goldCaps=()=>Object.keys(goldPolicy).map(name=>({name,scope:goldPolicy[name].scope,permissions:[...goldPolicy[name].grants],granted:goldPolicy[name].grants.every(allowed),available:goldHas(name)}));
-    const gold={runtime:Object.freeze({apiVersion:()=>"1.1.0",has:goldHas,capabilities:goldCaps})};
+    const gold={runtime:Object.freeze({apiVersion:()=>"1.2.0",has:goldHas,capabilities:goldCaps})};
     const byteCount=text=>{let n=0;for(const ch of text){const cp=ch.codePointAt(0);n+=cp<=127?1:cp<=2047?2:cp<=65535?3:4;}return n;};
     const checkedText=(v,max)=>{if(typeof v!=="string"||byteCount(v)>max)throw Error("Invalid or oversized text");return v;};
     if(allowed("gold.ai")&&allowed("network.fetch")){
@@ -810,6 +840,29 @@ function goldWorkerMain() {
         stop:async()=>{goldNeed("speech.stop");const r=await rpc("gold.speech.stop",{});return r.stopped===true;}
       });
     }
+    if(allowed("gold.favorites")&&allowed("chat.read")){
+      const call=async(name,args={})=>{goldNeed("favorites."+name);return rpc("gold.favorites."+name,args);};
+      gold.favorites=Object.freeze({
+        search:async(query="",limit=16)=>{
+          checkedText(query,800);if(!Number.isInteger(limit)||limit<1||limit>30)throw Error("Invalid favorites limit");
+          const r=await call("search",{query,limit});return r.value;
+        },
+        selected:async()=>{const r=await call("selected");return r.value;},
+        addSelected:async(options={})=>{
+          if(!options||typeof options!=="object"||Array.isArray(options)||Object.keys(options).some(k=>!["folder","tags","note"].includes(k)))throw Error("Invalid favorite options");
+          const {folder="",tags=[],note=""}=options;
+          checkedText(folder,320);checkedText(note,4000);
+          if(Array.from(folder).length>80||Array.from(note).length>1000||!Array.isArray(tags)||tags.length>12)throw Error("Invalid favorite metadata");
+          for(const tag of tags){checkedText(tag,160);if(Array.from(tag).length>40)throw Error("Invalid tag");}
+          const r=await call("addSelected",{folder,tags,note});return r.status;
+        },
+        removeSelected:async()=>{const r=await call("removeSelected");return r.status;}
+      });
+    }
+    if(allowed("gold.contacts")&&allowed("chat.read")){
+      const get=async(name)=>{goldNeed("contacts."+name);const r=await rpc("gold.contacts."+name,{});return r.value;};
+      gold.contacts=Object.freeze({current:()=>get("current"),selected:()=>get("selected")});
+    }
     const goldAPI=Object.freeze(gold);
     const api=Object.freeze(base);
     try {
@@ -882,7 +935,7 @@ final class GoldgramPluginManager: UITableViewController, UIDocumentPickerDelega
     override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
         section == 0 ? (store.failure ?? "GGAPI: открытый чат и локальные настройки; подтверждения управляются для каждого плагина. Не все методы Ghostgram поддерживаются.") : "Импортируйте только доверенный код. Не вводите API-ключи в обычные настройки."
     }
-    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? (store.isCurrent() ? store.state.plugins.count : 0) : (section == 1 ? 11 : 1) }
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? (store.isCurrent() ? store.state.plugins.count : 0) : (section == 1 ? 12 : 1) }
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
         if indexPath.section == 0 {
@@ -895,7 +948,7 @@ final class GoldgramPluginManager: UITableViewController, UIDocumentPickerDelega
             cell.detailTextLabel?.text = "DeepSeek · промпт и плавающая кнопка"
             cell.imageView?.image = UIImage(systemName: "sparkles")
         } else {
-            cell.textLabel?.text = ["Вставить JavaScript", "Импортировать .js из файлов", "Установить тестовый плагин", "Безопасный режим", "Подтверждения плагинов", "Установить тесты многоплагинности", "Установить тест интерфейса", "Установить тест событий", "Установить тест GGAPI", "Установить тест GoldAPI", "Установить тест озвучивания"][indexPath.row]
+            cell.textLabel?.text = ["Вставить JavaScript", "Импортировать .js из файлов", "Установить тестовый плагин", "Безопасный режим", "Подтверждения плагинов", "Установить тесты многоплагинности", "Установить тест интерфейса", "Установить тест событий", "Установить тест GGAPI", "Установить тест GoldAPI", "Установить тест озвучивания", "Установить тест избранного и контактов"][indexPath.row]
             if indexPath.row == 3 { cell.detailTextLabel?.text = store.state.safe ? "Включён — выполнение заблокировано" : "Выключен" }
             if indexPath.row == 4 { cell.detailTextLabel?.text = "Запросы к сервисам и вставка ответа" }
         }
@@ -948,6 +1001,9 @@ final class GoldgramPluginManager: UITableViewController, UIDocumentPickerDelega
         case 10:
             store.refresh()
             if !store.state.plugins.contains(where: { $0.code == Self.speechExample }) && !install(Self.speechExample) { notice("Не удалось установить тест озвучивания.") }
+        case 11:
+            store.refresh()
+            if !store.state.plugins.contains(where: { $0.code == Self.personalExample }) && !install(Self.personalExample) { notice("Не удалось установить тест личных данных.") }
         default:
             store.refresh()
             var next = store.state; next.safe.toggle()
@@ -1071,6 +1127,34 @@ GGAPI.ui.addMessageContextAction({id:"inspect",title:"GGAPI: проверить 
   const info=GGAPI.media?GGAPI.media.selected():null;
   GGAPI.ui.showSheet({title:"GGAPI",text:info?"Медиа: "+info.kind:(m?"Текст: "+String(m.text||"").length+" символов":"Нет сообщения")});
 });
+"""#
+    static let personalExample = #"""
+// @name GoldAPI Personal Test
+// @version 1.0
+// @permission.settings.read required
+// @permission.ui.read required
+// @permission.ui.mutate required
+// @permission.chat.read required
+// @permission.messages.read required
+// @permission.gold.favorites required
+// @permission.gold.contacts required
+GGAPI.settings.addSection({title:"Личные данные GoldAPI",items:[
+  {type:"text",key:"query",title:"Поиск в избранном этого чата",default:""},
+  {type:"text",key:"folder",title:"Папка тестовой закладки",default:"GoldAPI Test"},
+  {type:"text",key:"note",title:"Заметка",default:"Тест GoldAPI"},
+  {type:"info",key:"about",title:"Тест в чате",detail:"Кнопка Personal: поиск/текущий контакт. Контекстное меню: добавить, проверить и удалить выбранную закладку, посмотреть автора."}
+]});
+const show=(title,value)=>GGAPI.app.alert(title,typeof value==="string"?value:JSON.stringify(value,null,2));
+const handle=async(title,fn)=>{try{show(title,await fn());}catch(e){show(title,String(e.message||e));}};
+GGAPI.ui.addFloatingButton({id:"personal",title:"Personal"},async()=>{
+  const choice=await GGAPI.ui.select("Личные данные",[{title:"Избранное этого чата",value:"favorites"},{title:"Текущий контакт",value:"contact"}]);
+  if(choice==="favorites")await handle("Избранное",()=>GoldAPI.favorites.search(GGAPI.settings.getPlugin("query",""),16));
+  if(choice==="contact")await handle("Контакт",()=>GoldAPI.contacts.current());
+});
+GGAPI.ui.addMessageContextAction({id:"personal-add",title:"GoldAPI: добавить в избранное"},()=>handle("Избранное",()=>GoldAPI.favorites.addSelected({folder:GGAPI.settings.getPlugin("folder","GoldAPI Test"),tags:["GoldAPI"],note:GGAPI.settings.getPlugin("note","Тест GoldAPI")})));
+GGAPI.ui.addMessageContextAction({id:"personal-check",title:"GoldAPI: проверить закладку"},()=>handle("Закладка",()=>GoldAPI.favorites.selected()));
+GGAPI.ui.addMessageContextAction({id:"personal-remove",title:"GoldAPI: удалить закладку"},()=>handle("Избранное",()=>GoldAPI.favorites.removeSelected()));
+GGAPI.ui.addMessageContextAction({id:"personal-author",title:"GoldAPI: карточка автора"},()=>handle("Автор",()=>GoldAPI.contacts.selected()));
 """#
     static let speechExample = #"""
 // @name GoldAPI Speech Test
@@ -1252,7 +1336,7 @@ private final class GoldgramPluginConfirmations: UITableViewController {
         if skipped { apply(false); return }
         let message: String
         if timed {
-            message = "Разрешить этому плагину получать выбранный вручную обычный текст группы или канала с автоудалением без повторного предупреждения? Плагин может сохранить текст или передать разрешённому сервису. Автоудаление Telegram не удаляет такие копии. Защищённые, одноразовые и секретные сообщения остаются недоступны."
+            message = "Разрешить этому плагину получать выбранный вручную обычный текст личного чата, группы или канала с автоудалением без повторного предупреждения? Плагин может сохранить текст или передать разрешённому сервису. Автоудаление Telegram не удаляет такие копии. Защищённые, одноразовые и секретные сообщения остаются недоступны."
         } else if network {
             message = "Разрешить этому плагину при нажатии его кнопки или команды отправлять промпт, текст и доступный контекст переписки в api.deepseek.com без повторного окна? Запросы могут расходовать баланс. Фоновые запросы, другие адреса и запросы из настроек не разрешаются автоматически."
         } else {

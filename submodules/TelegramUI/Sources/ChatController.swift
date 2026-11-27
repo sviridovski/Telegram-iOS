@@ -8084,10 +8084,10 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
         return "group"
     }
 
-    // Ordinary long-lived cloud group/channel text with server auto-delete.
+    // Ordinary long-lived cloud user/group/channel text with server auto-delete.
     // Only an explicit selected-message action may use this exception.
     private func goldgramPluginTimedText(_ message: Message) -> Bool {
-        guard message.id.peerId.namespace == Namespaces.Peer.CloudGroup || message.id.peerId.namespace == Namespaces.Peer.CloudChannel,
+        guard message.id.peerId.namespace == Namespaces.Peer.CloudUser || message.id.peerId.namespace == Namespaces.Peer.CloudGroup || message.id.peerId.namespace == Namespaces.Peer.CloudChannel,
               message.id.namespace == Namespaces.Message.Cloud, message.media.isEmpty, !message.text.isEmpty,
               let attr = message.autoremoveAttribute, attr.timeout >= 3600, attr.timeout != viewOnceTimeout,
               let begin = attr.countdownBeginTime, Int64(begin) + Int64(attr.timeout) > Int64(Date().timeIntervalSince1970),
@@ -8134,7 +8134,11 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
                 let lhs = $0["timestamp"] as? Int32 ?? 0, rhs = $1["timestamp"] as? Int32 ?? 0
                 return lhs == rhs ? ($0["id_num"] as? Int32 ?? 0) < ($1["id_num"] as? Int32 ?? 0) : lhs < rhs
             }
-            return ["peerId": String(describing: peer) + ":" + String(describing: self.chatLocation.threadId), "type": self.goldgramPluginChatType(peer), "messages": Array(rows.suffix(36)), "mediaRows": Array(mediaRows.suffix(36))]
+            var snapshot: [String: Any] = ["peerId": String(describing: peer) + ":" + String(describing: self.chatLocation.threadId), "type": self.goldgramPluginChatType(peer), "messages": Array(rows.suffix(36)), "mediaRows": Array(mediaRows.suffix(36))]
+            let currentPeer: EnginePeer?
+            if let rendered = self.presentationInterfaceState.renderedPeer?.chatMainPeer { currentPeer = EnginePeer(rendered) } else { currentPeer = nil }
+            snapshot["_goldPersonalScope"] = GoldgramAuthorSearchBridge.pluginPersonalScope(context: self.context, peer: peer, rendered: currentPeer)
+            return snapshot
         }, insert: { [weak self = self] original, answer in
             guard let self, self.goldgramAIIdentity() == original.identity,
                   self.presentationInterfaceState.interfaceState.effectiveInputState.inputText.string == original.text else { return false }
@@ -8188,6 +8192,8 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
         } else {
             return
         }
+        // Personal services never receive a bookmark or author scope for expiring text/media.
+        selected["_goldPersonalSelection"] = GoldgramAuthorSearchBridge.pluginPersonalSelection(context: self.context, message: message)
         let snapshot = selected
         if self.goldgramPluginTimedText(message._asMessage()) &&
             !GoldgramAIButtonGroup.skipTimedTextPrompt(account: String(self.context.account.peerId.id._internalGetInt64Value()), actionKey: key) {

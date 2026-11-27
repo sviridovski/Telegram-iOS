@@ -259,6 +259,38 @@ public final class GoldgramAuthorSearchBridge: NSObject {
         }
     }
 
+    // These descriptors are native-only, never part of the JS payload. The
+    // plugin cannot supply a peer, message or contact identifier to the service.
+    fileprivate static func pluginPersonalContext(account: String) -> AccountContext? {
+        guard let context = primaryContext, isCurrentAccount(context),
+              String(context.account.peerId.id._internalGetInt64Value()) == account else { return nil }
+        return context
+    }
+    private static func pluginContact(_ peer: EnginePeer?) -> [String: Any]? {
+        guard let peer, case .user = peer, peer.id.id._internalGetInt64Value() > 0 else { return nil }
+        return ["id": NSNumber(value: peer.id.id._internalGetInt64Value()),
+                "name": String(peer.compactDisplayTitle.prefix(180)), "username": String((peer.addressName ?? "").prefix(100))]
+    }
+    public static func pluginPersonalScope(context: AccountContext, peer: EnginePeer.Id, rendered: EnginePeer?) -> [String: Any]? {
+        guard isCurrentAccount(context), var result = GoldgramUnifiedIdentity.sources(peer)?.first else { return nil }
+        if let rendered, rendered.id == peer { result["contact"] = pluginContact(rendered) }
+        return result
+    }
+    public static func pluginPersonalSelection(context: AccountContext, message: EngineMessage) -> [String: Any]? {
+        let raw = message._asMessage()
+        guard canBookmark(context: context, message: message), !raw.isCopyProtected(), !message.containsSecretMedia,
+              !raw.flags.isSending, !raw.flags.contains(.Failed), raw.activeEphemeralReplacementMessage == nil,
+              message.adAttribute == nil, raw.minAutoremoveOrClearTimeout == nil,
+              !raw.attributes.contains(where: { $0 is AutoremoveTimeoutMessageAttribute || $0 is AutoclearTimeoutMessageAttribute || $0 is RestrictedContentMessageAttribute || $0 is EphemeralMessageAttribute }),
+              !raw.media.contains(where: { $0 is TelegramMediaAction || $0 is TelegramMediaExpiredContent }),
+              var result = GoldgramUnifiedIdentity.sources(message.id.peerId)?.first else { return nil }
+        result["messageId"] = NSNumber(value: message.id.id)
+        result["date"] = NSNumber(value: Int64(message.timestamp) * 1000)
+        result["title"] = String((message.enginePeers[message.id.peerId]?.compactDisplayTitle ?? "Диалог").prefix(180))
+        result["contact"] = pluginContact(message.author)
+        return result
+    }
+
     public static func canBookmark(context: AccountContext, message: EngineMessage) -> Bool {
         return isCurrentAccount(context) && message.id.namespace == Namespaces.Message.Cloud &&
             message.id.id > 0 && GoldgramUnifiedIdentity.sources(message.id.peerId) != nil
@@ -2891,6 +2923,127 @@ private enum GoldgramPersonalUI {
         })
         alert.addAction(UIAlertAction(title: "Отмена", style: .cancel))
         owner.present(alert, animated: true)
+    }
+}
+
+
+// Native-only per-run services over the existing personal reference store.
+// Reads are bounded to the current chat or the explicitly selected ordinary
+// message/user. No message-body copies, Telegram mutations or raw archive access.
+@MainActor
+final class GoldgramPluginPersonalSession {
+    private let account: String
+    private weak var presenter: UIViewController?
+    private let scope: [String: Any]
+    private let selected: [String: Any]
+    private let valid: () -> Bool
+    private var prompt: UIAlertController?
+    private var reply: (([String: Any]) -> Void)?
+    private var writes = 0
+    var busy: Bool { reply != nil }
+    init(account: String, presenter: UIViewController, scope: [String: Any], selected: [String: Any], valid: @escaping () -> Bool) {
+        self.account = account; self.presenter = presenter; self.scope = scope; self.selected = selected; self.valid = valid
+    }
+    private func context() -> AccountContext? {
+        guard valid(), UIApplication.shared.applicationState == .active else { return nil }
+        return GoldgramAuthorSearchBridge.pluginPersonalContext(account: account)
+    }
+    private func reference() -> GoldgramPersonalBookmark? {
+        guard let kind = (selected["peerKind"] as? NSNumber)?.int32Value,
+              let peer = (selected["peerId"] as? NSNumber)?.int64Value,
+              let mid = (selected["messageId"] as? NSNumber)?.int32Value,
+              let date = (selected["date"] as? NSNumber)?.int64Value,
+              let title = selected["title"] as? String else { return nil }
+        let contact = selected["contact"] as? [String: Any]
+        let item = GoldgramPersonalBookmark(peerKind: kind, peerId: peer, messageId: mid,
+            authorId: (contact?["id"] as? NSNumber)?.int64Value, title: title,
+            date: date, archive: false, folder: "", tags: [], note: "")
+        return item.valid ? item : nil
+    }
+    private func item(_ row: GoldgramPersonalBookmark) -> [String: Any] {
+        return ["title": row.title, "folder": row.folder, "tags": row.tags, "note": row.note,
+                "date": row.date, "archive": row.archive]
+    }
+    private func contact(_ descriptor: [String: Any]?, data: GoldgramPersonalData) -> Any {
+        guard let descriptor, let id = (descriptor["id"] as? NSNumber)?.int64Value, id > 0,
+              let name = descriptor["name"] as? String, let username = descriptor["username"] as? String else { return NSNull() }
+        var result: [String: Any] = ["name": name, "username": username, "card": NSNull()]
+        if let saved = data.contacts.first(where: { $0.id == id }) {
+            result["card"] = ["title": saved.title, "alias": saved.alias, "note": saved.note]
+        }
+        return result
+    }
+    func perform(_ method: String, args: [String: Any], completion: @escaping ([String: Any]) -> Void) {
+        guard !busy, let context = context() else { completion(["error": "Личные данные недоступны."]); return }
+        do {
+            let data = try GoldgramPersonalUI.read(context)
+            switch method {
+            case "gold.contacts.current", "gold.contacts.selected":
+                let descriptor = (method == "gold.contacts.current" ? scope : selected)["contact"] as? [String: Any]
+                completion(["value": contact(descriptor, data: data)])
+            case "gold.favorites.selected":
+                guard let reference = reference() else { completion(["error": "Выберите обычное сообщение."]); return }
+                let saved = data.bookmarks.first(where: { $0.key == reference.key })
+                completion(["value": saved.map { item($0) } as Any? ?? NSNull()])
+            case "gold.favorites.search":
+                guard let kind = (scope["peerKind"] as? NSNumber)?.int32Value,
+                      let peer = (scope["peerId"] as? NSNumber)?.int64Value,
+                      let query = args["query"] as? String, query.utf8.count <= 800,
+                      let limit = args["limit"] as? Int, (1...30).contains(limit) else { completion(["error": "Неверная область или запрос."]); return }
+                let matches = data.bookmarks.filter { row in
+                    guard row.peerId == peer, (row.peerKind >= 2 ? 2 : row.peerKind) == (kind >= 2 ? 2 : kind) else { return false }
+                    return query.isEmpty || ([row.title, row.folder, row.note] + row.tags).contains { $0.localizedCaseInsensitiveContains(query) }
+                }
+                completion(["value": ["items": matches.prefix(limit).map { item($0) }, "matched": matches.count, "scope": "currentPeer", "complete": matches.count <= limit]])
+            case "gold.favorites.addSelected", "gold.favorites.removeSelected":
+                guard writes == 0, var target = reference() else { completion(["error": "Выберите обычное сообщение; одна запись за действие."]); return }
+                let old = data.bookmarks.first(where: { $0.key == target.key })
+                let add = method == "gold.favorites.addSelected"
+                if add {
+                    if old != nil { completion(["status": "alreadySaved"]); return }
+                    guard let folder = args["folder"] as? String, let tags = args["tags"] as? [String], let note = args["note"] as? String,
+                          folder.utf8.count <= 320, note.utf8.count <= 4000, tags.allSatisfy({ $0.utf8.count <= 160 }) else { completion(["error": "Неверные метаданные."]); return }
+                    target.folder = folder; target.tags = tags; target.note = note
+                    guard target.valid else { completion(["error": "Слишком длинные метаданные."]); return }
+                } else if old == nil { completion(["status": "notFound"]); return }
+                writes += 1
+                confirm(target, old: old, add: add, completion: completion)
+            default: completion(["error": "Unknown personal method"])
+            }
+        } catch { completion(["error": "Не удалось прочитать личные данные."]) }
+    }
+    private func confirm(_ target: GoldgramPersonalBookmark, old: GoldgramPersonalBookmark?, add: Bool, completion: @escaping ([String: Any]) -> Void) {
+        reply = completion
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+            guard let self, self.busy else { return }
+            guard self.context() != nil, let presenter = self.presenter,
+                  presenter.viewIfLoaded?.window != nil, presenter.presentedViewController == nil else { self.end(["status": "cancelled"]); return }
+            let detail = add ? "Диалог: \(target.title)\nПапка: \(target.folder)\nТеги: \(target.tags.joined(separator: ", "))\nЗаметка: \(target.note)\n\nСохраняется только ссылка и личные метаданные." : "Удалится только выбранная личная закладка. Сообщение и архив не изменятся."
+            let alert = UIAlertController(title: add ? "Сохранить в личное избранное?" : "Удалить из личного избранного?", message: detail, preferredStyle: .alert)
+            self.prompt = alert
+            alert.addAction(UIAlertAction(title: add ? "Сохранить" : "Удалить", style: add ? .default : .destructive) { [weak self] _ in
+                guard let self, self.busy, let context = self.context() else { self?.end(["status": "cancelled"]); return }
+                do {
+                    try GoldgramPersonalUI.change(context) { data in
+                        guard data.bookmarks.first(where: { $0.key == target.key }) == old else { return false }
+                        if add { return data.put(target) }
+                        data.bookmarks.removeAll { $0.key == target.key }; return true
+                    }
+                    self.end(["status": add ? "saved" : "removed"])
+                } catch { self.end(["error": "Избранное изменилось или недоступно."]) }
+            })
+            alert.addAction(UIAlertAction(title: "Отмена", style: .cancel) { [weak self] _ in self?.end(["status": "cancelled"]) })
+            presenter.present(alert, animated: true)
+        }
+    }
+    private func end(_ result: [String: Any]) {
+        let done = reply; reply = nil; prompt = nil
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { done?(result) }
+    }
+    func cancel() {
+        reply = nil
+        if let prompt, prompt.presentingViewController != nil { prompt.dismiss(animated: false) }
+        prompt = nil
     }
 }
 

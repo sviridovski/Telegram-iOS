@@ -9,10 +9,11 @@ import json
 ui_sample = source.split('static let uiExample = #"""\n',1)[1].split('\n"""#',1)[0]
 gold_sample = source.split('static let goldExample = #"""\n',1)[1].split('\n"""#',1)[0]
 speech_sample = source.split('static let speechExample = #"""\n',1)[1].split('\n"""#',1)[0]
+personal_sample = source.split('static let personalExample = #"""\n',1)[1].split('\n"""#',1)[0]
 harness = """
 const assert = require('node:assert/strict');
 let result, requests=[], failModels=false;
-global.self = {postMessage: raw => {const v=JSON.parse(raw);if(v.rpc!==undefined){requests.push(v);const isModels=v.args.url==="https://api.deepseek.com/models";if(v.args.progress)self.onmessage({data:{rpcProgress:v.rpc,event:{text:"partial",thinking:false,done:false}}});const response=v.method==="gold.speech.voices"?{voices:[{id:"mock-ru",name:"Mock",language:"ru-RU"}]}:v.method==="gold.speech.speak"?{status:"ended",started:true}:v.method==="gold.speech.stop"?{stopped:false}:isModels?{status:failModels?503:200,body:JSON.stringify({object:"list",data:[{id:"fresh-model",object:"model"}]})}:{status:200,body:'{"choices":[{"message":{"content":"mock answer"}}]}'};self.onmessage({data:{rpcResult:v.rpc,result:response}});}else result=v;}};
+global.self = {postMessage: raw => {const v=JSON.parse(raw);if(v.rpc!==undefined){requests.push(v);const isModels=v.args.url==="https://api.deepseek.com/models";if(v.args.progress)self.onmessage({data:{rpcProgress:v.rpc,event:{text:"partial",thinking:false,done:false}}});const response=v.method==="gold.favorites.search"?{value:{items:[{title:"Test chat",folder:"Test",note:"synthetic",tags:[]}],matched:1,scope:"currentPeer",complete:true}}:v.method==="gold.favorites.selected"?{value:{title:"Test chat",folder:"Test"}}:v.method==="gold.favorites.addSelected"?{status:"saved"}:v.method==="gold.favorites.removeSelected"?{status:"removed"}:v.method==="gold.contacts.current"||v.method==="gold.contacts.selected"?{value:{name:"Test user",username:"test",card:{alias:"Test alias",note:"Test note"}}}:v.method==="gold.speech.voices"?{voices:[{id:"mock-ru",name:"Mock",language:"ru-RU"}]}:v.method==="gold.speech.speak"?{status:"ended",started:true}:v.method==="gold.speech.stop"?{stopped:false}:isModels?{status:failModels?503:200,body:JSON.stringify({object:"list",data:[{id:"fresh-model",object:"model"}]})}:{status:200,body:'{"choices":[{"message":{"content":"mock answer"}}]}'};self.onmessage({data:{rpcResult:v.rpc,result:response}});}else result=v;}};
 """ + worker + """
 goldWorkerMain();
 const sample = """ + json.dumps(example) + """;
@@ -170,7 +171,7 @@ console.log('Goldgram #280 caption text independent of media grant, metadata rem
 const goldGrants=[...compat,'gold.ai','gold.documents','gold.search'];
 const goldCapsScript='GGAPI.storage.set("version",GoldAPI.runtime.apiVersion());GGAPI.storage.set("caps",GoldAPI.runtime.capabilities());GGAPI.storage.set("fake",GoldAPI.runtime.has("speech.say"));';
 await self.onmessage({data:{source:goldCapsScript,grants:compat,event:"settings.action"}});
-assert.equal(result.storage.version,"1.1.0");assert.equal(result.storage.caps.length,12);assert.equal(result.storage.caps.every(c=>!c.available),true);assert.equal(result.storage.fake,false);
+assert.equal(result.storage.version,"1.2.0");assert.equal(result.storage.caps.length,18);assert.equal(result.storage.caps.every(c=>!c.available),true);assert.equal(result.storage.fake,false);
 await self.onmessage({data:{source:goldCapsScript,grants:goldGrants,event:"settings.action",managedKey:true}});
 assert.equal(result.storage.caps.find(c=>c.name==="ai.complete").available,true);assert.equal(result.storage.caps.find(c=>c.name==="search.messages").available,false);
 await self.onmessage({data:{source:goldCapsScript,grants:goldGrants,event:"plugin.start",managedKey:true}});
@@ -231,6 +232,46 @@ await self.onmessage({data:{source:'return GoldAPI.speech.speak("x")',grants:spe
 await self.onmessage({data:{source:'return GoldAPI.speech.speak("x")',grants:compat,event:"settings.action",speechAvailable:true}});assert.ok(result.error);
 assert.equal(requests.length,beforeDenied);
 console.log('Goldgram #282 speech foreground grant, options and RPC contracts OK');
+
+const personalGrants=[...compat,"gold.favorites","gold.contacts"];
+const personalFlags={personalPeerAvailable:true,personalSelectionAvailable:true,personalCurrentContactAvailable:true,personalSelectedContactAvailable:true};
+const pCheck='GGAPI.storage.set("available",GoldAPI.runtime.has("favorites.addSelected"));GGAPI.storage.set("contact",GoldAPI.runtime.has("contacts.current"));';
+await self.onmessage({data:{source:pCheck,grants:personalGrants,event:"context.tap",...personalFlags}});
+assert.equal(result.storage.available,true);assert.equal(result.storage.contact,true);
+await self.onmessage({data:{source:pCheck,grants:compat,event:"context.tap",...personalFlags}});
+assert.equal(result.storage.available,false);assert.equal(result.storage.contact,false);
+await self.onmessage({data:{source:pCheck,grants:personalGrants,event:"chat.opened",...personalFlags}});
+assert.equal(result.storage.available,false);assert.equal(result.storage.contact,false);
+await self.onmessage({data:{source:pCheck,grants:personalGrants,event:"context.tap",personalPeerAvailable:true}});
+assert.equal(result.storage.available,false);assert.equal(result.storage.contact,false);
+const pScript='GGAPI.ui.addMessageContextAction({id:"p",title:"Personal"},async()=>{GGAPI.storage.set("search",await GoldAPI.favorites.search("synthetic",10));GGAPI.storage.set("selected",await GoldAPI.favorites.selected());GGAPI.storage.set("added",await GoldAPI.favorites.addSelected({folder:"Test",tags:["one"],note:"synthetic"}));GGAPI.storage.set("author",await GoldAPI.contacts.selected());});';
+const pBefore=requests.length;
+await self.onmessage({data:{source:pScript,grants:personalGrants,event:"context.tap",key:"p",...personalFlags}});
+assert.equal(result.storage.search.scope,"currentPeer");assert.equal(result.storage.selected.folder,"Test");assert.equal(result.storage.added,"saved");assert.equal(result.storage.author.card.alias,"Test alias");assert.equal(requests.length,pBefore+4);
+assert.equal(requests.at(-2).method,"gold.favorites.addSelected");assert.deepEqual(requests.at(-2).args,{folder:"Test",tags:["one"],note:"synthetic"});
+assert.deepEqual(requests.at(-1).args,{});
+const pDenied=requests.length;
+for(const source of ['return GoldAPI.favorites.addSelected({messageId:123})','return GoldAPI.favorites.addSelected({folder:"x".repeat(81)})','return GoldAPI.favorites.addSelected({tags:Array(13).fill("x")})','return GoldAPI.favorites.search("",31)','return GoldAPI.favorites.addSelected({peerId:"other"})']){
+ await self.onmessage({data:{source,grants:personalGrants,event:"context.tap",...personalFlags}});assert.ok(result.error);
+}
+await self.onmessage({data:{source:'return GoldAPI.favorites.addSelected()',grants:personalGrants,event:"context.tap",personalPeerAvailable:true}});assert.ok(result.error);
+await self.onmessage({data:{source:'return GoldAPI.favorites.removeSelected()',grants:personalGrants.filter(g=>g!=="messages.read"),event:"context.tap",...personalFlags}});assert.ok(result.error);
+await self.onmessage({data:{source:'return GoldAPI.contacts.selected()',grants:personalGrants.filter(g=>g!=="gold.contacts"),event:"context.tap",...personalFlags}});assert.ok(result.error);
+await self.onmessage({data:{source:'return GoldAPI.contacts.current()',grants:personalGrants,event:"plugin.start",...personalFlags}});assert.ok(result.error);
+assert.equal(requests.length,pDenied);
+console.log('Goldgram #283 personal scoped grant, no caller IDs, and metadata contracts OK');
+
+const personalSample = """ + json.dumps(personal_sample) + """;
+await self.onmessage({data:{source:personalSample,grants:personalGrants,event:"plugin.start"}});
+assert.ok(!result.error);assert.equal(result.floating.title,"Personal");assert.equal(result.contextActions.length,4);
+await self.onmessage({data:{source:personalSample,grants:personalGrants,event:"context.tap",key:"personal-add",...personalFlags}});
+assert.equal(result.output.text,"saved");assert.equal(requests.at(-1).args.folder,"GoldAPI Test");
+await self.onmessage({data:{source:personalSample,grants:personalGrants,event:"context.tap",key:"personal-remove",...personalFlags}});
+assert.equal(result.output.text,"removed");
+await self.onmessage({data:{source:personalSample,grants:personalGrants,event:"context.tap",key:"personal-author",...personalFlags}});
+assert.equal(JSON.parse(result.output.text).name,"Test user");
+
+
 
 const speechSample = """ + json.dumps(speech_sample) + """;
 await self.onmessage({data:{source:speechSample,grants:speechGrants,event:"plugin.start"}});
@@ -312,3 +353,11 @@ assert 'speech?.cancel(); speech = nil' in source
 assert 'Self.owner == nil' in source and 'self.valid(), UIApplication.shared.applicationState == .active' in source
 assert 'method == "gold.speech.speak", grants.contains("gold.speech")' in source
 assert 'guard !broker.isBusy' in source
+
+personal = (root / "submodules/ChatListUI/Sources/GoldgramAuthorSearch.swift").read_text()
+assert 'safeContext.removeValue(forKey: "_goldPersonalScope")' in source
+assert 'selected.removeValue(forKey: "_goldPersonalSelection")' in source
+assert 'GoldgramPersonalUI.change(context)' in personal and 'data.bookmarks.first(where: { $0.key == target.key }) == old' in personal
+assert 'raw.minAutoremoveOrClearTimeout == nil' in personal
+assert 'message.id.peerId.namespace == Namespaces.Peer.CloudUser || message.id.peerId.namespace == Namespaces.Peer.CloudGroup' in chat
+assert 'personal?.cancel(); personal = nil' in source
