@@ -1,6 +1,6 @@
 # CURRENT_STATUS — verified checkpoint
 
-  > **2026-11-27 local user date — #286 accepted for 15 device checks; #289 passed update fixtures but failed legacy consent assertion, #290 test-only correction queued.** Start with [START_HERE.md](./START_HERE.md); consult relevant sections of [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
+  > **2026-11-27 local user date — #290 CI green and update test 1.0→2.0 reported successful on iPhone; remaining device checks open.** Start with [START_HERE.md](./START_HERE.md); consult relevant sections of [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
 
 ## P0 development priority (user-approved 2026-11-25)
 
@@ -13,11 +13,11 @@
 | Item | Latest confirmed status |
 | --- | --- |
 | Feature branch | `gold-next-243-author-search` |
-| HEAD | `f9f889dc93f1a836cbe7eb5c5cb4434d1c2bbe41` (#290 legacy consent regression test correction), parent #289 |
+| HEAD | `f9f889dc93f1a836cbe7eb5c5cb4434d1c2bbe41` (#290 legacy consent regression test correction), CI success; device update to 2.0 reported successful |
 | Last green CI | [#286](https://github.com/sviridovski/Telegram-iOS/actions/runs/45975933018), success, 28m40s wall, IPA 15189495057 present/unexpired at verification |
 | Last installed | #286 — 15/16 checklist checks confirmed working on iPhone; item 1 unconfirmed, no failed checks reported. |
 | Failed candidate | #289 native preflight test_goldgram_ai.py:56 stale string assertion after refactor; #288 missing sample ui.read fixed in #289; #287 failure not separately diagnosed. |
-| Next task | **P0 Engine 2.0**: verify [#290](https://github.com/sviridovski/Telegram-iOS/actions/runs/46058439574) and obtain iPhone acceptance of Plugin Update Engine; then Diagnostics Engine. |
+| Next task | **P0 Engine 2.0**: finish #290 device acceptance (data preservation, restart, rollback/regrant; other negative and file/paste cases remain unconfirmed), then Diagnostics Engine. |
 | Recovery | #286 `0734a544b2c30e40c0d4362ca258fd3a59023f10` green and device-accepted for reported flows; #284 prior Personal UI/TTL baseline; #282 speech; #281 GoldAPI foundation; #280 context menu; #279 TTL opt-out; #277 Data Test; #276 lifecycle; #275 UI; #274 streaming. Historical archive/media limitations remain. |
 
 ## #252 corrections retained in #253
@@ -588,3 +588,8 @@ Live CI verification: #285 run 45966802832, exact SHA 2b33ec756b15def83dab2786e4
 - User reported another failed build. Verified #289 run 46055724471, native job 140697613453 failure at step 8 combined preflight, mx success, build skipped. Log confirms worker update/rollback fixture passed, native document fixture passed, native update policy 13 checks passed, AI request/response and confirmation policy Swift fixtures passed. Failure at test_goldgram_ai.py:56: old string assertion expected current.confirmationPolicy = nil after #287 moved reset to GoldgramPluginUpdate.replacement (next.confirmationPolicy = nil). No native iOS compilation reached. This is a separate failure from #288.
 - #290 [f9f889dc](https://github.com/sviridovski/Telegram-iOS/commit/f9f889dc93f1a836cbe7eb5c5cb4434d1c2bbe41), direct parent #289, changes ONLY build-system/gold-next/test_goldgram_ai.py. Replaced stale assertion with scoped shared replacement checks (consent reset, disable, empty grants), replacement call, editor path, rollback path and confirmation application; retained disable/enable consent reset assertion and all other checks. No permission weakening, no runtime app changes. Evaluated all simple source assertions of that test against exact repository source with equivalent JS string-membership logic: original 24/25, corrected 31/31. Compared three extracted Swift policy/routing/UI helper sections to #286: identical. Inspected 18 other downstream/relevant preflight Python files for direct GoldgramPlugins/update/record/consent references, none found. Not a full local Python/Swift preflight run; #289 passed actual native update policy fixture in CI. No claim of successful iOS build. Existing SQLite, Ghost, Collector, Live Bridge and workflow/cache unchanged.
 - [CI #290](https://github.com/sviridovski/Telegram-iOS/actions/runs/46058439574) queued at verification for exact code HEAD. #286 remains accepted recovery baseline. Next verify exact CI/jobs/IPA and only then device Update Test. CI target 15–20 min remains open. No build for docs.
+
+## 2026-11-27 — #290 green; partial Plugin Update Engine device acceptance
+
+- Verified exact HEAD f9f889dc93f1a836cbe7eb5c5cb4434d1c2bbe41, [CI #290](https://github.com/sviridovski/Telegram-iOS/actions/runs/46058439574) completed success, native/mx/build all success, run created 19:41:18 UTC and updated 20:18:48 UTC (37m30s elapsed), IPA artifact 15229194031 present and not expired at verification. CI speed goal 15–20m remains open. No workflow/cache changes.
+- User reported: installed #290, all excellent, updated plugin to version 2.0. Treat installed build and update success as confirmed on iPhone. Do not infer separately unreported checks: label/counter/logical file preservation, restart persistence, rollback to 1.0 and regrant, local file/paste import, permission additions, cancellation, rejected versions/identity, busy and safe-mode cases. Asked user to confirm three priority checks: data retention, restart version, rollback with preserved data and explicit regrant. #286 remains last fully recorded accepted recovery checkpoint for its tested flows; #290 now latest green and partially accepted. No further code changes, no new build initiated. Diagnostics Engine next after acceptance.
