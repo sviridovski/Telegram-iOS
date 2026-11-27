@@ -1,6 +1,6 @@
 # CURRENT_STATUS — verified checkpoint
 
-  > **2026-11-28 local user date — #291 CI green, user reported all checked and normal; Diagnostics Engine accepted for reported flows. Next SDK.** Start with [START_HERE.md](./START_HERE.md); consult relevant sections of [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
+  > **2026-11-28 local user date — #291 accepted; #292 SDK 1.0 candidate in CI. Runtime unchanged.** Start with [START_HERE.md](./START_HERE.md); consult [SDK_DEVELOPER_GUIDE.md](./SDK_DEVELOPER_GUIDE.md) and relevant sections of [PROJECT_CONTEXT](./PROJECT_CONTEXT.md), [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
 
 ## P0 development priority (user-approved 2026-11-25)
 
@@ -13,11 +13,11 @@
 | Item | Latest confirmed status |
 | --- | --- |
 | Feature branch | `gold-next-243-author-search` |
-| HEAD | `d07836aee261218ada14a8cbd790007e07d78ab3` (#291 Diagnostics Engine 1.0), CI success; user reports all checked and normal |
+| HEAD | `6adc8db8e378e2aa9e4216efc9c40c6936c756a2` (#292 SDK 1.0 templates, contract and compatibility tests), parent #291 |
 | Last green CI | [#291](https://github.com/sviridovski/Telegram-iOS/actions/runs/46067250709), success, 34m19s wall, IPA 15232314061 present/unexpired at verification |
 | Last installed | #291 — user reports all checked and normal, no individually enumerated device results; #290 prior explicit update/restart/rollback acceptance. |
 | Failed candidate | #289 native preflight test_goldgram_ai.py:56 stale string assertion after refactor; #288 missing sample ui.read fixed in #289; #287 failure not separately diagnosed. |
-| Next task | **P0 Engine 2.0**: SDK developer docs, templates, actual GGAPI/GoldAPI contracts and compatibility tests; then AI Commander 3.0. |
+| Next task | **P0 Engine 2.0**: verify [#292](https://github.com/sviridovski/Telegram-iOS/actions/runs/46083992903) and SDK examples; then AI Commander 3.0 based on actual 2.1.8 source. Continue engine/SDK evolution as plugins require. |
 | Recovery | #291 `d07836aee261218ada14a8cbd790007e07d78ab3` green and accepted for reported device flows; #290 prior update/rollback `f9f889dc93f1a836cbe7eb5c5cb4434d1c2bbe41`; #286 search/documents baseline. Historical archive/media limitations remain. |
 
 ## #252 corrections retained in #253
@@ -608,3 +608,8 @@ Live CI verification: #285 run 45966802832, exact SHA 2b33ec756b15def83dab2786e4
 ## 2026-11-28 — #291 Diagnostics Engine device acceptance
 
 - Exact HEAD d07836aee261218ada14a8cbd790007e07d78ab3, [CI #291](https://github.com/sviridovski/Telegram-iOS/actions/runs/46067250709) completed success, mx/native/build all success; created 2026-11-27 20:59:03 UTC, updated 21:33:22 UTC, 34m19s elapsed. IPA 15232314061 present, unexpired at verification. User reports "все проверил в 291 коммите, все нормально". Accept Diagnostics Engine for reported device flows and promote #291 as recovery checkpoint; no separate per-case results, network-specific or boundary checks inferred. Prior open tests remain open. CI target 15–20m still open, no cache/workflow changes. Next SDK developer docs, examples/templates, permission and compatibility matrix based on actual implementation, then AI Commander 3.0, then Archive Reliability 2.0. No source changes and no new build launched; docs only.
+
+## 2026-11-28 — SDK 1.0 candidate #292; continuing engine evolution
+
+- User approved next commit and clarified engine development is ongoing: future plugin development may require expansion and updates. This is not an engine freeze or final completion. Preserve current priority order, security/privacy invariants, versioned additive APIs, compatibility tests and explicit grants. AI Commander 3.0 next after SDK; inspect original source and Ghostgram documentation before porting, not guess compatibility. Archive Reliability 2.0 remains planned.
+- Verified #291 accepted code HEAD, docs HEAD and CI success before change. #292 [6adc8db8](https://github.com/sviridovski/Telegram-iOS/commit/6adc8db8e378e2aa9e4216efc9c40c6936c756a2) direct parent d07836aee261218ada14a8cbd790007e07d78ab3. Seven files: existing test_plugin_engine.py extended, new build-system/gold-next/sdk/{starter.js,search.js,documents.js,ai.js,contract.json,README.md}. No native app/Worker source, SQLite, Ghost, Collector, Live Bridge or cache/workflow changes. SDK 1.0 targets GGAPI 5 limited compatibility, GoldAPI 1.3.0. Manifest permission set and 20 service name/scope/permission entries derived from actual source. Existing CI test reads templates, checks declared permissions and target version, compares runtime-discovered contract, then exercises all four examples under mock RPC including missing history grant, missing managed key and no network during startup. V8 replay of exact JS harness 300/300 assertions (265 prior +35 new) with simulated RPC and accelerated timers; initial local comparator failed on JSON key order, normalized object key comparison and reran successfully before commit. No real provider call, full Python/native CI or device test performed locally. Existing app runtime unchanged, no new native UI required. CI #292 in_progress when checked by exact SHA, not a green result. Code commit contains executable examples/tests, not docs-only build. Documentation branch updates do not trigger builds. #291 remains accepted recovery checkpoint. Guide [SDK_DEVELOPER_GUIDE.md](./SDK_DEVELOPER_GUIDE.md) and current contract; no exhaustive Ghostgram compatibility claim. Runtime extensions must update contract and tests intentionally.
