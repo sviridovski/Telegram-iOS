@@ -286,3 +286,7 @@ GoldAPI 1.3.0 adds separate history/import grants. Native-only current top-level
 ## Plugin Update Engine 1.0 — #288 candidate
 
 Explicit selected-record source replacement, numeric version/identity and optional minimum GoldAPI validation, existing account-local atomic store and execution lease. Same UUID retains settings/storage/logical files, Keychain namespace and user UI/stream preferences. Code-only single-version rollback, not data rollback. Clear old executable schema/actions, grants, lifecycle and confirmation bypass; user must re-enable/re-grant. No remote catalog, automatic download, trusted signature, or migration runner. No change to SQLite/archive/Collector/Live Bridge/Ghost. See CURRENT_STATUS.md for CI and device acceptance.
+
+## Diagnostics Engine 1.0 — #291 candidate
+
+Shared native worker run instrumentation; bounded in-memory journal keyed internally by account and plugin UUID; fixed event/outcome categories, monotonic elapsed, RPC/error counters and broker-reported network response metadata only. No persistence, raw text/credentials/URLs/identifiers in report, exact CPU/RAM accounting, automated export, new JS access or changes to existing execution limits. Explicit per-plugin UI report/share/clear, scope revalidation. See CURRENT_STATUS for limitations, tests and acceptance.
