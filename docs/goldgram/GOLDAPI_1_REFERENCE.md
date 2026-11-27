@@ -1,6 +1,6 @@
-# GoldAPI 1.0.0 — developer reference (#281 candidate)
+# GoldAPI 1.0.0 — developer reference (#281 tested checkpoint)
 
-Status: implemented candidate, CI and device testing pending. Injected as the GoldAPI argument alongside unchanged GGAPI/GG in each disposable plugin execution. Methods not documented here are not implemented. Underlying GGAPI access does not require the new GoldAPI grants. No auto-send, raw SQLite, arbitrary file paths, or Telegram session access.
+Status: #281 CI green; user confirms nine device checklist items, including runtime discovery, local documents, restart persistence, chat button, selected news text analysis and existing AI Commander. New GoldAPI.ai real provider request and other unlisted checks remain unconfirmed. Injected as the GoldAPI argument alongside unchanged GGAPI/GG in each disposable plugin execution. Methods not documented here are not implemented. Underlying GGAPI access does not require the new GoldAPI grants. No auto-send, raw SQLite, arbitrary file paths, or Telegram session access.
 
 ## Runtime
 

@@ -1,6 +1,6 @@
 # CURRENT_STATUS — verified checkpoint
 
-  > **2026-11-27 local user date — #280 green/device accepted; #281 GoldAPI 1.0 foundation candidate, CI/device pending.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
+  > **2026-11-27 local user date — #281 CI green and nine device checklist items accepted; optional GoldAPI.ai integration pending; next proposed stage speech.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
 
 ## P0 development priority (user-approved 2026-11-25)
 
@@ -13,12 +13,12 @@
 | Item | Latest confirmed status |
 | --- | --- |
 | Feature branch | `gold-next-243-author-search` |
-| HEAD | `62164bdf8df130c6efb06ea25d6e230e6198114c` (#281 GoldAPI candidate), direct parent #280 |
-| Last green CI | [#280](https://github.com/sviridovski/Telegram-iOS/actions/runs/45873381350), attempt 2 success, all jobs green, IPA available |
-| Last installed | #280 — user confirms reported context menu correction works; previous #279 TTL opt-out accepted. |
+| HEAD | `62164bdf8df130c6efb06ea25d6e230e6198114c` (#281 GoldAPI tested checkpoint), direct parent #280 |
+| Last green CI | [#281](https://github.com/sviridovski/Telegram-iOS/actions/runs/45918727516), success, 34m06s, all jobs green, IPA available |
+| Last installed | #281 — all nine listed device checks passed; other checks explicitly unconfirmed, including new GoldAPI.ai real request. |
 | Failed candidate | #280 attempt 1 packaging cancelled (reason unknown), resolved by successful retry. Historical #272: wallet-engine Git LFS test snapshot timeout. |
-| Next task | **P0 Engine 2.0**: verify #281 GoldAPI CI and device acceptance; preserve accepted #280 behavior; then continue remaining scoped GoldAPI/approved roadmap. |
-| Recovery |  #280 green/device-accepted recovery baseline; #279 prior TTL opt-out checkpoint; #277 Data Test accepted; #276 prior lifecycle baseline; #275 prior UI and #274 prior streaming checkpoints. Earlier #263 navigation checkpoint and older archive/media limitations remain historical. |
+| Next task | **P0 Engine 2.0**: continue with proposed GoldAPI.speech (target #282); retain #281 tested behavior and pending optional AI/other regression checks. |
+| Recovery |  #281 green/device-tested recovery baseline (nine checks); #280 prior context-menu checkpoint; #279 prior TTL opt-out checkpoint; #277 Data Test accepted; #276 prior lifecycle baseline; #275 prior UI and #274 prior streaming checkpoints. Earlier #263 navigation checkpoint and older archive/media limitations remain historical. |
 
 ## #252 corrections retained in #253
 
@@ -478,3 +478,11 @@ User asked whether the remaining GoldAPI services can be implemented after #281:
 - Target #284: expanded GoldAPI.search via existing authorized native search, user-approved scopes, bounded results, cancellation and no read-state changes; separate document import/parse for user-selected PDF/DOCX via native file picker, size/page/text and archive decompression quotas, no arbitrary filesystem, no external upload unless separate explicit approved network action. PDF text layer and DOCX body text first; scanned PDF OCR, advanced formatting, images and document creation are not part of initial commitment. Split into additional builds if needed to keep risks manageable.
 
 Each stage requires independent permission and sample plugin tests, regression of #280 menu/TTL and #281 services, CI and actual iPhone acceptance. Keep existing Ghost, SQLite/archive, Collector and Live Bridge untouched unless a narrowly scoped explicitly approved integration is necessary; no new database. CI 15–20 minute target remains open. #281 was still in progress when checked; no source changes or additional build launched for this plan. This is a proposed implementation sequence, not completed functionality.
+
+## #281 accepted for tested flows — GoldAPI 1.0 checkpoint (2026-11-27)
+
+[CI #281](https://github.com/sviridovski/Telegram-iOS/actions/runs/45918727516) attempt 1 succeeded: native, mx and build all green, 34m06s wall (00:46:48–01:20:54 UTC). Source `62164bdf8df130c6efb06ea25d6e230e6198114c` matches active branch HEAD; IPA artifact 15164980510 unexpired when checked.
+
+User explicitly confirmed all nine checklist items on iPhone: installation/enabling of GoldAPI Test, capability discovery, writing the test document, reading/analyzing it, persistence after Swiftgram restart, Gold floating button in chat, GoldAPI text analysis in news context menu, existing AI Commander, and deleting the test document. Accept #281 as the latest green/device-tested recovery baseline for these flows. User expressly stated other tests are not confirmed. In particular, the optional real DeepSeek call via new GoldAPI.ai.complete, model discovery, SSE through the new wrapper, JSON import/export through the new wrapper, and exhaustive permission/safe-mode/isolation regressions remain unconfirmed on device. Existing AI Commander success is not proof of new GoldAPI.ai integration. Local 157/157 simulated worker assertions are prior evidence only.
+
+Next proposed stage is GoldAPI.speech (target #282), followed by favorites/contacts and expanded search/PDF/DOCX as recorded above; no source or CI changes made at this checkpoint. Preserve #280 context fix and #281 confirmed functions. CI 15–20m target remains unmet. No build for documentation.
