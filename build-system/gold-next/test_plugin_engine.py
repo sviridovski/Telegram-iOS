@@ -11,6 +11,7 @@ gold_sample = source.split('static let goldExample = #"""\n',1)[1].split('\n"""#
 speech_sample = source.split('static let speechExample = #"""\n',1)[1].split('\n"""#',1)[0]
 personal_sample = source.split('static let personalExample = #"""\n',1)[1].split('\n"""#',1)[0]
 searchdoc_sample = source.split('static let searchDocumentsExample = #"""\n',1)[1].split('\n"""#',1)[0]
+update_sample = source.split('static let updateExampleV1 = #"""\n',1)[1].split('\n"""#',1)[0]
 harness = """
 const assert = require('node:assert/strict');
 let result, requests=[], failModels=false, personalChoice="favorites";
@@ -330,6 +331,19 @@ assert.equal(JSON.parse(result.output.text).words,2);
 await self.onmessage({data:{source:builtInGold,grants:goldGrants,event:"floating.tap",context:searchContext,settings:{query:"test"}}});
 assert.ok(result.output.text.includes("TEST caption"));
 
+const updateV1 = """ + json.dumps(update_sample) + """;
+const updateV2 = updateV1.replace("// @version 1.0","// @version 2.0\\n// @permission.clipboard optional").replace("Update Test 1.0","Update Test 2.0");
+const updateGrants=['settings.read','events','storage','ui.mutate'];
+await self.onmessage({data:{source:updateV1,grants:updateGrants,event:"settings.action",key:"increment",settings:{label:"persisted"},storage:{count:5}}});
+assert.ok(!result.error);assert.equal(result.storage.count,6);assert.equal(result.files["update-test.txt"],"saved");
+const updateData={settings:result.settings,storage:result.storage,files:result.files};
+await self.onmessage({data:{source:updateV2,grants:[...updateGrants,"clipboard"],event:"settings.action",key:"inspect",...updateData}});
+assert.ok(!result.error);assert.equal(result.output.title,"Update Test 2.0");assert.equal(result.output.text,"persisted · 6 · saved");
+await self.onmessage({data:{source:updateV1,grants:updateGrants,event:"settings.action",key:"inspect",...updateData}});
+assert.ok(!result.error);assert.equal(result.output.title,"Update Test 1.0");assert.equal(result.output.text,"persisted · 6 · saved");
+console.log("Goldgram update sample preserves settings/storage/files across version and rollback");
+
+
 
 
 
@@ -497,7 +511,7 @@ if sys.platform == "darwin":
     rules = source.split("private enum GoldgramPluginUpdate {",1)[1].split("private struct GoldgramPluginState",1)[0]
     stub = r'''
 private struct GoldgramPluginRecord {
-    var id = UUID(); var code: String
+    var id = UUID(); var code: String; var previousCode: String? = nil
     var enabled = true; var grants = ["storage"]
     var settings = ["label":"test"]; var storage = ["count":"7"]; var fileData: [String:String]? = ["note.txt":"text"]
     var settingsSchema: Data? = Data(); var floatingTitle: String? = "old"; var contextActions: [[String:String]]? = []

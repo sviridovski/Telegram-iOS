@@ -153,6 +153,7 @@ private enum GoldgramPluginUpdate {
         next.enabled = false; next.grants = []; next.settingsSchema = nil
         next.floatingTitle = nil; next.contextActions = nil; next.confirmationPolicy = nil
         next.lifecycleEnabled = nil; next.lifecycleSubscriptions = nil
+        // Network streaming preference is harmless; network consent always resets.
         return next
     }
 }
@@ -1989,14 +1990,19 @@ private final class GoldgramPluginDetail: UITableViewController, UIDocumentPicke
         let alert = UIAlertController(title: "Обновление · " + record.manifest.name, message: "Установлена версия " + record.manifest.version + "\nВыберите доверенный локальный JS. Автоматической загрузки нет.", preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Выбрать .js из файлов", style: .default) { [weak self] _ in
             guard let self else { return }
-            self.updateBaseCode = record.code
-            let picker = UIDocumentPickerViewController(forOpeningContentTypes: [UTType(filenameExtension: "js") ?? .plainText], asCopy: true)
-            picker.delegate = self; picker.allowsMultipleSelection = false
-            self.present(picker, animated: true)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self = self] in
+                guard let self, self.navigationController?.topViewController === self,
+                      self.store.isCurrent(), self.presentedViewController == nil,
+                      UIApplication.shared.applicationState == .active else { return }
+                self.updateBaseCode = record.code
+                let picker = UIDocumentPickerViewController(forOpeningContentTypes: [UTType(filenameExtension: "js") ?? .plainText], asCopy: true)
+                picker.delegate = self; picker.allowsMultipleSelection = false
+                self.present(picker, animated: true)
+            }
         })
         alert.addAction(UIAlertAction(title: "Вставить новый JavaScript", style: .default) { [weak self] _ in
             guard let self else { return }
-            let editor = GoldgramPluginEditor(title: "Новая версия", text: "") { [weak self] code in
+            let editor = GoldgramPluginEditor(title: "Новая версия", text: "") { [weak self = self] code in
                 guard let self else { return }
                 if let error = self.updateError(code, expected: record.code) { self.navigationController?.topViewController?.showPluginError(error); return }
                 self.navigationController?.popViewController(animated: false)
@@ -2008,7 +2014,9 @@ private final class GoldgramPluginDetail: UITableViewController, UIDocumentPicke
         })
         if record.code == GoldgramPluginManager.updateExampleV1 {
             alert.addAction(UIAlertAction(title: "Тест: обновить до 2.0", style: .default) { [weak self] _ in
-                self?.confirmReplacement(GoldgramPluginManager.updateExampleV2, expected: record.code)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self = self] in
+                    self?.confirmReplacement(GoldgramPluginManager.updateExampleV2, expected: record.code)
+                }
             })
         }
         alert.addAction(UIAlertAction(title: "Отмена", style: .cancel))
@@ -2036,7 +2044,8 @@ private final class GoldgramPluginDetail: UITableViewController, UIDocumentPicke
         return GoldgramPluginUpdate.validate(current.manifest, GoldgramPluginManifest(code))
     }
     private func confirmReplacement(_ code: String, expected: String, rollback: Bool = false) {
-        guard viewIfLoaded?.window != nil, presentedViewController == nil, UIApplication.shared.applicationState == .active else { return }
+        guard navigationController?.topViewController === self, viewIfLoaded?.window != nil,
+              presentedViewController == nil, UIApplication.shared.applicationState == .active else { return }
         if !rollback, let error = updateError(code, expected: expected) { showPluginError(error); return }
         store.refresh()
         guard store.isCurrent(), store.failure == nil, run == nil, let current = store.record(id), current.code == expected,
