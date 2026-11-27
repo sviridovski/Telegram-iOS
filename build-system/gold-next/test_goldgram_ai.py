@@ -53,7 +53,17 @@ with tempfile.TemporaryDirectory() as tmp:
     path = pathlib.Path(tmp)/"main.swift"
     path.write_text("import Foundation\nprivate struct GoldgramPluginConfirmationPolicy:"+policy+fixture.replace("let p =", "private let p =").replace("let decoded =", "private let decoded ="))
     subprocess.run(["swift",str(path)],check=True)
-assert "current.confirmationPolicy = nil" in plugins and "p.confirmationPolicy = nil" in plugins
+# Source contract follows the shared replacement path introduced in #287.
+# The native update policy fixture in test_plugin_engine.py also exercises the
+# actual consent reset on update and rollback.
+replacement = plugins.split("static func replacement(_ current: GoldgramPluginRecord, code: String) -> GoldgramPluginRecord {", 1)[1].split("\n}\n", 1)[0]
+assert "next.confirmationPolicy = nil" in replacement
+assert "next.enabled = false" in replacement and "next.grants = []" in replacement
+assert "let next = GoldgramPluginUpdate.replacement(current, code: code)" in plugins
+assert "self.applyReplacement(code, expected: current.code, editor: true)" in plugins
+assert "confirmReplacement(previous, expected: p.code, rollback: true)" in plugins
+assert "_ = self.applyReplacement(code, expected: expected)" in plugins
+assert "p.confirmationPolicy = nil" in plugins
 assert "current.code == record.code" in plugins and "current.grants == record.grants" in plugins
 assert "if self.skipRequestConfirmation() { send(); return }" in s
 assert "if policy.skip { _ = insert(draft, answer); return }" in s
