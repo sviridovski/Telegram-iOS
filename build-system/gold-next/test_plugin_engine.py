@@ -13,6 +13,19 @@ personal_sample = source.split('static let personalExample = #"""\n',1)[1].split
 searchdoc_sample = source.split('static let searchDocumentsExample = #"""\n',1)[1].split('\n"""#',1)[0]
 update_sample = source.split('static let updateExampleV1 = #"""\n',1)[1].split('\n"""#',1)[0]
 diag_sample = source.split('static let diagnosticsExample = #"""\n',1)[1].split('\n"""#',1)[0]
+sdk_dir = root / "build-system/gold-next/sdk"
+sdk_examples = {name: (sdk_dir / (name + ".js")).read_text(encoding="utf-8") for name in ("starter", "search", "documents", "ai")}
+sdk_contract = json.loads((sdk_dir / "contract.json").read_text(encoding="utf-8"))
+import re
+native_permissions = re.search(r'static let supported: Set<String> = (\[[^\n]+\])', source)
+assert native_permissions is not None
+assert sorted(json.loads(native_permissions.group(1))) == sdk_contract["permissions"]
+for name, code in sdk_examples.items():
+    assert len(code.encode("utf-8")) <= 512 * 1024, name
+    assert "// @requiresGoldAPI " + sdk_contract["goldApi"] in code, name
+    declared = re.findall(r"^// @permission\.([^\s]+) (required|optional)$", code, re.M)
+    assert declared and len({key for key, _ in declared}) == len(declared), name
+    assert all(key in sdk_contract["permissions"] for key, _ in declared), name
 harness = """
 const assert = require('node:assert/strict');
 let result, requests=[], failModels=false, personalChoice="favorites";
@@ -360,6 +373,45 @@ assert.ok(result.error);assert.ok(!result.error.includes("synthetic diagnostic t
 
 
 
+
+
+const sdkExamples = """ + json.dumps(sdk_examples) + """;
+const sdkContract = """ + json.dumps(sdk_contract) + """;
+const sdkGrants=(code,optional=false)=>Array.from(code.matchAll(/^\\/\\/ @permission\\.([^\\s]+) (required|optional)$/gm)).filter(m=>optional||m[2]==="required").map(m=>m[1]);
+const sdkRun=async(name,event,extra={},optional=false)=>{
+  const source=sdkExamples[name];
+  await self.onmessage({data:{source,grants:sdkGrants(source,optional),event,...extra}});
+  assert.ok(!result.error);
+  return result;
+};
+await self.onmessage({data:{source:'GGAPI.ui.showSheet({title:"SDK",text:JSON.stringify({gg:GGAPI.runtime.apiVersion(),gold:GoldAPI.runtime.apiVersion(),methods:GoldAPI.runtime.capabilities().map(({name,scope,permissions})=>({name,scope,permissions})),available:GoldAPI.runtime.capabilities().filter(x=>x.available).length})})',grants:["ui.read"],event:"plugin.start"}});
+const sdkInfo=JSON.parse(result.output.text);
+assert.equal(sdkInfo.gg,sdkContract.ggApi);assert.equal(sdkInfo.gold,sdkContract.goldApi);
+assert.deepEqual(sdkInfo.methods,sdkContract.methods);assert.equal(sdkInfo.available,0);
+const sdkBefore=requests.length;
+const starterStart=await sdkRun("starter","plugin.start");assert.equal(starterStart.settings.label,"Привет");
+const starterAction=await sdkRun("starter","settings.action",{key:"increment",settings:{label:"SDK"},storage:{count:4}});
+assert.equal(starterAction.storage.count,5);assert.equal(starterAction.output.text,"SDK · 5");
+const starterAgain=await sdkRun("starter","settings.action",{key:"inspect",settings:starterAction.settings,storage:starterAction.storage});
+assert.equal(starterAgain.output.text,"SDK · 5");
+const searchStart=await sdkRun("search","plugin.start");assert.equal(searchStart.floating.id,"find");
+const sdkContext={peerId:"synthetic",messages:[{id:"1",text:"synthetic test"},{id:"2",text:"other"}]};
+const snapshot=await sdkRun("search","floating.tap",{context:sdkContext,settings:{query:"test",history:false}});
+assert.ok(snapshot.output.text.includes("synthetic test"));
+const deniedHistory=await sdkRun("search","floating.tap",{context:sdkContext,settings:{query:"test",history:true},historyAvailable:true});
+assert.ok(deniedHistory.output.text.includes("недоступен"));assert.equal(requests.length,sdkBefore);
+const history=await sdkRun("search","floating.tap",{context:sdkContext,settings:{query:"test",history:true},historyAvailable:true},true);
+assert.ok(history.output.text.includes("synthetic test"));assert.equal(requests.at(-1).method,"gold.search.history");
+const doc=await sdkRun("documents","settings.action",{key:"pick",documentsAvailable:true});
+assert.equal(requests.at(-1).method,"gold.documents.pickText");assert.equal(doc.output.text,"Слов: 2; байт: 11");
+const aiBefore=requests.length;
+const aiStart=await sdkRun("ai","plugin.start",{managedKey:true});
+assert.equal(aiStart.sections[0].items[0].type,"secret");assert.equal(aiStart.settings.apiKey,undefined);assert.equal(requests.length,aiBefore);
+const aiDenied=await sdkRun("ai","settings.action",{key:"generate",managedKey:false});
+assert.ok(aiDenied.output.text.includes("Нет ключа"));assert.equal(requests.length,aiBefore);
+const aiResult=await sdkRun("ai","settings.action",{key:"generate",managedKey:true,settings:{model:"deepseek-chat",prompt:"synthetic prompt",sample:"synthetic text"}});
+assert.equal(aiResult.output.text,"mock answer");assert.equal(requests.at(-1).method,"gold.ai.complete");assert.equal(JSON.parse(requests.at(-1).args.body).messages[1].content,"synthetic text");
+console.log("Goldgram SDK 1.0 contract and four example plugins passed");
 
 })().catch(e=>{console.error(e);process.exit(1)});
 """
