@@ -1,6 +1,6 @@
 # CURRENT_STATUS — verified checkpoint
 
-  > **2026-11-27 local user date — #281 green/device-tested; #282 GoldAPI speech candidate in CI; optional GoldAPI.ai integration pending.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
+  > **2026-11-27 local user date — #282 CI green and nine speech device checks accepted; optional GoldAPI.ai and other unlisted checks pending; next favorites/contacts.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
 
 ## P0 development priority (user-approved 2026-11-25)
 
@@ -13,12 +13,12 @@
 | Item | Latest confirmed status |
 | --- | --- |
 | Feature branch | `gold-next-243-author-search` |
-| HEAD | `2e5c81d86294ff471ada27ee9a20118a67459d59` (#282 speech candidate), direct parent #281 |
-| Last green CI | [#281](https://github.com/sviridovski/Telegram-iOS/actions/runs/45918727516), success, 34m06s, all jobs green, IPA available |
-| Last installed | #281 — all nine listed device checks passed; other checks explicitly unconfirmed, including new GoldAPI.ai real request. |
+| HEAD | `2e5c81d86294ff471ada27ee9a20118a67459d59` (#282 speech tested checkpoint), direct parent #281 |
+| Last green CI | [#282](https://github.com/sviridovski/Telegram-iOS/actions/runs/45943651626), success, 26m40s, all jobs green, IPA available |
+| Last installed | #282 — all nine listed speech device checks passed; other checks explicitly unconfirmed, including #281 GoldAPI.ai real request. |
 | Failed candidate | #280 attempt 1 packaging cancelled (reason unknown), resolved by successful retry. Historical #272: wallet-engine Git LFS test snapshot timeout. |
-| Next task | **P0 Engine 2.0**: verify #282 CI and speech device acceptance; then scoped favorites/contacts; retain #281 tested behavior and pending AI/other regression checks. |
-| Recovery |  #281 green/device-tested recovery baseline (nine checks); #280 prior context-menu checkpoint; #279 prior TTL opt-out checkpoint; #277 Data Test accepted; #276 prior lifecycle baseline; #275 prior UI and #274 prior streaming checkpoints. Earlier #263 navigation checkpoint and older archive/media limitations remain historical. |
+| Next task | **P0 Engine 2.0**: next scoped GoldAPI.favorites/contacts (target #283); retain accepted #282 speech and #281 behavior, pending AI/other regression checks. |
+| Recovery |  #282 green/device-tested recovery baseline (nine speech checks); #281 prior GoldAPI foundation checkpoint; #280 prior context-menu checkpoint; #279 prior TTL opt-out checkpoint; #277 Data Test accepted; #276 prior lifecycle baseline; #275 prior UI and #274 prior streaming checkpoints. Earlier #263 navigation checkpoint and older archive/media limitations remain historical. |
 
 ## #252 corrections retained in #253
 
@@ -495,3 +495,11 @@ User explicitly approved proceeding to #282 after nine successful #281 on-device
 - Explicit speech action owns a native session inside disposable worker; one globally reserved session, at most one speak invocation per execution, text max 1200 JS code points/Swift characters and 4800 UTF-8 bytes, normalized rate 0.75–1.5 times default, bounded language/voice identifiers. Native alert with Stop, delayed until context menu dismisses, revalidation before speech and 0.5s polling of validity, foreground and presentation. Stop is immediate; finish/cancel/background clear native speech and release reservation. Max speech 120s; polling returns ended when synthesizer no longer speaking (not a guarantee every word played; system interruptions may end it). Separate network/other broker work blocked during speech, speech blocked if same runner broker busy. No background speech or arbitrary audio playback. Device testing required for alert presentation/dismissal, stop, cancellation, permission revocation and interruption behavior.
 - Built-in GoldAPI Speech Test: Plugins > Установить тест озвучивания, enable and grant. Settings choose language and system voice (picker up to 23 listed voices plus default), rate, speak synthetic test. TTS button reads nonempty draft, context action GoldAPI: озвучить reads eligible selected text/caption, never sends or alters draft. Sample truncates to 1200 code points; API rejects oversized input. Test stop during speech, voice/rate, news root in discussion, draft unchanged, background cancellation, existing AICC and Data Test. Optional real GoldAPI.ai integration from #281 still unconfirmed unless separately tested.
 - V8 replay of actual updated worker with mocked native RPC and accelerated timers: 187/187 assertions (157 prior + 30 new); includes permissions/interactive state, invalid parameters, voice and stop RPC, built-in sample draft and selected-caption actions. Native source-contract assertions added to existing Python CI fixture. No local full Swift/UIKit/AVFoundation compile or real sound test. 15–20 minute CI target remains unmet; cache configuration preserved. Next favorites/contacts after #282 acceptance, then expanded search/documents.
+
+## #282 accepted for tested flows — GoldAPI Speech / 1.1.0 checkpoint (2026-11-27)
+
+[CI #282](https://github.com/sviridovski/Telegram-iOS/actions/runs/45943651626) attempt 1 succeeded: native, mx and build all green, wall time 26m40s (05:05:03–05:31:43 UTC). Source `2e5c81d86294ff471ada27ee9a20118a67459d59` matches feature branch HEAD; IPA artifact 15174268459 present and unexpired at verification. Compared with #281 (34m06s), wall time decreased by 7m26s; no cache/workflow change or causal attribution established. Target 15–20m remains open.
+
+User explicitly confirmed nine iPhone checks: installed/enabled GoldAPI Speech Test, spoke test text, selected a different system voice, changed speech speed, stopped active playback, spoke a news item via context menu, TTS floating button spoke draft text, app background stopped audio, and existing AI Commander worked. Other checks explicitly unconfirmed. Accept #282 as latest green/device-tested recovery baseline for listed flows. In particular, account/chat-switch cancellation, permission revocation, safe-mode, competing audio/interruption handling, concurrency/timeout and programmatic stop are not separately confirmed on device. #281 optional new GoldAPI.ai real provider request, discovery/streaming and JSON wrapper tests remain pending. Prior 187/187 simulated worker checks are separate evidence, not exhaustive native tests.
+
+Next stage: scoped GoldAPI.favorites and GoldAPI.contacts (target #283, number not reserved); inspect existing native interfaces and reuse existing storage, separate permission gates and explicit user-approved writes. Preserve accepted #280–282 behavior, SQLite, Ghost, Collector and Live Bridge. No code, architecture or workflow changes at this acceptance checkpoint; no CI dispatch for documentation.
