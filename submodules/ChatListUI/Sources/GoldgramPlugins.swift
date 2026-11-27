@@ -7,7 +7,7 @@ import AVFoundation
 // #267: deliberately foreground, on-demand and local-only. Never expose Telegram,
 // account objects, credentials, filesystem or network to imported JavaScript.
 private struct GoldgramPluginManifest {
-    static let supported: Set<String> = ["settings.read", "events", "console", "ui.read", "storage", "chat.read", "chat.write", "messages.read", "network.fetch", "ui.mutate", "clipboard", "media.read", "gold.ai", "gold.search", "gold.documents", "gold.speech", "gold.favorites", "gold.contacts"]
+    static let supported: Set<String> = ["settings.read", "events", "console", "ui.read", "storage", "chat.read", "chat.write", "messages.read", "network.fetch", "ui.mutate", "clipboard", "media.read", "gold.ai", "gold.search", "gold.documents", "gold.speech", "gold.favorites", "gold.contacts", "gold.search.history", "gold.documents.import"]
     let name: String
     let version: String
     let author: String
@@ -374,6 +374,8 @@ private final class GoldgramPluginRun: NSObject, WKNavigationDelegate, WKScriptM
     private var broker: GoldgramPluginNetwork?
     private var speech: GoldgramPluginSpeech?
     private var personal: GoldgramPluginPersonalSession?
+    private var history: GoldgramPluginHistorySession?
+    private var documents: GoldgramPluginDocumentSession?
     private let grants: Set<String>
     private let interactive: Bool
     private let lease: String
@@ -392,6 +394,7 @@ private final class GoldgramPluginRun: NSObject, WKNavigationDelegate, WKScriptM
             "settings": GoldgramPluginStore.decodeValues(record.settings), "storage": GoldgramPluginStore.decodeValues(record.storage)]
         var safeContext = context
         let personalScope = safeContext.removeValue(forKey: "_goldPersonalScope") as? [String: Any] ?? [:]
+        let historyScope = safeContext.removeValue(forKey: "_goldHistoryScope") as? [String: Any] ?? [:]
         var personalSelection: [String: Any] = [:]
         if var selected = safeContext["selectedMessage"] as? [String: Any] {
             personalSelection = selected.removeValue(forKey: "_goldPersonalSelection") as? [String: Any] ?? [:]
@@ -405,6 +408,10 @@ private final class GoldgramPluginRun: NSObject, WKNavigationDelegate, WKScriptM
         input["speechAvailable"] = presenter != nil && interactive && grants.contains("gold.speech")
         let personalAllowed = presenter != nil && interactive && grants.contains("chat.read") && (grants.contains("gold.favorites") || grants.contains("gold.contacts"))
         let selectedAllowed = personalAllowed && event == "context.tap" && grants.contains("messages.read")
+        let historyAllowed = presenter != nil && interactive && grants.contains("gold.search") && grants.contains("gold.search.history") && grants.contains("chat.read") && grants.contains("messages.read") && !historyScope.isEmpty
+        let documentsAllowed = presenter != nil && interactive && grants.contains("gold.documents") && grants.contains("gold.documents.import")
+        input["historyAvailable"] = historyAllowed
+        input["documentsAvailable"] = documentsAllowed
         input["personalPeerAvailable"] = personalAllowed && !personalScope.isEmpty
         input["personalSelectionAvailable"] = selectedAllowed && !personalSelection.isEmpty
         input["personalCurrentContactAvailable"] = personalAllowed && personalScope["contact"] != nil
@@ -422,6 +429,8 @@ private final class GoldgramPluginRun: NSObject, WKNavigationDelegate, WKScriptM
         if let presenter, interactive {
             if grants.contains("gold.speech") { speech = GoldgramPluginSpeech(presenter: presenter, valid: valid) }
             if personalAllowed { personal = GoldgramPluginPersonalSession(account: account, presenter: presenter, scope: personalScope, selected: selectedAllowed ? personalSelection : [:], valid: valid) }
+            if historyAllowed { history = GoldgramPluginHistorySession(account: account, scope: historyScope, presenter: presenter, valid: valid) }
+            if documentsAllowed { documents = GoldgramPluginDocumentSession(presenter: presenter, valid: valid) }
             let skipRequest = GoldgramPluginConfirmationPolicy.skipRequest(record.confirmationPolicy, grants: record.grants, event: event)
             broker = GoldgramPluginNetwork(config: credential, presenter: presenter, valid: valid, skipRequestConfirmation: {
                 guard skipRequest, valid() else { return false }
@@ -465,6 +474,8 @@ private final class GoldgramPluginRun: NSObject, WKNavigationDelegate, WKScriptM
         NotificationCenter.default.removeObserver(self)
         speech?.cancel(); speech = nil
         personal?.cancel(); personal = nil
+        history?.cancel(); history = nil
+        documents?.cancel(); documents = nil
         broker?.cancel(); broker = nil
         timer?.cancel(); timer = nil
         if let web {
@@ -506,12 +517,21 @@ private final class GoldgramPluginRun: NSObject, WKNavigationDelegate, WKScriptM
                 return
             }
             if method == "gold.speech.speak", grants.contains("gold.speech"), let speech {
-                guard !broker.isBusy, personal?.busy != true else { callback(["error": "Другое действие плагина выполняется."]); return }
+                guard !broker.isBusy, personal?.busy != true, history?.busy != true, documents?.busy != true else { callback(["error": "Другое действие плагина выполняется."]); return }
                 speech.speak(args, completion: callback)
                 return
             }
             guard speech?.active != true else { callback(["error": "Сначала остановите озвучивание."]); return }
             guard personal?.busy != true else { callback(["error": "Сначала завершите подтверждение личных данных."]); return }
+            guard history?.busy != true, documents?.busy != true else { callback(["error": "Сначала завершите поиск или выбор документа."]); return }
+            if method == "gold.search.history" {
+                guard !broker.isBusy, grants.contains("gold.search"), grants.contains("gold.search.history"), grants.contains("chat.read"), grants.contains("messages.read"), let history else { callback(["error": "Permission denied"]); return }
+                history.search(args, completion: callback); return
+            }
+            if method == "gold.documents.pickText" {
+                guard !broker.isBusy, grants.contains("gold.documents"), grants.contains("gold.documents.import"), let documents else { callback(["error": "Permission denied"]); return }
+                documents.pick(completion: callback); return
+            }
             if method.hasPrefix("gold.favorites.") || method.hasPrefix("gold.contacts.") {
                 let favorites = method.hasPrefix("gold.favorites.")
                 let selectedMethod = method != "gold.favorites.search" && method != "gold.contacts.current"
@@ -753,12 +773,14 @@ function goldWorkerMain() {
       "favorites.addSelected":{grants:["gold.favorites","chat.read","messages.read"],scope:"confirmedSelectedReference",active:goldInteractive&&p.personalSelectionAvailable===true},
       "favorites.removeSelected":{grants:["gold.favorites","chat.read","messages.read"],scope:"confirmedSelectedReference",active:goldInteractive&&p.personalSelectionAvailable===true},
       "contacts.current":{grants:["gold.contacts","chat.read"],scope:"currentCloudUser",active:goldInteractive&&p.personalCurrentContactAvailable===true},
-      "contacts.selected":{grants:["gold.contacts","chat.read","messages.read"],scope:"selectedCloudUserAuthor",active:goldInteractive&&p.personalSelectedContactAvailable===true}
+      "contacts.selected":{grants:["gold.contacts","chat.read","messages.read"],scope:"selectedCloudUserAuthor",active:goldInteractive&&p.personalSelectedContactAvailable===true},
+      "search.history":{grants:["gold.search","gold.search.history","chat.read","messages.read"],scope:"confirmedCurrentPeerHistory",active:goldInteractive&&p.historyAvailable===true},
+      "documents.pickText":{grants:["gold.documents","gold.documents.import"],scope:"userSelectedDocument",active:goldInteractive&&p.documentsAvailable===true}
     };
     const goldHas=name=>own(goldPolicy,name)&&goldPolicy[name].active&&goldPolicy[name].grants.every(allowed);
     const goldNeed=name=>{if(!goldHas(name))throw Error("GoldAPI unavailable: "+name);};
     const goldCaps=()=>Object.keys(goldPolicy).map(name=>({name,scope:goldPolicy[name].scope,permissions:[...goldPolicy[name].grants],granted:goldPolicy[name].grants.every(allowed),available:goldHas(name)}));
-    const gold={runtime:Object.freeze({apiVersion:()=>"1.2.1",has:goldHas,capabilities:goldCaps})};
+    const gold={runtime:Object.freeze({apiVersion:()=>"1.3.0",has:goldHas,capabilities:goldCaps})};
     const byteCount=text=>{let n=0;for(const ch of text){const cp=ch.codePointAt(0);n+=cp<=127?1:cp<=2047?2:cp<=65535?3:4;}return n;};
     const checkedText=(v,max)=>{if(typeof v!=="string"||byteCount(v)>max)throw Error("Invalid or oversized text");return v;};
     if(allowed("gold.ai")&&allowed("network.fetch")){
@@ -787,7 +809,7 @@ function goldWorkerMain() {
     if(allowed("gold.search")&&allowed("chat.read")&&allowed("messages.read")){
       const searchRows=(!passive&&Array.isArray(ctx.messages)?ctx.messages:[]).slice(-36).map(m=>({id:m.id,text:m.text}));
       const searchSelected=selectedSnapshot?{id:selectedSnapshot.id,text:selectedSnapshot.text}:null;
-      gold.search=Object.freeze({messages:(query,options={})=>{
+      const searchMethods={messages:(query,options={})=>{
         goldNeed("search.messages");
         checkedText(query,512);const q=query.trim().toLowerCase();
         if(!q||!options||typeof options!=="object"||Array.isArray(options)||Object.keys(options).some(k=>!["limit","includeSelected"].includes(k)))throw Error("Invalid search options");
@@ -801,7 +823,16 @@ function goldWorkerMain() {
         }
         const matched=candidates.filter(m=>typeof m.text==="string"&&m.text.toLowerCase().includes(q));
         return {items:matched.slice(-n).reverse(),matched:matched.length,scope:"visibleSnapshot",complete:false};
-      }});
+      }};
+      if(allowed("gold.search.history"))searchMethods.history=async(query,options={})=>{
+        goldNeed("search.history");checkedText(query,512);
+        if(!query.trim()||!options||typeof options!=="object"||Array.isArray(options)||Object.keys(options).some(k=>!["limit","since","until"].includes(k)))throw Error("Invalid history options");
+        const {limit=8,since,until}=options;
+        if(!Number.isInteger(limit)||limit<1||limit>12||[since,until].some(d=>d!==undefined&&(!Number.isInteger(d)||d<1||d>2147483647))||(since!==undefined&&until!==undefined&&since>until))throw Error("Invalid history bounds");
+        const args={query:query.trim(),limit};if(since!==undefined)args.since=since;if(until!==undefined)args.until=until;
+        const r=await rpc("gold.search.history",args);return r.value;
+      };
+      gold.search=Object.freeze(searchMethods);
     }
     if(allowed("gold.documents")){
       const docs={analyze:text=>{
@@ -816,6 +847,7 @@ function goldWorkerMain() {
         docs.pickJSON=async()=>{goldNeed("documents.pickJSON");return base.files.pick();};
         docs.shareJSON=async name=>{goldNeed("documents.shareJSON");return base.files.share(name);};
       }
+      if(allowed("gold.documents.import"))docs.pickText=async()=>{goldNeed("documents.pickText");const r=await rpc("gold.documents.pickText",{});return r.value;};
       gold.documents=Object.freeze(docs);
     }
     if(allowed("gold.speech")){
@@ -935,7 +967,7 @@ final class GoldgramPluginManager: UITableViewController, UIDocumentPickerDelega
     override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
         section == 0 ? (store.failure ?? "GGAPI: открытый чат и локальные настройки; подтверждения управляются для каждого плагина. Не все методы Ghostgram поддерживаются.") : "Импортируйте только доверенный код. Не вводите API-ключи в обычные настройки."
     }
-    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? (store.isCurrent() ? store.state.plugins.count : 0) : (section == 1 ? 12 : 1) }
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? (store.isCurrent() ? store.state.plugins.count : 0) : (section == 1 ? 13 : 1) }
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
         if indexPath.section == 0 {
@@ -948,7 +980,7 @@ final class GoldgramPluginManager: UITableViewController, UIDocumentPickerDelega
             cell.detailTextLabel?.text = "DeepSeek · промпт и плавающая кнопка"
             cell.imageView?.image = UIImage(systemName: "sparkles")
         } else {
-            cell.textLabel?.text = ["Вставить JavaScript", "Импортировать .js из файлов", "Установить тестовый плагин", "Безопасный режим", "Подтверждения плагинов", "Установить тесты многоплагинности", "Установить тест интерфейса", "Установить тест событий", "Установить тест GGAPI", "Установить тест GoldAPI", "Установить тест озвучивания", "Установить / обновить тест избранного и контактов"][indexPath.row]
+            cell.textLabel?.text = ["Вставить JavaScript", "Импортировать .js из файлов", "Установить тестовый плагин", "Безопасный режим", "Подтверждения плагинов", "Установить тесты многоплагинности", "Установить тест интерфейса", "Установить тест событий", "Установить тест GGAPI", "Установить тест GoldAPI", "Установить тест озвучивания", "Установить / обновить тест избранного и контактов", "Установить тест поиска и документов"][indexPath.row]
             if indexPath.row == 3 { cell.detailTextLabel?.text = store.state.safe ? "Включён — выполнение заблокировано" : "Выключен" }
             if indexPath.row == 4 { cell.detailTextLabel?.text = "Запросы к сервисам и вставка ответа" }
         }
@@ -1015,6 +1047,9 @@ final class GoldgramPluginManager: UITableViewController, UIDocumentPickerDelega
             } else if store.state.plugins.contains(where: { $0.code == Self.personalExample }) {
                 notice("GoldAPI Personal Test 1.1 уже установлен.")
             } else if !install(Self.personalExample) { notice("Не удалось установить тест личных данных.") }
+        case 12:
+            store.refresh()
+            if !store.state.plugins.contains(where: { $0.code == Self.searchDocumentsExample }) && !install(Self.searchDocumentsExample) { notice("Не удалось установить тест поиска и документов.") }
         default:
             store.refresh()
             var next = store.state; next.safe.toggle()
@@ -1137,6 +1172,40 @@ GGAPI.ui.addMessageContextAction({id:"inspect",title:"GGAPI: проверить 
   const m=GGAPI.messages.getSelectedMessage();
   const info=GGAPI.media?GGAPI.media.selected():null;
   GGAPI.ui.showSheet({title:"GGAPI",text:info?"Медиа: "+info.kind:(m?"Текст: "+String(m.text||"").length+" символов":"Нет сообщения")});
+});
+"""#
+    static let searchDocumentsExample = #"""
+// @name GoldAPI Search & Documents Test
+// @version 1.0
+// @permission.settings.read required
+// @permission.events required
+// @permission.ui.read required
+// @permission.ui.mutate required
+// @permission.chat.read required
+// @permission.messages.read required
+// @permission.gold.search required
+// @permission.gold.search.history required
+// @permission.gold.documents required
+// @permission.gold.documents.import required
+GGAPI.settings.addSection({title:"Поиск и документы",items:[
+  {type:"text",key:"query",title:"Поисковый запрос",default:"тест"},
+  {type:"button",key:"document",title:"Открыть PDF / DOCX / TXT / JSON"},
+  {type:"info",key:"about",title:"Локальный разбор",detail:"Выберите файл вручную. Текст не отправляется в сеть. Кнопка Find в чате — поиск в текущем диалоге с подтверждением."}
+]});
+const show=(title,text)=>GGAPI.ui.showSheet({title,text});
+GGAPI.events.on("settings.action",async p=>{
+  if(p.key!=="document")return;
+  try{const d=await GoldAPI.documents.pickText();if(!d)return;
+    const stats=GoldAPI.documents.analyze(d.text);
+    show("Документ",d.name+"\nФормат: "+d.format.toUpperCase()+"\nСлов: "+stats.words+"\nСимволов: "+stats.characters+(d.truncated?"\nИзвлечена часть документа.":"")+"\n\n"+d.text.slice(0,3500)+(d.text.length>3500?"\n…":""));
+  }catch(e){show("Документ",String(e.message||e));}
+});
+GGAPI.ui.addFloatingButton({id:"find",title:"Find"},async()=>{
+  try{
+    if(!GoldAPI.runtime.has("search.history")){show("Поиск","Откройте обычный диалог, не тему и не обсуждение.");return;}
+    const r=await GoldAPI.search.history(GGAPI.settings.getPlugin("query","тест"),{limit:8});
+    show("Поиск в диалоге",r.items.length?"Найдено в выборке: "+r.items.length+"\n\n"+r.items.map((m,i)=>(i+1)+". "+m.text).join("\n\n")+"\n\nРезультаты ограничены.":"Совпадений в полученной выборке нет.");
+  }catch(e){show("Поиск",String(e.message||e));}
 });
 """#
     static let personalExampleV1 = #"""

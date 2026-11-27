@@ -10,10 +10,11 @@ ui_sample = source.split('static let uiExample = #"""\n',1)[1].split('\n"""#',1)
 gold_sample = source.split('static let goldExample = #"""\n',1)[1].split('\n"""#',1)[0]
 speech_sample = source.split('static let speechExample = #"""\n',1)[1].split('\n"""#',1)[0]
 personal_sample = source.split('static let personalExample = #"""\n',1)[1].split('\n"""#',1)[0]
+searchdoc_sample = source.split('static let searchDocumentsExample = #"""\n',1)[1].split('\n"""#',1)[0]
 harness = """
 const assert = require('node:assert/strict');
 let result, requests=[], failModels=false, personalChoice="favorites";
-global.self = {postMessage: raw => {const v=JSON.parse(raw);if(v.rpc!==undefined){requests.push(v);const isModels=v.args.url==="https://api.deepseek.com/models";if(v.args.progress)self.onmessage({data:{rpcProgress:v.rpc,event:{text:"partial",thinking:false,done:false}}});const response=v.method==="ui.select"?{value:v.args.title==="Личные данные"?personalChoice:"0"}:v.method==="gold.favorites.search"?{value:{items:[{title:"Test chat",folder:"Test",note:"synthetic",tags:[]}],matched:1,scope:"currentPeer",complete:true}}:v.method==="gold.favorites.selected"?{value:{title:"Test chat",folder:"Test"}}:v.method==="gold.favorites.addSelected"?{status:"saved"}:v.method==="gold.favorites.removeSelected"?{status:"removed"}:v.method==="gold.contacts.current"||v.method==="gold.contacts.selected"?{value:{name:"Test user",username:"test",card:{alias:"Test alias",note:"Test note"}}}:v.method==="gold.speech.voices"?{voices:[{id:"mock-ru",name:"Mock",language:"ru-RU"}]}:v.method==="gold.speech.speak"?{status:"ended",started:true}:v.method==="gold.speech.stop"?{stopped:false}:isModels?{status:failModels?503:200,body:JSON.stringify({object:"list",data:[{id:"fresh-model",object:"model"}]})}:{status:200,body:'{"choices":[{"message":{"content":"mock answer"}}]}'};self.onmessage({data:{rpcResult:v.rpc,result:response}});}else result=v;}};
+global.self = {postMessage: raw => {const v=JSON.parse(raw);if(v.rpc!==undefined){requests.push(v);const isModels=v.args.url==="https://api.deepseek.com/models";if(v.args.progress)self.onmessage({data:{rpcProgress:v.rpc,event:{text:"partial",thinking:false,done:false}}});const response=v.method==="gold.search.history"?{value:{items:[{id:"1",text:"synthetic test",timestamp:123}],scope:"currentPeerHistory",complete:false,serverCompleted:true,truncated:false}}:v.method==="gold.documents.pickText"?{value:{name:"test.docx",format:"docx",text:"Hello world",bytes:100,pageCount:0,truncated:false}}:v.method==="ui.select"?{value:v.args.title==="Личные данные"?personalChoice:"0"}:v.method==="gold.favorites.search"?{value:{items:[{title:"Test chat",folder:"Test",note:"synthetic",tags:[]}],matched:1,scope:"currentPeer",complete:true}}:v.method==="gold.favorites.selected"?{value:{title:"Test chat",folder:"Test"}}:v.method==="gold.favorites.addSelected"?{status:"saved"}:v.method==="gold.favorites.removeSelected"?{status:"removed"}:v.method==="gold.contacts.current"||v.method==="gold.contacts.selected"?{value:{name:"Test user",username:"test",card:{alias:"Test alias",note:"Test note"}}}:v.method==="gold.speech.voices"?{voices:[{id:"mock-ru",name:"Mock",language:"ru-RU"}]}:v.method==="gold.speech.speak"?{status:"ended",started:true}:v.method==="gold.speech.stop"?{stopped:false}:isModels?{status:failModels?503:200,body:JSON.stringify({object:"list",data:[{id:"fresh-model",object:"model"}]})}:{status:200,body:'{"choices":[{"message":{"content":"mock answer"}}]}'};self.onmessage({data:{rpcResult:v.rpc,result:response}});}else result=v;}};
 """ + worker + """
 goldWorkerMain();
 const sample = """ + json.dumps(example) + """;
@@ -171,7 +172,7 @@ console.log('Goldgram #280 caption text independent of media grant, metadata rem
 const goldGrants=[...compat,'gold.ai','gold.documents','gold.search'];
 const goldCapsScript='GGAPI.storage.set("version",GoldAPI.runtime.apiVersion());GGAPI.storage.set("caps",GoldAPI.runtime.capabilities());GGAPI.storage.set("fake",GoldAPI.runtime.has("speech.say"));';
 await self.onmessage({data:{source:goldCapsScript,grants:compat,event:"settings.action"}});
-assert.equal(result.storage.version,"1.2.1");assert.equal(result.storage.caps.length,18);assert.equal(result.storage.caps.every(c=>!c.available),true);assert.equal(result.storage.fake,false);
+assert.equal(result.storage.version,"1.3.0");assert.equal(result.storage.caps.length,20);assert.equal(result.storage.caps.every(c=>!c.available),true);assert.equal(result.storage.fake,false);
 await self.onmessage({data:{source:goldCapsScript,grants:goldGrants,event:"settings.action",managedKey:true}});
 assert.equal(result.storage.caps.find(c=>c.name==="ai.complete").available,true);assert.equal(result.storage.caps.find(c=>c.name==="search.messages").available,false);
 await self.onmessage({data:{source:goldCapsScript,grants:goldGrants,event:"plugin.start",managedKey:true}});
@@ -260,6 +261,30 @@ await self.onmessage({data:{source:'return GoldAPI.contacts.selected()',grants:p
 await self.onmessage({data:{source:'return GoldAPI.contacts.current()',grants:personalGrants,event:"plugin.start",...personalFlags}});assert.ok(result.error);
 assert.equal(requests.length,pDenied);
 console.log('Goldgram #283 personal scoped grant, no caller IDs, and metadata contracts OK');
+
+const sdGrants=[...compat,"gold.search","gold.search.history","gold.documents","gold.documents.import"];
+const sdFlags={historyAvailable:true,documentsAvailable:true};
+const sdScript='GGAPI.events.on("settings.action",async()=>{GGAPI.storage.set("h",await GoldAPI.search.history("test",{limit:3,since:100,until:200}));GGAPI.storage.set("d",await GoldAPI.documents.pickText());});';
+await self.onmessage({data:{source:sdScript,grants:sdGrants,event:"settings.action",...sdFlags}});
+assert.equal(result.storage.h.scope,"currentPeerHistory");assert.equal(result.storage.h.complete,false);assert.equal(result.storage.d.text,"Hello world");assert.equal(requests.at(-2).method,"gold.search.history");assert.deepEqual(requests.at(-2).args,{query:"test",limit:3,since:100,until:200});assert.deepEqual(requests.at(-1).args,{});
+const sdBefore=requests.length;
+for(const source of ['return GoldAPI.search.history("x",{peerId:"other"})','return GoldAPI.search.history("x",{limit:13})','return GoldAPI.search.history("x",{since:200,until:100})','return GoldAPI.search.history(" ")','return GoldAPI.search.history("x",{since:2147483648})']){
+ await self.onmessage({data:{source,grants:sdGrants,event:"settings.action",...sdFlags}});assert.ok(result.error);
+}
+await self.onmessage({data:{source:'return GoldAPI.search.history("x")',grants:sdGrants.filter(g=>g!=="gold.search.history"),event:"settings.action",...sdFlags}});assert.ok(result.error);
+await self.onmessage({data:{source:'return GoldAPI.documents.pickText()',grants:sdGrants.filter(g=>g!=="gold.documents.import"),event:"settings.action",...sdFlags}});assert.ok(result.error);
+await self.onmessage({data:{source:'return GoldAPI.documents.pickText()',grants:sdGrants,event:"chat.opened",...sdFlags}});assert.ok(result.error);
+await self.onmessage({data:{source:'return GoldAPI.search.history("x")',grants:sdGrants,event:"floating.tap",historyAvailable:false}});assert.ok(result.error);
+assert.equal(requests.length,sdBefore);
+const sdSample=""" + json.dumps(searchdoc_sample) + """;
+await self.onmessage({data:{source:sdSample,grants:sdGrants,event:"plugin.start"}});
+assert.ok(!result.error);assert.equal(result.floating.title,"Find");
+await self.onmessage({data:{source:sdSample,grants:sdGrants,event:"settings.action",key:"document",...sdFlags}});
+assert.ok(result.output.text.includes("Hello world"));assert.ok(result.output.text.includes("Слов: 2"));
+await self.onmessage({data:{source:sdSample,grants:sdGrants,event:"floating.tap",...sdFlags}});
+assert.ok(result.output.text.includes("synthetic test"));
+console.log('Goldgram #285 history/document scope contracts OK');
+
 
 const personalSample = """ + json.dumps(personal_sample) + """;
 await self.onmessage({data:{source:personalSample,grants:personalGrants,event:"plugin.start"}});
@@ -375,3 +400,91 @@ assert 'personal?.cancel(); personal = nil' in source
 
 assert 'allowTimedReference: self.goldgramPluginTimedText(message._asMessage())' in chat
 assert 'legacy.previousCode = legacy.code' in source and 'legacy.code = Self.personalExample' in source
+
+reader = (root / "submodules/ChatListUI/Sources/GoldgramPluginDocuments.swift").read_text()
+assert 'safeContext.removeValue(forKey: "_goldHistoryScope")' in source
+assert 'self.chatLocation.threadId == nil' in chat
+assert 'GoldgramMediaEntry.eligible(m)' in personal and 'raw.autoremoveAttribute == nil' in personal
+assert 'history?.cancel(); history = nil' in source and 'documents?.cancel(); documents = nil' in source
+assert 'PDFDocument(data: data)' in reader and 'COMPRESSION_ZLIB' in reader
+assert 'shouldResolveExternalEntities = false' in reader and 'plain <= maxXML' in reader
+
+# Native parser smoke tests on the same macOS runner, before the Bazel build.
+# Compile the actual document reader (no UIKit picker on macOS) and exercise
+# stored/deflated Word XML, invalid XML, oversized entries, TXT, JSON, and PDF.
+import sys, zipfile, struct
+if sys.platform == "darwin":
+    parser = reader.split("@MainActor\nfinal class GoldgramPluginDocumentSession", 1)[0]
+    parser = parser.replace("import UIKit\n", "").replace("import UniformTypeIdentifiers\n", "")
+    swift_test = r'''
+func load(_ name: String) throws -> Data {
+    try Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[1]).appendingPathComponent(name))
+}
+func check(_ condition: Bool, _ name: String) {
+    if !condition { fatalError("Document contract failed: " + name) }
+}
+func denied(_ name: String) throws {
+    do { _ = try GoldgramDocumentReader.docx(try load(name)); fatalError("Accepted invalid DOCX: " + name) }
+    catch { }
+}
+for name in ["stored.docx", "deflated.docx"] {
+    let data = try load(name)
+    let result = try GoldgramDocumentReader.read(data, name: name, ext: "docx")
+    check((result["text"] as? String) == "Hello & мир\nSecond\tline\n", name)
+    check((result["truncated"] as? Bool) == false, "not truncated")
+}
+try denied("oversized.docx")
+try denied("dtd.docx")
+try denied("crc.docx")
+try denied("missing.docx")
+try denied("duplicate.docx")
+let txt = try GoldgramDocumentReader.read(Data("hello".utf8), name:"a.txt",ext:"txt")
+check((txt["text"] as? String) == "hello", "TXT")
+let js = try GoldgramDocumentReader.read(Data("{\"x\":1}".utf8), name:"a.json",ext:"json")
+check((js["text"] as? String) == "{\"x\":1}", "JSON")
+let big = try GoldgramDocumentReader.read(Data(String(repeating:"я",count:30000).utf8),name:"big.txt",ext:"txt")
+check((big["text"] as? String)?.utf8.count == 48000, "UTF-8 bound")
+check((big["truncated"] as? Bool) == true, "truncation flag")
+let pdf = try GoldgramDocumentReader.read(try load("sample.pdf"), name:"sample.pdf",ext:"pdf")
+check((pdf["text"] as? String)?.contains("Goldgram PDF test") == true, "PDF text")
+check((pdf["pageCount"] as? Int) == 1, "PDF page count")
+print("Goldgram #285 native document fixtures passed")
+'''
+    with tempfile.TemporaryDirectory() as tmp:
+        p = pathlib.Path(tmp)
+        xml = b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Hello &amp; ' + "мир".encode() + b'</w:t></w:r></w:p><w:p><w:r><w:t>Second</w:t><w:tab/><w:t>line</w:t></w:r></w:p></w:body></w:document>'
+        for name, compression in [("stored.docx",zipfile.ZIP_STORED),("deflated.docx",zipfile.ZIP_DEFLATED)]:
+            with zipfile.ZipFile(p/name,"w",compression=compression) as z:
+                z.writestr("word/document.xml",xml)
+        with zipfile.ZipFile(p/"oversized.docx","w",compression=zipfile.ZIP_DEFLATED) as z:
+            z.writestr("word/document.xml",b"x"*(512*1024+1))
+        with zipfile.ZipFile(p/"dtd.docx","w") as z:
+            z.writestr("word/document.xml",b'<!DOCTYPE x [<!ENTITY a "bad">]>'+xml)
+        with zipfile.ZipFile(p/"missing.docx","w") as z:
+            z.writestr("other.xml",xml)
+        with zipfile.ZipFile(p/"duplicate.docx","w") as z:
+            z.writestr("word/document.xml",xml)
+            z.writestr("word/document.xml",xml)
+        bad = bytearray((p/"stored.docx").read_bytes())
+        offset = 30 + struct.unpack_from("<H",bad,26)[0] + struct.unpack_from("<H",bad,28)[0]
+        bad[offset+5] ^= 1
+        (p/"crc.docx").write_bytes(bad)
+        content = b"BT /F1 14 Tf 72 720 Td (Goldgram PDF test) Tj ET"
+        objs = [b"<< /Type /Catalog /Pages 2 0 R >>", b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+                b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+                b"<< /Length "+str(len(content)).encode()+b" >>\nstream\n"+content+b"\nendstream"]
+        pdf = bytearray(b"%PDF-1.4\n")
+        offsets = []
+        for i, obj in enumerate(objs,1):
+            offsets.append(len(pdf))
+            pdf += str(i).encode()+b" 0 obj\n"+obj+b"\nendobj\n"
+        xref = len(pdf)
+        pdf += b"xref\n0 6\n0000000000 65535 f \n"
+        for offset in offsets: pdf += ("%010d 00000 n \n"%offset).encode()
+        pdf += b"trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n"+str(xref).encode()+b"\n%%EOF\n"
+        (p/"sample.pdf").write_bytes(pdf)
+        (p/"main.swift").write_text(parser+"\n"+swift_test)
+        subprocess.run(["swiftc",str(p/"main.swift"),"-o",str(p/"reader-test")],check=True,timeout=90)
+        subprocess.run([str(p/"reader-test"),str(p)],check=True,timeout=30)
+    subprocess.run(["swiftc","-frontend","-parse",str(root/"submodules/ChatListUI/Sources/GoldgramPluginDocuments.swift")],check=True,timeout=30)

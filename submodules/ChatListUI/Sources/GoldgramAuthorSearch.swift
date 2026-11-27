@@ -271,6 +271,10 @@ public final class GoldgramAuthorSearchBridge: NSObject {
         return ["id": NSNumber(value: peer.id.id._internalGetInt64Value()),
                 "name": String(peer.compactDisplayTitle.prefix(180)), "username": String((peer.addressName ?? "").prefix(100))]
     }
+    public static func pluginHistoryScope(context: AccountContext, peer: EnginePeer) -> [String: Any]? {
+        guard isCurrentAccount(context), GoldgramMediaEntry.acceptsPeer(peer) else { return nil }
+        return GoldgramUnifiedIdentity.sources(peer.id)?.first
+    }
     public static func pluginPersonalScope(context: AccountContext, peer: EnginePeer.Id, rendered: EnginePeer?) -> [String: Any]? {
         guard isCurrentAccount(context), var result = GoldgramUnifiedIdentity.sources(peer)?.first else { return nil }
         if let rendered, rendered.id == peer { result["contact"] = pluginContact(rendered) }
@@ -2936,6 +2940,94 @@ private enum GoldgramPersonalUI {
     }
 }
 
+
+// One confirmed bounded Telegram search per explicit plugin execution.
+@MainActor
+final class GoldgramPluginHistorySession {
+    private let account: String
+    private let scope: [String: Any]
+    private weak var presenter: UIViewController?
+    private let valid: () -> Bool
+    private let work = MetaDisposable()
+    private var timeout: DispatchWorkItem?
+    private var prompt: UIAlertController?
+    private var reply: (([String: Any]) -> Void)?
+    private var used = false
+    var busy: Bool { reply != nil }
+    init(account: String, scope: [String: Any], presenter: UIViewController, valid: @escaping () -> Bool) {
+        self.account = account; self.scope = scope; self.presenter = presenter; self.valid = valid
+    }
+    private func context() -> AccountContext? {
+        guard valid(), UIApplication.shared.applicationState == .active else { return nil }
+        return GoldgramAuthorSearchBridge.pluginPersonalContext(account: account)
+    }
+    func search(_ args: [String: Any], completion: @escaping ([String: Any]) -> Void) {
+        var identity = scope; identity["messageId"] = NSNumber(value: 1)
+        guard !used, !busy, context() != nil, let peer = GoldgramUnifiedIdentity.message(identity)?.peerId,
+              let query = args["query"] as? String, !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, query.utf8.count <= 512,
+              let limit = args["limit"] as? Int, (1...12).contains(limit),
+              Set(args.keys).isSubset(of: ["query", "limit", "since", "until"]) else {
+            completion(["error": "Поиск недоступен или неверный запрос."]); return
+        }
+        func date(_ key: String) -> Int32? {
+            guard let n = args[key] as? Int, n > 0 else { return nil }
+            return Int32(exactly: n)
+        }
+        let since = date("since"), until = date("until")
+        guard (args["since"] == nil || since != nil), (args["until"] == nil || until != nil),
+              since == nil || until == nil || since! <= until! else { completion(["error": "Неверный диапазон дат."]); return }
+        used = true; reply = completion
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+            guard let self, self.busy else { return }
+            guard self.context() != nil, let presenter = self.presenter, presenter.viewIfLoaded?.window != nil,
+                  presenter.presentedViewController == nil else { self.finish(["error": "Поиск отменён."]); return }
+            let alert = UIAlertController(title: "Поиск в текущем диалоге", message: "Запрос: \(query)\n\nПередать запрос Telegram и найденный обычный текст этому плагину? Защищённые и автоудаляемые сообщения исключаются.", preferredStyle: .alert)
+            self.prompt = alert
+            alert.addAction(UIAlertAction(title: "Отмена", style: .cancel) { [weak self] _ in self?.finish(["error": "Поиск отменён."]) })
+            alert.addAction(UIAlertAction(title: "Искать", style: .default) { [weak self] _ in
+                guard let self, self.busy, let context = self.context() else { self?.finish(["error": "Контекст изменился."]); return }
+                self.prompt = nil
+                let timeout = DispatchWorkItem { [weak self] in self?.finish(["error": "Время поиска истекло."]) }
+                self.timeout = timeout
+                DispatchQueue.main.asyncAfter(deadline: .now() + 20, execute: timeout)
+                let location: SearchMessagesLocation = .peer(peerId: peer, fromId: nil, tags: nil, reactions: nil, threadId: nil, minDate: since, maxDate: until)
+                let signal = context.engine.messages.searchMessages(location: location, query: query, state: nil, limit: 30) |> take(1) |> deliverOnMainQueue
+                self.work.set(signal.start(next: { [weak self] result, _ in
+                    guard let self, self.busy, self.context() != nil else { self?.finish(["error": "Контекст изменился."]); return }
+                    var rows: [[String: Any]] = []; var seen = Set<EngineMessage.Id>()
+                    var clipped = false
+                    for raw in result.messages.prefix(30) {
+                        let m = EngineMessage(raw)
+                        guard m.id.peerId == peer, GoldgramMediaEntry.eligible(m),
+                              raw.autoremoveAttribute == nil, raw.minAutoremoveOrClearTimeout == nil,
+                              raw.activeEphemeralReplacementMessage == nil,
+                              !raw.attributes.contains(where: { $0 is AutoremoveTimeoutMessageAttribute }),
+                              raw.media.allSatisfy({ $0 is TelegramMediaWebpage }),
+                              !m.text.isEmpty, m.text.localizedCaseInsensitiveContains(query),
+                              since == nil || m.timestamp >= since!, until == nil || m.timestamp <= until!,
+                              seen.insert(m.id).inserted else { continue }
+                        if rows.count >= limit { clipped = true; break }
+                        let body = String(m.text.prefix(750))
+                        if body != m.text { clipped = true }
+                        rows.append(["id": String(describing: m.id), "text": body, "timestamp": m.timestamp])
+                    }
+                    self.finish(["value": ["items": rows, "scope": "currentPeerHistory", "complete": false, "serverCompleted": result.completed, "truncated": clipped]])
+                }))
+            })
+            presenter.present(alert, animated: true)
+        }
+    }
+    private func finish(_ result: [String: Any]) {
+        guard let done = reply else { return }
+        reply = nil; timeout?.cancel(); timeout = nil; work.dispose(); prompt = nil
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { done(result) }
+    }
+    func cancel() {
+        reply = nil; timeout?.cancel(); timeout = nil; work.dispose()
+        if let prompt, prompt.presentingViewController != nil { prompt.dismiss(animated: false) }
+        prompt = nil
+    }
+}
 
 // Native-only per-run services over the existing personal reference store.
 // Reads are bounded to the current chat or the explicitly selected ordinary

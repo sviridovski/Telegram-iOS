@@ -8138,6 +8138,9 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
             let currentPeer: EnginePeer?
             if let rendered = self.presentationInterfaceState.renderedPeer?.chatMainPeer { currentPeer = EnginePeer(rendered) } else { currentPeer = nil }
             snapshot["_goldPersonalScope"] = GoldgramAuthorSearchBridge.pluginPersonalScope(context: self.context, peer: peer, rendered: currentPeer)
+            if self.chatLocation.threadId == nil, let currentPeer, currentPeer.id == peer {
+                snapshot["_goldHistoryScope"] = GoldgramAuthorSearchBridge.pluginHistoryScope(context: self.context, peer: currentPeer)
+            }
             return snapshot
         }, insert: { [weak self = self] original, answer in
             guard let self, self.goldgramAIIdentity() == original.identity,
