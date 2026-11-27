@@ -43,3 +43,15 @@ GGAPI.ui.addFloatingButton({id:"search",title:"Find"},()=>{
 ```
 
 Native failures and absent methods reject/throw; do not interpret runtime availability as proof that the network or picker is currently usable. Catch expected failures. Existing generic worker error remains for uncaught errors. Future speech, favorites, contacts, rich document parsing and wider search need separate implementation and acceptance.
+
+## Additions in GoldAPI 1.1.0 (#282 candidate)
+
+Runtime apiVersion() now returns "1.1.0"; capabilities includes three new speech methods (12 service methods total). Prior methods retain signatures. Device acceptance pending.
+
+### Speech (gold.speech)
+
+- `await GoldAPI.speech.voices(language="") -> [{id,name,language}]`: system voice list filtered by exact language or prefix (e.g. ru), sorted and capped at 120. Explicit interactive action; no download/installation management.
+- `await GoldAPI.speech.speak(text,{language="ru-RU",voiceId="",rate=1}={}) -> {status,started}`: <=1200 code points and <=4800 UTF-8 bytes, nonempty; rate 0.75..1.5 relative to system default, bounded language tag and voice ID, selected voice must match language. Empty voiceId selects system voice. Returns after end/stop/cancel/timeout, not when audio starts. Status ended means synthesizer stopped speaking, not proof that every word was played. One invocation per execution and one global session; max 120 seconds. Visible native Stop control. No automatic access to messages; pass explicit permitted text. No network.fetch required. Does not send or edit messages.
+- `await GoldAPI.speech.stop() -> boolean`: stops own active execution only; false if idle. User can also tap native Stop. App background, invalid context or run cancellation stops speech; a destroyed worker may not receive the terminal reply. Not a persistent background audio engine.
+
+Example: a context action with messages.read/ui.mutate and gold.speech grants can await GoldAPI.speech.speak(GGAPI.messages.getSelectedMessage().text,{language:"ru-RU"}). Handle null/empty text, errors and size limit. Actual voice catalog, audio behavior and UI require device verification.

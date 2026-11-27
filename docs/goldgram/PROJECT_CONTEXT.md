@@ -266,3 +266,7 @@ For explicit ordinary selected-message actions, text captions on supported image
 ## #281 candidate — GoldAPI 1.0 foundation
 
 GoldAPI is a separate frozen JS namespace injected into the existing worker alongside GGAPI/GG; no new persistent engine. Versioned runtime discovery, separately granted DeepSeek AI wrapper through existing native validated broker, scoped literal search over permitted current snapshots and bounded document text/file helpers. Existing storage and native context restrictions are unchanged. No raw database, archive or session bridge. See [GOLDAPI_1_REFERENCE.md](./GOLDAPI_1_REFERENCE.md) and current status for implemented methods and limits.
+
+## #282 candidate — foreground speech service
+
+GoldAPI.speech adds an independent gold.speech grant, bounded system voice enumeration and on-device text-to-speech through AVSpeechSynthesizer. A native session owned by the current disposable run has a global single-session reservation, visible Stop control, context validity/foreground checks and finite duration. It does not own an always-on player, request microphone access or change application audio session category. Native audio and UI behavior pending acceptance; see current status and GoldAPI reference.
