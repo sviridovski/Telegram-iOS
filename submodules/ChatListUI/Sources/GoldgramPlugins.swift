@@ -2,11 +2,12 @@ import Foundation
 import UIKit
 import WebKit
 import UniformTypeIdentifiers
+import AVFoundation
 
 // #267: deliberately foreground, on-demand and local-only. Never expose Telegram,
 // account objects, credentials, filesystem or network to imported JavaScript.
 private struct GoldgramPluginManifest {
-    static let supported: Set<String> = ["settings.read", "events", "console", "ui.read", "storage", "chat.read", "chat.write", "messages.read", "network.fetch", "ui.mutate", "clipboard", "media.read", "gold.ai", "gold.search", "gold.documents"]
+    static let supported: Set<String> = ["settings.read", "events", "console", "ui.read", "storage", "chat.read", "chat.write", "messages.read", "network.fetch", "ui.mutate", "clipboard", "media.read", "gold.ai", "gold.search", "gold.documents", "gold.speech"]
     let name: String
     let version: String
     let author: String
@@ -262,6 +263,104 @@ struct GoldgramPluginRegistration: Equatable {
     let grants: [String]
 }
 
+// One foreground speech session globally, owned by the invoking disposable run.
+// No microphone, no network broker, no custom audio session/category or background mode.
+@MainActor
+private final class GoldgramPluginSpeech {
+    private static weak var owner: GoldgramPluginSpeech?
+    private weak var presenter: UIViewController?
+    private let valid: () -> Bool
+    private let synthesizer = AVSpeechSynthesizer()
+    private weak var alert: UIAlertController?
+    private var poll: DispatchWorkItem?
+    private var reply: (([String: Any]) -> Void)?
+    private var used = false
+    private var started = false
+    var active: Bool { reply != nil }
+    init(presenter: UIViewController, valid: @escaping () -> Bool) {
+        self.presenter = presenter; self.valid = valid
+        synthesizer.usesApplicationAudioSession = false
+    }
+    func voices(_ args: [String: Any]) -> [[String: String]] {
+        let language = args["language"] as? String ?? ""
+        guard valid(), language.utf8.count <= 32 else { return [] }
+        return Array(AVSpeechSynthesisVoice.speechVoices().filter {
+            language.isEmpty || $0.language.lowercased() == language.lowercased() ||
+            $0.language.lowercased().hasPrefix(language.lowercased() + "-")
+        }.sorted { ($0.language, $0.name, $0.identifier) < ($1.language, $1.name, $1.identifier) }.prefix(120)).map {
+            ["id": $0.identifier, "name": $0.name, "language": $0.language]
+        }
+    }
+    func speak(_ args: [String: Any], completion: @escaping ([String: Any]) -> Void) {
+        guard !used, !active, Self.owner == nil, valid(), UIApplication.shared.applicationState == .active,
+              let text = args["text"] as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              text.count <= 1200, text.utf8.count <= 4800,
+              let rate = args["rate"] as? Double, rate.isFinite, (0.75...1.5).contains(rate),
+              let language = args["language"] as? String, !language.isEmpty, language.utf8.count <= 32,
+              let voiceID = args["voiceId"] as? String, voiceID.utf8.count <= 256 else {
+            completion(["error": "Озвучивание недоступно, занято или неверные параметры."]); return
+        }
+        let voice = voiceID.isEmpty ? AVSpeechSynthesisVoice(language: language) : AVSpeechSynthesisVoice(identifier: voiceID)
+        guard let voice, voice.language.lowercased() == language.lowercased() ||
+              voice.language.lowercased().hasPrefix(language.lowercased() + "-") else {
+            completion(["error": "Системный голос для выбранного языка недоступен."]); return
+        }
+        used = true; reply = completion; Self.owner = self
+        // Telegram dismisses its context menu asynchronously.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+            guard let self, self.active else { return }
+            guard self.valid(), UIApplication.shared.applicationState == .active, let presenter = self.presenter,
+                  presenter.viewIfLoaded?.window != nil, presenter.presentedViewController == nil else {
+                self.end("cancelled"); return
+            }
+            let alert = UIAlertController(title: "Goldgram · Озвучивание", message: voice.name + " · " + voice.language, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "Остановить", style: .cancel) { [weak self] _ in self?.end("stopped", dismiss: false) })
+            self.alert = alert
+            presenter.present(alert, animated: true) { [weak self] in
+                guard let self, self.active else { return }
+                guard self.valid(), UIApplication.shared.applicationState == .active else { self.end("cancelled"); return }
+                let utterance = AVSpeechUtterance(string: text)
+                utterance.voice = voice
+                utterance.rate = max(AVSpeechUtteranceMinimumSpeechRate, min(AVSpeechUtteranceMaximumSpeechRate, AVSpeechUtteranceDefaultSpeechRate * Float(rate)))
+                self.synthesizer.speak(utterance)
+                self.started = true
+                self.monitor(deadline: Date().addingTimeInterval(120), grace: Date().addingTimeInterval(2))
+            }
+        }
+    }
+    private func monitor(deadline: Date, grace: Date) {
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.active else { return }
+            guard self.valid(), UIApplication.shared.applicationState == .active,
+                  self.alert?.presentingViewController != nil else { self.end("cancelled"); return }
+            let now = Date()
+            if now >= deadline { self.end("timeout"); return }
+            if now >= grace, !self.synthesizer.isSpeaking { self.end("ended"); return }
+            self.monitor(deadline: deadline, grace: grace)
+        }
+        poll = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
+    }
+    @discardableResult func stop() -> Bool {
+        guard active else { return false }
+        end("stopped"); return true
+    }
+    func cancel() { if active { end("cancelled") } }
+    private func end(_ status: String, dismiss: Bool = true) {
+        guard let done = reply else { return }
+        reply = nil; poll?.cancel(); poll = nil
+        if synthesizer.isSpeaking { synthesizer.stopSpeaking(at: .immediate) }
+        if Self.owner === self { Self.owner = nil }
+        let result: [String: Any] = ["status": status, "started": started]
+        let oldAlert = alert; alert = nil
+        if dismiss, let oldAlert, oldAlert.presentingViewController != nil {
+            oldAlert.dismiss(animated: false) { done(result) }
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { done(result) }
+        }
+    }
+}
+
 // A disposable WebKit worker, with no document or native objects in the script.
 // A separate WebContent process and a worker termination deadline avoid putting
 // imported loops on the UI thread. CSP denies external resource connections.
@@ -273,6 +372,7 @@ private final class GoldgramPluginRun: NSObject, WKNavigationDelegate, WKScriptM
     private var payload: String
     private var completion: (([String: Any]?, String?) -> Void)?
     private var broker: GoldgramPluginNetwork?
+    private var speech: GoldgramPluginSpeech?
     private let grants: Set<String>
     private let interactive: Bool
     private let lease: String
@@ -294,6 +394,7 @@ private final class GoldgramPluginRun: NSObject, WKNavigationDelegate, WKScriptM
         input["pluginId"] = record.id.uuidString
         input["managedKey"] = !account.isEmpty && credential.readKey() != nil
         input["streamingEnabled"] = record.streamingOptions?.enabled == true && grants.contains("network.fetch") && interactive
+        input["speechAvailable"] = presenter != nil && interactive && grants.contains("gold.speech")
         if grants.contains("network.fetch"), !account.isEmpty, let cache = credential.modelCatalog {
             input["modelCatalog"] = ["models": cache.models, "updatedAt": cache.updated, "stale": !GoldgramNetworkPolicy.fresh(updated: cache.updated, now: Date().timeIntervalSince1970)]
         }
@@ -305,6 +406,7 @@ private final class GoldgramPluginRun: NSObject, WKNavigationDelegate, WKScriptM
         NotificationCenter.default.addObserver(self, selector: #selector(registryChanged(_:)), name: .goldgramPluginsChanged, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(backgrounded), name: UIApplication.didEnterBackgroundNotification, object: nil)
         if let presenter, interactive {
+            if grants.contains("gold.speech") { speech = GoldgramPluginSpeech(presenter: presenter, valid: valid) }
             let skipRequest = GoldgramPluginConfirmationPolicy.skipRequest(record.confirmationPolicy, grants: record.grants, event: event)
             broker = GoldgramPluginNetwork(config: credential, presenter: presenter, valid: valid, skipRequestConfirmation: {
                 guard skipRequest, valid() else { return false }
@@ -346,6 +448,7 @@ private final class GoldgramPluginRun: NSObject, WKNavigationDelegate, WKScriptM
         completion = nil
         Self.slots.release(lease)
         NotificationCenter.default.removeObserver(self)
+        speech?.cancel(); speech = nil
         broker?.cancel(); broker = nil
         timer?.cancel(); timer = nil
         if let web {
@@ -378,6 +481,20 @@ private final class GoldgramPluginRun: NSObject, WKNavigationDelegate, WKScriptM
         if let rpc = object["rpc"] as? Int {
             guard interactive, let broker, let method = object["method"] as? String, let args = object["args"] as? [String: Any] else { replyRPC(rpc, result: ["error": "Permission denied"]); return }
             let callback: ([String: Any]) -> Void = { [weak self] response in self?.replyRPC(rpc, result: response) }
+            if method == "gold.speech.voices", grants.contains("gold.speech"), let speech {
+                callback(["voices": speech.voices(args)])
+                return
+            }
+            if method == "gold.speech.stop", grants.contains("gold.speech"), let speech {
+                callback(["stopped": speech.stop()])
+                return
+            }
+            if method == "gold.speech.speak", grants.contains("gold.speech"), let speech {
+                guard !broker.isBusy else { callback(["error": "Другое действие плагина выполняется."]); return }
+                speech.speak(args, completion: callback)
+                return
+            }
+            guard speech?.active != true else { callback(["error": "Сначала остановите озвучивание."]); return }
             if method == "network.fetch", grants.contains("network.fetch") {
                 broker.fetch(args, progress: { [weak self] event in
                     if args["progress"] as? Bool == true { self?.replyProgress(rpc, event: event) }
@@ -603,12 +720,15 @@ function goldWorkerMain() {
       "documents.saveText":{grants:["gold.documents","storage"],scope:"pluginFiles",active:goldInteractive},
       "documents.readText":{grants:["gold.documents","storage"],scope:"pluginFiles",active:goldInteractive},
       "documents.pickJSON":{grants:["gold.documents","storage"],scope:"userSelectedJSON",active:goldInteractive},
-      "documents.shareJSON":{grants:["gold.documents","storage"],scope:"userSelectedJSON",active:goldInteractive}
+      "documents.shareJSON":{grants:["gold.documents","storage"],scope:"userSelectedJSON",active:goldInteractive},
+      "speech.voices":{grants:["gold.speech"],scope:"systemVoices",active:goldInteractive&&p.speechAvailable===true},
+      "speech.speak":{grants:["gold.speech"],scope:"foregroundProvidedText",active:goldInteractive&&p.speechAvailable===true},
+      "speech.stop":{grants:["gold.speech"],scope:"ownExecution",active:goldInteractive&&p.speechAvailable===true}
     };
     const goldHas=name=>own(goldPolicy,name)&&goldPolicy[name].active&&goldPolicy[name].grants.every(allowed);
     const goldNeed=name=>{if(!goldHas(name))throw Error("GoldAPI unavailable: "+name);};
     const goldCaps=()=>Object.keys(goldPolicy).map(name=>({name,scope:goldPolicy[name].scope,permissions:[...goldPolicy[name].grants],granted:goldPolicy[name].grants.every(allowed),available:goldHas(name)}));
-    const gold={runtime:Object.freeze({apiVersion:()=>"1.0.0",has:goldHas,capabilities:goldCaps})};
+    const gold={runtime:Object.freeze({apiVersion:()=>"1.1.0",has:goldHas,capabilities:goldCaps})};
     const byteCount=text=>{let n=0;for(const ch of text){const cp=ch.codePointAt(0);n+=cp<=127?1:cp<=2047?2:cp<=65535?3:4;}return n;};
     const checkedText=(v,max)=>{if(typeof v!=="string"||byteCount(v)>max)throw Error("Invalid or oversized text");return v;};
     if(allowed("gold.ai")&&allowed("network.fetch")){
@@ -667,6 +787,28 @@ function goldWorkerMain() {
         docs.shareJSON=async name=>{goldNeed("documents.shareJSON");return base.files.share(name);};
       }
       gold.documents=Object.freeze(docs);
+    }
+    if(allowed("gold.speech")){
+      const lang=v=>{if(typeof v!=="string"||!v||byteCount(v)>32||! /^[A-Za-z0-9-]+$/.test(v))throw Error("Invalid speech language");return v;};
+      gold.speech=Object.freeze({
+        voices:async(language="")=>{
+          goldNeed("speech.voices");if(language!=="")lang(language);
+          const r=await rpc("gold.speech.voices",{language});
+          if(!Array.isArray(r.voices))throw Error("Invalid voices response");
+          return r.voices;
+        },
+        speak:async(text,options={})=>{
+          goldNeed("speech.speak");checkedText(text,4800);
+          if(!text.trim()||Array.from(text).length>1200||!options||typeof options!=="object"||Array.isArray(options)||Object.keys(options).some(k=>!["language","voiceId","rate"].includes(k)))throw Error("Invalid speech options");
+          const {language="ru-RU",voiceId="",rate=1}=options;
+          lang(language);checkedText(voiceId,256);
+          if(!Number.isFinite(rate)||rate<0.75||rate>1.5)throw Error("Invalid speech rate");
+          const r=await rpc("gold.speech.speak",{text,language,voiceId,rate});
+          if(!["ended","stopped","cancelled","timeout"].includes(r.status)||typeof r.started!=="boolean")throw Error("Invalid speech result");
+          return {status:r.status,started:r.started};
+        },
+        stop:async()=>{goldNeed("speech.stop");const r=await rpc("gold.speech.stop",{});return r.stopped===true;}
+      });
     }
     const goldAPI=Object.freeze(gold);
     const api=Object.freeze(base);
@@ -740,7 +882,7 @@ final class GoldgramPluginManager: UITableViewController, UIDocumentPickerDelega
     override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
         section == 0 ? (store.failure ?? "GGAPI: открытый чат и локальные настройки; подтверждения управляются для каждого плагина. Не все методы Ghostgram поддерживаются.") : "Импортируйте только доверенный код. Не вводите API-ключи в обычные настройки."
     }
-    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? (store.isCurrent() ? store.state.plugins.count : 0) : (section == 1 ? 10 : 1) }
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? (store.isCurrent() ? store.state.plugins.count : 0) : (section == 1 ? 11 : 1) }
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
         if indexPath.section == 0 {
@@ -753,7 +895,7 @@ final class GoldgramPluginManager: UITableViewController, UIDocumentPickerDelega
             cell.detailTextLabel?.text = "DeepSeek · промпт и плавающая кнопка"
             cell.imageView?.image = UIImage(systemName: "sparkles")
         } else {
-            cell.textLabel?.text = ["Вставить JavaScript", "Импортировать .js из файлов", "Установить тестовый плагин", "Безопасный режим", "Подтверждения плагинов", "Установить тесты многоплагинности", "Установить тест интерфейса", "Установить тест событий", "Установить тест GGAPI", "Установить тест GoldAPI"][indexPath.row]
+            cell.textLabel?.text = ["Вставить JavaScript", "Импортировать .js из файлов", "Установить тестовый плагин", "Безопасный режим", "Подтверждения плагинов", "Установить тесты многоплагинности", "Установить тест интерфейса", "Установить тест событий", "Установить тест GGAPI", "Установить тест GoldAPI", "Установить тест озвучивания"][indexPath.row]
             if indexPath.row == 3 { cell.detailTextLabel?.text = store.state.safe ? "Включён — выполнение заблокировано" : "Выключен" }
             if indexPath.row == 4 { cell.detailTextLabel?.text = "Запросы к сервисам и вставка ответа" }
         }
@@ -803,6 +945,9 @@ final class GoldgramPluginManager: UITableViewController, UIDocumentPickerDelega
         case 9:
             store.refresh()
             if !store.state.plugins.contains(where: { $0.code == Self.goldExample }) && !install(Self.goldExample) { notice("Не удалось установить тест GoldAPI.") }
+        case 10:
+            store.refresh()
+            if !store.state.plugins.contains(where: { $0.code == Self.speechExample }) && !install(Self.speechExample) { notice("Не удалось установить тест озвучивания.") }
         default:
             store.refresh()
             var next = store.state; next.safe.toggle()
@@ -925,6 +1070,48 @@ GGAPI.ui.addMessageContextAction({id:"inspect",title:"GGAPI: проверить 
   const m=GGAPI.messages.getSelectedMessage();
   const info=GGAPI.media?GGAPI.media.selected():null;
   GGAPI.ui.showSheet({title:"GGAPI",text:info?"Медиа: "+info.kind:(m?"Текст: "+String(m.text||"").length+" символов":"Нет сообщения")});
+});
+"""#
+    static let speechExample = #"""
+// @name GoldAPI Speech Test
+// @version 1.0
+// @permission.settings.read required
+// @permission.events required
+// @permission.ui.read required
+// @permission.ui.mutate required
+// @permission.chat.read required
+// @permission.messages.read required
+// @permission.gold.speech required
+GGAPI.settings.addSection({title:"Озвучивание iOS",items:[
+  {type:"text",key:"language",title:"Язык (ru-RU, en-US)",default:"ru-RU"},
+  {type:"text",key:"voice",title:"ID голоса (пусто — системный)",default:""},
+  {type:"slider",key:"rate",title:"Скорость",min:0.75,max:1.5,step:0.05,default:1},
+  {type:"button",key:"voices",title:"Выбрать системный голос"},
+  {type:"button",key:"test",title:"Озвучить тест"}
+]});
+const language=()=>GGAPI.settings.getPlugin("language","ru-RU");
+const speak=async text=>{
+  try{const r=await GoldAPI.speech.speak(Array.from(text).slice(0,1200).join(""),{language:language(),voiceId:GGAPI.settings.getPlugin("voice",""),rate:GGAPI.settings.getPlugin("rate",1)});
+    if(r.status==="timeout")GGAPI.app.alert("Озвучивание","Лимит времени");
+  }catch(e){GGAPI.app.alert("Озвучивание",String(e.message||e));}
+};
+GGAPI.events.on("settings.action",async p=>{
+  if(p.key==="test")await speak("Привет! Это проверка системного озвучивания Goldgram. Сейчас работает локальный синтез речи.");
+  if(p.key==="voices"){
+    const voices=await GoldAPI.speech.voices(language());
+    if(!voices.length){GGAPI.app.alert("Озвучивание","Нет голосов для этого языка");return;}
+    const choices=[{title:"Системный голос",value:"default"},...voices.filter(v=>v.id.length<=200).slice(0,23).map(v=>({title:v.name+" · "+v.language,value:v.id}))];
+    const id=await GGAPI.ui.select("Голос iOS",choices);
+    if(id!==null)GGAPI.settings.setPlugin("voice",id==="default"?"":id);
+  }
+});
+GGAPI.ui.addFloatingButton({id:"speech",title:"TTS"},async()=>{
+  const text=GGAPI.chat.draftText();
+  if(text.trim())await speak(text);else GGAPI.app.alert("Озвучивание","Введите текст в черновик");
+});
+GGAPI.ui.addMessageContextAction({id:"speak",title:"GoldAPI: озвучить"},async()=>{
+  const m=GGAPI.messages.getSelectedMessage();
+  if(m&&m.text)await speak(m.text);else GGAPI.app.alert("Озвучивание","Нет текста");
 });
 """#
     static let goldExample = #"""

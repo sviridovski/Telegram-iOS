@@ -756,6 +756,7 @@ final class GoldgramPluginNetwork: NSObject, UIDocumentPickerDelegate {
     private weak var alert: UIAlertController?
     private var cancelled = false
     private var busy = false
+    var isBusy: Bool { busy }
     private var count = 0
     private weak var fileUI: UIViewController?
     private var fileReply: (([String: Any]) -> Void)?

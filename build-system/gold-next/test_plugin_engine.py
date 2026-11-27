@@ -8,10 +8,11 @@ example = source.split('static let example = #"""\n',1)[1].split('\n"""#',1)[0]
 import json
 ui_sample = source.split('static let uiExample = #"""\n',1)[1].split('\n"""#',1)[0]
 gold_sample = source.split('static let goldExample = #"""\n',1)[1].split('\n"""#',1)[0]
+speech_sample = source.split('static let speechExample = #"""\n',1)[1].split('\n"""#',1)[0]
 harness = """
 const assert = require('node:assert/strict');
 let result, requests=[], failModels=false;
-global.self = {postMessage: raw => {const v=JSON.parse(raw);if(v.rpc!==undefined){requests.push(v);const isModels=v.args.url==="https://api.deepseek.com/models";if(v.args.progress)self.onmessage({data:{rpcProgress:v.rpc,event:{text:"partial",thinking:false,done:false}}});const response=isModels?{status:failModels?503:200,body:JSON.stringify({object:"list",data:[{id:"fresh-model",object:"model"}]})}:{status:200,body:'{"choices":[{"message":{"content":"mock answer"}}]}'};self.onmessage({data:{rpcResult:v.rpc,result:response}});}else result=v;}};
+global.self = {postMessage: raw => {const v=JSON.parse(raw);if(v.rpc!==undefined){requests.push(v);const isModels=v.args.url==="https://api.deepseek.com/models";if(v.args.progress)self.onmessage({data:{rpcProgress:v.rpc,event:{text:"partial",thinking:false,done:false}}});const response=v.method==="gold.speech.voices"?{voices:[{id:"mock-ru",name:"Mock",language:"ru-RU"}]}:v.method==="gold.speech.speak"?{status:"ended",started:true}:v.method==="gold.speech.stop"?{stopped:false}:isModels?{status:failModels?503:200,body:JSON.stringify({object:"list",data:[{id:"fresh-model",object:"model"}]})}:{status:200,body:'{"choices":[{"message":{"content":"mock answer"}}]}'};self.onmessage({data:{rpcResult:v.rpc,result:response}});}else result=v;}};
 """ + worker + """
 goldWorkerMain();
 const sample = """ + json.dumps(example) + """;
@@ -169,7 +170,7 @@ console.log('Goldgram #280 caption text independent of media grant, metadata rem
 const goldGrants=[...compat,'gold.ai','gold.documents','gold.search'];
 const goldCapsScript='GGAPI.storage.set("version",GoldAPI.runtime.apiVersion());GGAPI.storage.set("caps",GoldAPI.runtime.capabilities());GGAPI.storage.set("fake",GoldAPI.runtime.has("speech.say"));';
 await self.onmessage({data:{source:goldCapsScript,grants:compat,event:"settings.action"}});
-assert.equal(result.storage.version,"1.0.0");assert.equal(result.storage.caps.length,9);assert.equal(result.storage.caps.every(c=>!c.available),true);assert.equal(result.storage.fake,false);
+assert.equal(result.storage.version,"1.1.0");assert.equal(result.storage.caps.length,12);assert.equal(result.storage.caps.every(c=>!c.available),true);assert.equal(result.storage.fake,false);
 await self.onmessage({data:{source:goldCapsScript,grants:goldGrants,event:"settings.action",managedKey:true}});
 assert.equal(result.storage.caps.find(c=>c.name==="ai.complete").available,true);assert.equal(result.storage.caps.find(c=>c.name==="search.messages").available,false);
 await self.onmessage({data:{source:goldCapsScript,grants:goldGrants,event:"plugin.start",managedKey:true}});
@@ -205,6 +206,41 @@ await self.onmessage({data:{source:'return GoldAPI.ai.complete({model:"m",prompt
 assert.ok(result.error);
 assert.equal(requests.length,beforeGoldAI+1);
 console.log('Goldgram #281 GoldAPI scoped services and permission gates OK');
+
+const speechGrants=[...compat,"gold.speech"];
+const speechCheck='GGAPI.storage.set("available",GoldAPI.runtime.has("speech.speak"));GGAPI.storage.set("namespace",!!GoldAPI.speech);';
+await self.onmessage({data:{source:speechCheck,grants:speechGrants,event:"settings.action",speechAvailable:true}});
+assert.equal(result.storage.available,true);assert.equal(result.storage.namespace,true);
+await self.onmessage({data:{source:speechCheck,grants:compat,event:"settings.action",speechAvailable:true}});
+assert.equal(result.storage.available,false);assert.equal(result.storage.namespace,false);
+await self.onmessage({data:{source:speechCheck,grants:speechGrants,event:"chat.opened",speechAvailable:true}});
+assert.equal(result.storage.available,false);
+await self.onmessage({data:{source:speechCheck,grants:speechGrants,event:"settings.action",speechAvailable:false}});
+assert.equal(result.storage.available,false);
+const speechScript='GGAPI.events.on("settings.action",async()=>{GGAPI.storage.set("voices",await GoldAPI.speech.voices("ru-RU"));GGAPI.storage.set("result",await GoldAPI.speech.speak("Привет",{language:"ru-RU",voiceId:"mock-ru",rate:1.2}));GGAPI.storage.set("stopped",await GoldAPI.speech.stop());});';
+const speechBefore=requests.length;
+await self.onmessage({data:{source:speechScript,grants:speechGrants,event:"settings.action",speechAvailable:true}});
+assert.equal(result.storage.voices[0].id,"mock-ru");assert.equal(result.storage.result.status,"ended");assert.equal(result.storage.result.started,true);assert.equal(result.storage.stopped,false);
+assert.equal(requests.length,speechBefore+3);assert.equal(requests.at(-2).method,"gold.speech.speak");assert.equal(requests.at(-2).args.text,"Привет");assert.equal(requests.at(-2).args.rate,1.2);
+const beforeDenied=requests.length;
+for(const source of ['return GoldAPI.speech.speak("x",{rate:2})','return GoldAPI.speech.speak("x".repeat(1201))','return GoldAPI.speech.speak("x",{language:"bad language"})','return GoldAPI.speech.speak("x",{url:"https://example.org"})','return GoldAPI.speech.speak(" ")']){
+ await self.onmessage({data:{source,grants:speechGrants,event:"settings.action",speechAvailable:true}});assert.ok(result.error);
+}
+await self.onmessage({data:{source:'return GoldAPI.speech.speak("x")',grants:speechGrants,event:"plugin.start",speechAvailable:true}});assert.ok(result.error);
+await self.onmessage({data:{source:'return GoldAPI.speech.speak("x")',grants:speechGrants,event:"chat.opened",speechAvailable:true}});assert.ok(result.error);
+await self.onmessage({data:{source:'return GoldAPI.speech.speak("x")',grants:compat,event:"settings.action",speechAvailable:true}});assert.ok(result.error);
+assert.equal(requests.length,beforeDenied);
+console.log('Goldgram #282 speech foreground grant, options and RPC contracts OK');
+
+const speechSample = """ + json.dumps(speech_sample) + """;
+await self.onmessage({data:{source:speechSample,grants:speechGrants,event:"plugin.start"}});
+assert.ok(!result.error);assert.equal(result.floating.title,"TTS");assert.equal(result.contextActions[0].id,"speak");
+await self.onmessage({data:{source:speechSample,grants:speechGrants,event:"context.tap",key:"speak",context:{peerId:"p",selectedMessage:{id:"1",text:"news caption"}},speechAvailable:true}});
+assert.equal(requests.at(-1).method,"gold.speech.speak");assert.equal(requests.at(-1).args.text,"news caption");
+await self.onmessage({data:{source:speechSample,grants:speechGrants,event:"floating.tap",context:{peerId:"p",draft:"draft text"},speechAvailable:true}});
+assert.equal(requests.at(-1).args.text,"draft text");assert.equal(result.output,null);
+
+
 
 const builtInGold=""" + json.dumps(gold_sample) + """;
 await self.onmessage({data:{source:builtInGold,grants:goldGrants,event:"plugin.start"}});
@@ -270,3 +306,9 @@ assert 'actions[p.key]({message:selectedSnapshot})' in source
 assert 'method == "gold.ai.complete", grants.contains("gold.ai"), grants.contains("network.fetch")' in source
 assert 'new Function("GGAPI","GG","console","GoldAPI",p.source)' in source
 assert 'static let goldExample' in source
+
+assert 'import AVFoundation' in source and 'AVSpeechSynthesizer()' in source
+assert 'speech?.cancel(); speech = nil' in source
+assert 'Self.owner == nil' in source and 'self.valid(), UIApplication.shared.applicationState == .active' in source
+assert 'method == "gold.speech.speak", grants.contains("gold.speech")' in source
+assert 'guard !broker.isBusy' in source
