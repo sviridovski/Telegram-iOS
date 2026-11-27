@@ -1,6 +1,6 @@
 # CURRENT_STATUS — verified checkpoint
 
-  > **2026-11-26 local user date — #279 green/installed; TTL opt-out confirmed; #280 native/Mx green, packaging cancelled; failed-job retry attempt 2 queued.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
+  > **2026-11-27 local user date — #280 green on retry and device accepted; next stage GoldAPI.** Read [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
 
 ## P0 development priority (user-approved 2026-11-25)
 
@@ -13,12 +13,12 @@
 | Item | Latest confirmed status |
 | --- | --- |
 | Feature branch | `gold-next-243-author-search` |
-| HEAD | `699fc6667f77bb2f65c37a6326a30e2c1aceebf5` (#280 caption/context fix candidate), direct parent #279 |
-| Last green CI | [#279](https://github.com/sviridovski/Telegram-iOS/actions/runs/45811725164), success, 35m39s wall |
-| Last installed | #279 — tested TTL warning opt-out works; context menu still missing on news with media/text inside discussion. |
-| Failed candidate | #280 attempt 1: native/Mx success, final build cancelled, reason unconfirmed; retry attempt 2 queued. Historical #272: wallet-engine Git LFS test snapshot timeout. |
-| Next task | **P0 Engine 2.0**: verify #280 failed-job retry, final IPA and device caption/discussion-root correction; then next approved roadmap stage (GoldAPI). |
-| Recovery | #279 latest green/installed with TTL opt-out confirmed and root menu defect; #277 Data Test accepted; #276 prior lifecycle baseline; #275 prior UI and #274 prior streaming checkpoints. Earlier #263 navigation checkpoint and older archive/media limitations remain historical. |
+| HEAD | `699fc6667f77bb2f65c37a6326a30e2c1aceebf5` (#280 caption/context fix accepted), direct parent #279 |
+| Last green CI | [#280](https://github.com/sviridovski/Telegram-iOS/actions/runs/45873381350), attempt 2 success, all jobs green, IPA available |
+| Last installed | #280 — user confirms reported context menu correction works; previous #279 TTL opt-out accepted. |
+| Failed candidate | #280 attempt 1 packaging cancelled (reason unknown), resolved by successful retry. Historical #272: wallet-engine Git LFS test snapshot timeout. |
+| Next task | **P0 Engine 2.0**: begin approved GoldAPI stage (target #281, subject to user instruction); preserve accepted #280 behavior. |
+| Recovery |  #280 green/device-accepted recovery baseline; #279 prior TTL opt-out checkpoint; #277 Data Test accepted; #276 prior lifecycle baseline; #275 prior UI and #274 prior streaming checkpoints. Earlier #263 navigation checkpoint and older archive/media limitations remain historical. |
 
 ## #252 corrections retained in #253
 
@@ -451,3 +451,9 @@ Source [699fc6667f77bb2f65c37a6326a30e2c1aceebf5](https://github.com/sviridovski
 [CI #280](https://github.com/sviridovski/Telegram-iOS/actions/runs/45873381350) attempt 1 completed with overall failure on 2026-11-26 18:54:33 UTC (47m04s wall). Source remains `699fc6667f77bb2f65c37a6326a30e2c1aceebf5`, active branch HEAD unchanged. Jobs mx (140094216173) and native (140094216478) succeeded. Native parent cache resolution, restore, measurement and save steps succeeded. Native log retrieved; no compiler error established. Final build job 140108779644 cancelled, steps unavailable/empty; log download returned 404 BlobNotFound. Actual reason for cancellation not established. Native artifact 15145846193 and Mx artifact 15144575746 both unexpired when checked; no final IPA/dSYM artifacts. Do not infer a Swift defect or a specific runner outage from this evidence.
 
 Requested rerun of failed jobs only via GitHub Actions, success response confirmed. Same run #280, attempt 2 queued, exact same source SHA; successful jobs are intended to be reused, actual retry execution remains to be checked. No source changes, cache invalidation, new code commit or new build number. No separate CI dispatch for documentation. #279 remains latest green/device-installed fallback; caption/context behavior in #280 not device-tested. Verify retry result and IPA before installation; if retry fails, diagnose exact failed step or platform metadata before changing code. Build speed target 15–20m remains unmet; no new optimization claimed.
+
+## #280 accepted — CI retry and device checkpoint (2026-11-27 local user date)
+
+[CI #280](https://github.com/sviridovski/Telegram-iOS/actions/runs/45873381350) attempt 2 completed successfully on 2026-11-26 at 21:50:27 UTC. All three jobs report success; final IPA artifact 15156510182 and dSYM artifact 15155632437 present and unexpired when checked. Source HEAD remains `699fc6667f77bb2f65c37a6326a30e2c1aceebf5`; successful native and Mx artifacts from attempt 1 retained. No source fix was required for the cancelled packaging job. The exact reason for the first cancellation remains unknown.
+
+User confirmed after installing #280: all works, context-menu issue finally resolved. Accept #280 as the new green/device-tested recovery baseline for the reported caption/discussion-root regression, retaining #279 confirmed TTL warning opt-out. This is user-reported acceptance, not independently instrumented or exhaustive regression/security testing. No further code, architecture, cache or build changes for this checkpoint. Resume approved roadmap with GoldAPI next, subject to user instruction; target next code build #281 (number not reserved). Existing SQLite, Ghost, Collector and Live Bridge constraints remain. 15–20 min CI target remains open; do not count elapsed time across the interrupted attempts as a successful single-build duration.
