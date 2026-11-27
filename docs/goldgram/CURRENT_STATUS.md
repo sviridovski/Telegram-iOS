@@ -1,6 +1,6 @@
 # CURRENT_STATUS — verified checkpoint
 
-  > **2026-11-27 local user date — #284 accepted for reported UI/private TTL bookmark flows; #286 GoldAPI 1.3.0 green and installed, device acceptance pending.** Start with [START_HERE.md](./START_HERE.md); consult relevant sections of [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
+  > **2026-11-27 local user date — #286 GoldAPI 1.3.0 green and accepted for 15 reported device checks; installation/enabling separately unconfirmed.** Start with [START_HERE.md](./START_HERE.md); consult relevant sections of [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
 
 ## P0 development priority (user-approved 2026-11-25)
 
@@ -15,10 +15,10 @@
 | Feature branch | `gold-next-243-author-search` |
 | HEAD | `0734a544b2c30e40c0d4362ca258fd3a59023f10` (#286 nested weak capture fix), green, direct parent #285 |
 | Last green CI | [#286](https://github.com/sviridovski/Telegram-iOS/actions/runs/45975933018), success, 28m40s wall, IPA 15189495057 present/unexpired at verification |
-| Last installed | #286 — user confirms installation only, Search & Documents tests pending. #284 remains last accepted checkpoint for reported flows. |
+| Last installed | #286 — 15/16 checklist checks confirmed working on iPhone; item 1 unconfirmed, no failed checks reported. |
 | Failed candidate | #285 native Swift compilation, GoldgramPluginDocuments.swift:193:46, weak self capture ownership; final build skipped. #286 native CI green. |
-| Next task | **P0 Engine 2.0**: obtain #286 iPhone acceptance of scoped Find search, PDF/DOCX/TXT/JSON, cancel/error cases and selected regressions; then Plugin Update Engine. |
-| Recovery |  #284 green/device-accepted reported Personal UI/TTL saving baseline; #282 prior speech checkpoint (nine checks); #281 prior GoldAPI foundation checkpoint; #280 prior context-menu checkpoint; #279 prior TTL opt-out checkpoint; #277 Data Test accepted; #276 prior lifecycle baseline; #275 prior UI and #274 prior streaming checkpoints. Earlier #263 navigation checkpoint and older archive/media limitations remain historical. |
+| Next task | **P0 Engine 2.0**: Plugin Update Engine after #286 scoped acceptance; review existing update/rollback implementation and roadmap before changes. |
+| Recovery | #286 `0734a544b2c30e40c0d4362ca258fd3a59023f10` green and device-accepted for reported flows; #284 prior Personal UI/TTL baseline; #282 speech; #281 GoldAPI foundation; #280 context menu; #279 TTL opt-out; #277 Data Test; #276 lifecycle; #275 UI; #274 streaming. Historical archive/media limitations remain. |
 
 ## #252 corrections retained in #253
 
@@ -564,3 +564,9 @@ Live CI verification: #285 run 45966802832, exact SHA 2b33ec756b15def83dab2786e4
 
 - [CI #286](https://github.com/sviridovski/Telegram-iOS/actions/runs/45975933018) completed successfully for 0734a544b2c30e40c0d4362ca258fd3a59023f10, matches feature branch HEAD. All three jobs mx/native/build success, wall 28m40s (09:42:24–10:11:04 UTC); IPA artifact 15189495057 present and unexpired when checked. #284 was 34m01s, a 5m21s difference; no cache/workflow change or causal speed claim. 15–20m target remains open.
 - User confirms installing #286, asks for test checklist; no feature test results yet. Built-in GoldAPI Search & Documents Test 1.0: install/enable with grants, set Поисковый запрос, Find in ordinary dialog for old non-expiring text outside visible snapshot, confirm/cancel, no match, scope restricted in topic/discussion. Settings Открыть PDF / DOCX / TXT / JSON: test each synthetic local format, readable preview and counts, cancel picker, scanned PDF no text, invalid JSON/oversize rejection, then selected prior Personal/AICC/TTS regressions. Date bounds and deeper permission/teardown tests not exposed by stock sample; remain separate checks. No external transfer by document sample. Do not infer complete history search or real device acceptance. #284 remains last accepted recovery baseline. No app code or build for this docs update.
+
+## 2026-11-27 — #286 accepted for 15 reported iPhone checks
+
+- User submitted the exact 16-point checklist: item 1 (installation/enabling of GoldAPI Search & Documents Test) not confirmed; items 2–16 all work. Confirmed Find button, older message outside visible snapshot, search cancellation, no-match handling, other-chat search isolation, PDF, DOCX, TXT, JSON, file-picker cancellation, scan-only PDF handling, existing AI Commander, Speech Test, Personal Test and restart persistence. No failed checks reported. Do not convert item 1 to a pass or a failure.
+- Accept Search & Documents 2.0 / GoldAPI 1.3.0 for these reported flows. Recovery baseline #286 `0734a544b2c30e40c0d4362ca258fd3a59023f10`, [CI](https://github.com/sviridovski/Telegram-iOS/actions/runs/45975933018) green all three jobs, 28m40s, prior verified IPA 15189495057. Both branch heads and exact CI success rechecked before documentation. #284 retained as previous recovery checkpoint. Other untested date-filter, grant/revocation, cancellation/teardown, malformed/oversized document cases and optional real GoldAPI.ai.complete/model discovery/SSE remain open; existing AI Commander success is not proof of the new AI wrapper. No new app code, architecture or build initiated at acceptance.
+- Next stage in agreed sequence: Plugin Update Engine; preserve existing SQLite, Ghost, Collector, Live Bridge, plugin identity/settings/storage and permissions; inspect existing update paths and rollback before implementation. Then Diagnostics Engine, SDK, AI Commander 3.0 and Archive Reliability 2.0. CI goal 15–20m remains open.
