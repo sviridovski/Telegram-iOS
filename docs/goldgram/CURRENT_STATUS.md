@@ -1,6 +1,6 @@
 # CURRENT_STATUS — verified checkpoint
 
-  > **2026-11-27 local user date — #284 accepted for reported UI/private TTL bookmark flows; #285 failed native compilation; #286 capture fix in progress.** Start with [START_HERE.md](./START_HERE.md); consult relevant sections of [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
+  > **2026-11-27 local user date — #284 accepted for reported UI/private TTL bookmark flows; #286 GoldAPI 1.3.0 green and installed, device acceptance pending.** Start with [START_HERE.md](./START_HERE.md); consult relevant sections of [PROJECT_CONTEXT](./PROJECT_CONTEXT.md) and [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
 
 ## P0 development priority (user-approved 2026-11-25)
 
@@ -13,11 +13,11 @@
 | Item | Latest confirmed status |
 | --- | --- |
 | Feature branch | `gold-next-243-author-search` |
-| HEAD | `0734a544b2c30e40c0d4362ca258fd3a59023f10` (#286 nested weak capture fix), direct parent #285 |
-| Last green CI | [#284](https://github.com/sviridovski/Telegram-iOS/actions/runs/45959123469), success, 34m01s, IPA available |
-| Last installed | #284 — formatted Personal list/detail verified on video, private TTL bookmark saving confirmed by user; other unlisted tests pending. |
-| Failed candidate | #285 native Swift compilation, GoldgramPluginDocuments.swift:193:46, weak self capture ownership; final build skipped. #286 fix pushed; not yet verified by native CI. |
-| Next task | **P0 Engine 2.0**: verify [#286](https://github.com/sviridovski/Telegram-iOS/actions/runs/45975933018) in_progress at exact HEAD; on success check IPA and iPhone search/PDF/DOCX/TXT/JSON, retain accepted #284 behavior; then Plugin Update Engine. |
+| HEAD | `0734a544b2c30e40c0d4362ca258fd3a59023f10` (#286 nested weak capture fix), green, direct parent #285 |
+| Last green CI | [#286](https://github.com/sviridovski/Telegram-iOS/actions/runs/45975933018), success, 28m40s wall, IPA 15189495057 present/unexpired at verification |
+| Last installed | #286 — user confirms installation only, Search & Documents tests pending. #284 remains last accepted checkpoint for reported flows. |
+| Failed candidate | #285 native Swift compilation, GoldgramPluginDocuments.swift:193:46, weak self capture ownership; final build skipped. #286 native CI green. |
+| Next task | **P0 Engine 2.0**: obtain #286 iPhone acceptance of scoped Find search, PDF/DOCX/TXT/JSON, cancel/error cases and selected regressions; then Plugin Update Engine. |
 | Recovery |  #284 green/device-accepted reported Personal UI/TTL saving baseline; #282 prior speech checkpoint (nine checks); #281 prior GoldAPI foundation checkpoint; #280 prior context-menu checkpoint; #279 prior TTL opt-out checkpoint; #277 Data Test accepted; #276 prior lifecycle baseline; #275 prior UI and #274 prior streaming checkpoints. Earlier #263 navigation checkpoint and older archive/media limitations remain historical. |
 
 ## #252 corrections retained in #253
@@ -559,3 +559,8 @@ Live CI verification: #285 run 45966802832, exact SHA 2b33ec756b15def83dab2786e4
 - Code [0734a544](https://github.com/sviridovski/Telegram-iOS/commit/0734a544b2c30e40c0d4362ca258fd3a59023f10), parent 2b33ec756b15def83dab2786e4e5f24b8610798f; branch HEAD and exact two-line diff verified. Only GoldgramPluginDocuments.swift changed: outer background dispatch explicitly captures `[weak self]`; inner main dispatch explicitly captures `[weak self = self]`. Document limits, context checks, parsing, permissions and completion behavior retained. No architecture, SQLite, Ghost, Collector, Live Bridge or CI workflow/cache-key changes.
 - Native #285 log (job 140397309806) reconfirmed ImplicitStrongCapture at line 193:46; compiler suggests explicit capture/assignment. Bazel restored #284 cache and failed after 288.920s (critical path 100.83s). Local isolated Foundation/Dispatch reproduction typechecked with Swift 6.2.1 in Swift 5 and Swift 6 language modes on Linux; not a full iOS build or document-runtime test. Previous 249/249 mock RPC checks are unchanged, not rerun.
 - [CI #286](https://github.com/sviridovski/Telegram-iOS/actions/runs/45975933018) verified in_progress for exact new SHA at documentation update. No green/IPA/device acceptance claimed. #284 remains last accepted checkpoint. Next: verify full CI, then iPhone search and document acceptance; keep target 15–20 min without disabling checks.
+
+## 2026-11-27 — #286 green and installed; Search & Documents acceptance pending
+
+- [CI #286](https://github.com/sviridovski/Telegram-iOS/actions/runs/45975933018) completed successfully for 0734a544b2c30e40c0d4362ca258fd3a59023f10, matches feature branch HEAD. All three jobs mx/native/build success, wall 28m40s (09:42:24–10:11:04 UTC); IPA artifact 15189495057 present and unexpired when checked. #284 was 34m01s, a 5m21s difference; no cache/workflow change or causal speed claim. 15–20m target remains open.
+- User confirms installing #286, asks for test checklist; no feature test results yet. Built-in GoldAPI Search & Documents Test 1.0: install/enable with grants, set Поисковый запрос, Find in ordinary dialog for old non-expiring text outside visible snapshot, confirm/cancel, no match, scope restricted in topic/discussion. Settings Открыть PDF / DOCX / TXT / JSON: test each synthetic local format, readable preview and counts, cancel picker, scanned PDF no text, invalid JSON/oversize rejection, then selected prior Personal/AICC/TTS regressions. Date bounds and deeper permission/teardown tests not exposed by stock sample; remain separate checks. No external transfer by document sample. Do not infer complete history search or real device acceptance. #284 remains last accepted recovery baseline. No app code or build for this docs update.
