@@ -270,3 +270,7 @@ GoldAPI is a separate frozen JS namespace injected into the existing worker alon
 ## #282 candidate — foreground speech service
 
 GoldAPI.speech adds an independent gold.speech grant, bounded system voice enumeration and on-device text-to-speech through AVSpeechSynthesizer. A native session owned by the current disposable run has a global single-session reservation, visible Stop control, context validity/foreground checks and finite duration. It does not own an always-on player, request microphone access or change application audio session category. Native audio and UI behavior pending acceptance; see current status and GoldAPI reference.
+
+## #283 candidate — scoped personal services and private TTL text
+
+GoldAPI 1.2.0 uses existing GoldgramPersonalUI and references-v1.json for selected ordinary non-expiring message bookmark references and current-peer metadata search; explicit confirmed add/remove, no message copying, no new database. Current user or selected actual user-author contact metadata and existing local alias/note only. Native-only scope descriptors removed from JS payload; separate grants, active context/account rechecks, no caller-controlled IDs. Ordinary nonempty cloud private-chat plain text with long unexpired server auto-delete now uses the existing explicit selected-message TTL consent gate; all other protection and snapshot exclusions remain. See status/reference for limitations and pending tests.

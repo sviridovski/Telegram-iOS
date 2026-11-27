@@ -55,3 +55,21 @@ Runtime apiVersion() now returns "1.1.0"; capabilities includes three new speech
 - `await GoldAPI.speech.stop() -> boolean`: stops own active execution only; false if idle. User can also tap native Stop. App background, invalid context or run cancellation stops speech; a destroyed worker may not receive the terminal reply. Not a persistent background audio engine.
 
 Example: a context action with messages.read/ui.mutate and gold.speech grants can await GoldAPI.speech.speak(GGAPI.messages.getSelectedMessage().text,{language:"ru-RU"}). Handle null/empty text, errors and size limit. Basic voice catalog, speech, stop and background cancellation verified by user on iPhone; other audio/context edge cases remain unconfirmed.
+
+## Additions in GoldAPI 1.2.0 (#283 candidate)
+
+Runtime apiVersion() returns "1.2.0"; 18 service methods in capabilities, 21 including runtime. Explicit interactive actions only; native availability flags are not proof of current store or UI health. Previous methods retained. Device validation pending.
+
+### Favorites (gold.favorites + chat.read; messages.read for selected methods)
+
+- `await GoldAPI.favorites.search(query="",limit=16) -> {items,matched,scope:"currentPeer",complete}`: query <=800 UTF-8 bytes; limit 1..30; case-insensitive matching title/folder/note/tags in current peer across its threads. Results contain title, folder, tags, note, date (ms), archive flag, no message bodies. No archive query, cross-peer search or external request.
+- `await GoldAPI.favorites.selected() -> object|null`: metadata for the existing reference of the exact eligible selected ordinary non-expiring message, null if not saved.
+- `await GoldAPI.favorites.addSelected({folder="",tags=[],note=""}={}) -> "saved"|"alreadySaved"|"cancelled"`: explicit native confirmation; folder <=80 code points/320 bytes, up to 12 tags <=40 code points/160 bytes each, note <=1000 code points/4000 bytes. Native model validation also applies. Existing reference unchanged; newly added reference has archive false. No message body or arbitrary draft/AI response saved. No archive lookup for new bookmark.
+- `await GoldAPI.favorites.removeSelected() -> "removed"|"notFound"|"cancelled"`: confirmed exact reference removal, no original or archive deletion. One prompted write per execution, state rechecked before mutation. Both mutations reject on store failure or stale reference. Timed, protected, secret and ephemeral selected messages excluded.
+
+### Contacts (gold.contacts + chat.read; messages.read for selected)
+
+- `await GoldAPI.contacts.current() -> {name,username,card}|null`: current rendered CloudUser only.
+- `await GoldAPI.contacts.selected() -> {name,username,card}|null`: actual CloudUser author of selected eligible ordinary non-expiring message only. The card, if present, contains title/alias/note from existing local personal card; otherwise null. Username may be empty. No phone, arbitrary contact IDs, bulk list, contact mutation or inferred anonymous author. Missing context may reject via runtime availability.
+
+Use GoldAPI.runtime.has(method) to check local scope/grants; catch native errors. These are scoped adapters over existing personal references/card metadata, not unrestricted database or profile APIs. No automatic network transfer; any external AI request remains subject to its separate grant and approval policy.
