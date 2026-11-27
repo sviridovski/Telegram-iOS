@@ -333,7 +333,10 @@ assert.ok(result.output.text.includes("TEST caption"));
 
 const updateV1 = """ + json.dumps(update_sample) + """;
 const updateV2 = updateV1.replace("// @version 1.0","// @version 2.0\\n// @permission.clipboard optional").replace("Update Test 1.0","Update Test 2.0");
-const updateGrants=['settings.read','events','storage','ui.mutate'];
+const updateGrants=Array.from(updateV1.matchAll(/^\\/\\/ @permission\\.([^\\s]+) required$/gm),m=>m[1]);
+assert.ok(updateGrants.includes("ui.read"));
+await self.onmessage({data:{source:updateV1,grants:updateGrants.filter(x=>x!=="ui.read"),event:"settings.action",key:"inspect"}});
+assert.ok(result.error);
 await self.onmessage({data:{source:updateV1,grants:updateGrants,event:"settings.action",key:"increment",settings:{label:"persisted"},storage:{count:5}}});
 assert.ok(!result.error);assert.equal(result.storage.count,6);assert.equal(result.files["update-test.txt"],"saved");
 const updateData={settings:result.settings,storage:result.storage,files:result.files};

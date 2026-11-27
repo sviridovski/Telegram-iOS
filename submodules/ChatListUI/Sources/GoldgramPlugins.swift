@@ -1137,6 +1137,7 @@ final class GoldgramPluginManager: UITableViewController, UIDocumentPickerDelega
 // @permission.events required
 // @permission.storage required
 // @permission.ui.mutate required
+// @permission.ui.read required
 GGAPI.settings.addSection({title:"Тест обновления",items:[{type:"text",key:"label",title:"Метка",default:"Goldgram"},{type:"button",key:"increment",title:"Увеличить счётчик"},{type:"button",key:"inspect",title:"Показать данные"}]});
 GGAPI.events.on("settings.action",p=>{
   if(p.key==="increment"){GGAPI.storage.set("count",Number(GGAPI.storage.get("count")||0)+1);GGAPI.files.writeText("update-test.txt","saved");}
