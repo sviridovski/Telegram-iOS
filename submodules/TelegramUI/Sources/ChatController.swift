@@ -8192,8 +8192,9 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
         } else {
             return
         }
-        // Personal services never receive a bookmark or author scope for expiring text/media.
-        selected["_goldPersonalSelection"] = GoldgramAuthorSearchBridge.pluginPersonalSelection(context: self.context, message: message)
+        // Only the already eligible private TTL text can create a reference.
+        // No author scope or media payload for expiring content.
+        selected["_goldPersonalSelection"] = GoldgramAuthorSearchBridge.pluginPersonalSelection(context: self.context, message: message, allowTimedReference: self.goldgramPluginTimedText(message._asMessage()))
         let snapshot = selected
         if self.goldgramPluginTimedText(message._asMessage()) &&
             !GoldgramAIButtonGroup.skipTimedTextPrompt(account: String(self.context.account.peerId.id._internalGetInt64Value()), actionKey: key) {

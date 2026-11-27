@@ -276,18 +276,28 @@ public final class GoldgramAuthorSearchBridge: NSObject {
         if let rendered, rendered.id == peer { result["contact"] = pluginContact(rendered) }
         return result
     }
-    public static func pluginPersonalSelection(context: AccountContext, message: EngineMessage) -> [String: Any]? {
+    public static func pluginPersonalSelection(context: AccountContext, message: EngineMessage, allowTimedReference: Bool = false) -> [String: Any]? {
         let raw = message._asMessage()
         guard canBookmark(context: context, message: message), !raw.isCopyProtected(), !message.containsSecretMedia,
               !raw.flags.isSending, !raw.flags.contains(.Failed), raw.activeEphemeralReplacementMessage == nil,
-              message.adAttribute == nil, raw.minAutoremoveOrClearTimeout == nil,
-              !raw.attributes.contains(where: { $0 is AutoremoveTimeoutMessageAttribute || $0 is AutoclearTimeoutMessageAttribute || $0 is RestrictedContentMessageAttribute || $0 is EphemeralMessageAttribute }),
+              message.adAttribute == nil,
+              !raw.attributes.contains(where: { $0 is AutoclearTimeoutMessageAttribute || $0 is RestrictedContentMessageAttribute || $0 is EphemeralMessageAttribute }),
               !raw.media.contains(where: { $0 is TelegramMediaAction || $0 is TelegramMediaExpiredContent }),
               var result = GoldgramUnifiedIdentity.sources(message.id.peerId)?.first else { return nil }
+        if raw.minAutoremoveOrClearTimeout != nil || raw.autoremoveAttribute != nil {
+            guard allowTimedReference, raw.id.peerId.namespace == Namespaces.Peer.CloudUser,
+                  raw.media.isEmpty, !raw.text.isEmpty, let attr = raw.autoremoveAttribute,
+                  attr.timeout >= 3600, attr.timeout != viewOnceTimeout,
+                  let begin = attr.countdownBeginTime else { return nil }
+            let expiry = Int64(begin) + Int64(attr.timeout)
+            guard expiry > Int64(Date().timeIntervalSince1970) else { return nil }
+            result["expiresAt"] = NSNumber(value: expiry)
+        } else {
+            result["contact"] = pluginContact(message.author)
+        }
         result["messageId"] = NSNumber(value: message.id.id)
         result["date"] = NSNumber(value: Int64(message.timestamp) * 1000)
         result["title"] = String((message.enginePeers[message.id.peerId]?.compactDisplayTitle ?? "Диалог").prefix(180))
-        result["contact"] = pluginContact(message.author)
         return result
     }
 
@@ -2948,8 +2958,12 @@ final class GoldgramPluginPersonalSession {
         guard valid(), UIApplication.shared.applicationState == .active else { return nil }
         return GoldgramAuthorSearchBridge.pluginPersonalContext(account: account)
     }
+    private var selectedExpired: Bool {
+        guard let expiry = (selected["expiresAt"] as? NSNumber)?.int64Value else { return false }
+        return expiry <= Int64(Date().timeIntervalSince1970)
+    }
     private func reference() -> GoldgramPersonalBookmark? {
-        guard let kind = (selected["peerKind"] as? NSNumber)?.int32Value,
+        guard !selectedExpired, let kind = (selected["peerKind"] as? NSNumber)?.int32Value,
               let peer = (selected["peerId"] as? NSNumber)?.int64Value,
               let mid = (selected["messageId"] as? NSNumber)?.int32Value,
               let date = (selected["date"] as? NSNumber)?.int64Value,
@@ -3018,11 +3032,13 @@ final class GoldgramPluginPersonalSession {
             guard let self, self.busy else { return }
             guard self.context() != nil, let presenter = self.presenter,
                   presenter.viewIfLoaded?.window != nil, presenter.presentedViewController == nil else { self.end(["status": "cancelled"]); return }
-            let detail = add ? "Диалог: \(target.title)\nПапка: \(target.folder)\nТеги: \(target.tags.joined(separator: ", "))\nЗаметка: \(target.note)\n\nСохраняется только ссылка и личные метаданные." : "Удалится только выбранная личная закладка. Сообщение и архив не изменятся."
+            guard !self.selectedExpired else { self.end(["error": "Срок действия сообщения истёк."]); return }
+            let timedNote = self.selected["expiresAt"] != nil ? "\n\nПосле автоудаления оригинал может стать недоступным. Текст сообщения в закладку не копируется." : ""
+            let detail = add ? "Диалог: \(target.title)\nПапка: \(target.folder)\nТеги: \(target.tags.joined(separator: ", "))\nЗаметка: \(target.note)\n\nСохраняется только ссылка и личные метаданные." + timedNote : "Удалится только выбранная личная закладка. Сообщение и архив не изменятся."
             let alert = UIAlertController(title: add ? "Сохранить в личное избранное?" : "Удалить из личного избранного?", message: detail, preferredStyle: .alert)
             self.prompt = alert
             alert.addAction(UIAlertAction(title: add ? "Сохранить" : "Удалить", style: add ? .default : .destructive) { [weak self] _ in
-                guard let self, self.busy, let context = self.context() else { self?.end(["status": "cancelled"]); return }
+                guard let self, self.busy, let context = self.context(), !self.selectedExpired else { self?.end(["status": "cancelled"]); return }
                 do {
                     try GoldgramPersonalUI.change(context) { data in
                         guard data.bookmarks.first(where: { $0.key == target.key }) == old else { return false }

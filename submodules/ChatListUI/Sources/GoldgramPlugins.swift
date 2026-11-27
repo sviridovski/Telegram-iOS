@@ -758,7 +758,7 @@ function goldWorkerMain() {
     const goldHas=name=>own(goldPolicy,name)&&goldPolicy[name].active&&goldPolicy[name].grants.every(allowed);
     const goldNeed=name=>{if(!goldHas(name))throw Error("GoldAPI unavailable: "+name);};
     const goldCaps=()=>Object.keys(goldPolicy).map(name=>({name,scope:goldPolicy[name].scope,permissions:[...goldPolicy[name].grants],granted:goldPolicy[name].grants.every(allowed),available:goldHas(name)}));
-    const gold={runtime:Object.freeze({apiVersion:()=>"1.2.0",has:goldHas,capabilities:goldCaps})};
+    const gold={runtime:Object.freeze({apiVersion:()=>"1.2.1",has:goldHas,capabilities:goldCaps})};
     const byteCount=text=>{let n=0;for(const ch of text){const cp=ch.codePointAt(0);n+=cp<=127?1:cp<=2047?2:cp<=65535?3:4;}return n;};
     const checkedText=(v,max)=>{if(typeof v!=="string"||byteCount(v)>max)throw Error("Invalid or oversized text");return v;};
     if(allowed("gold.ai")&&allowed("network.fetch")){
@@ -948,7 +948,7 @@ final class GoldgramPluginManager: UITableViewController, UIDocumentPickerDelega
             cell.detailTextLabel?.text = "DeepSeek · промпт и плавающая кнопка"
             cell.imageView?.image = UIImage(systemName: "sparkles")
         } else {
-            cell.textLabel?.text = ["Вставить JavaScript", "Импортировать .js из файлов", "Установить тестовый плагин", "Безопасный режим", "Подтверждения плагинов", "Установить тесты многоплагинности", "Установить тест интерфейса", "Установить тест событий", "Установить тест GGAPI", "Установить тест GoldAPI", "Установить тест озвучивания", "Установить тест избранного и контактов"][indexPath.row]
+            cell.textLabel?.text = ["Вставить JavaScript", "Импортировать .js из файлов", "Установить тестовый плагин", "Безопасный режим", "Подтверждения плагинов", "Установить тесты многоплагинности", "Установить тест интерфейса", "Установить тест событий", "Установить тест GGAPI", "Установить тест GoldAPI", "Установить тест озвучивания", "Установить / обновить тест избранного и контактов"][indexPath.row]
             if indexPath.row == 3 { cell.detailTextLabel?.text = store.state.safe ? "Включён — выполнение заблокировано" : "Выключен" }
             if indexPath.row == 4 { cell.detailTextLabel?.text = "Запросы к сервисам и вставка ответа" }
         }
@@ -1003,7 +1003,18 @@ final class GoldgramPluginManager: UITableViewController, UIDocumentPickerDelega
             if !store.state.plugins.contains(where: { $0.code == Self.speechExample }) && !install(Self.speechExample) { notice("Не удалось установить тест озвучивания.") }
         case 11:
             store.refresh()
-            if !store.state.plugins.contains(where: { $0.code == Self.personalExample }) && !install(Self.personalExample) { notice("Не удалось установить тест личных данных.") }
+            if var legacy = store.state.plugins.first(where: { $0.code == Self.personalExampleV1 }) {
+                // Explicit upgrade of the exact built-in source, never replace a custom plugin.
+                let updated = GoldgramPluginManifest(Self.personalExample)
+                guard updated.required == legacy.manifest.required, updated.optional == legacy.manifest.optional else { notice("Разрешения изменились."); return }
+                legacy.previousCode = legacy.code
+                legacy.code = Self.personalExample
+                legacy.confirmationPolicy = nil
+                if store.put(legacy) { tableView.reloadData(); notice("GoldAPI Personal Test обновлён до 1.1. Настройки и закладки сохранены.") }
+                else { notice("Не удалось обновить тест личных данных.") }
+            } else if store.state.plugins.contains(where: { $0.code == Self.personalExample }) {
+                notice("GoldAPI Personal Test 1.1 уже установлен.")
+            } else if !install(Self.personalExample) { notice("Не удалось установить тест личных данных.") }
         default:
             store.refresh()
             var next = store.state; next.safe.toggle()
@@ -1128,7 +1139,7 @@ GGAPI.ui.addMessageContextAction({id:"inspect",title:"GGAPI: проверить 
   GGAPI.ui.showSheet({title:"GGAPI",text:info?"Медиа: "+info.kind:(m?"Текст: "+String(m.text||"").length+" символов":"Нет сообщения")});
 });
 """#
-    static let personalExample = #"""
+    static let personalExampleV1 = #"""
 // @name GoldAPI Personal Test
 // @version 1.0
 // @permission.settings.read required
@@ -1155,6 +1166,60 @@ GGAPI.ui.addMessageContextAction({id:"personal-add",title:"GoldAPI: добави
 GGAPI.ui.addMessageContextAction({id:"personal-check",title:"GoldAPI: проверить закладку"},()=>handle("Закладка",()=>GoldAPI.favorites.selected()));
 GGAPI.ui.addMessageContextAction({id:"personal-remove",title:"GoldAPI: удалить закладку"},()=>handle("Избранное",()=>GoldAPI.favorites.removeSelected()));
 GGAPI.ui.addMessageContextAction({id:"personal-author",title:"GoldAPI: карточка автора"},()=>handle("Автор",()=>GoldAPI.contacts.selected()));
+"""#
+    static let personalExample = #"""
+// @name GoldAPI Personal Test
+// @version 1.1
+// @permission.settings.read required
+// @permission.ui.read required
+// @permission.ui.mutate required
+// @permission.chat.read required
+// @permission.messages.read required
+// @permission.gold.favorites required
+// @permission.gold.contacts required
+GGAPI.settings.addSection({title:"Личные данные GoldAPI",items:[
+  {type:"text",key:"query",title:"Поиск в избранном этого чата",default:""},
+  {type:"text",key:"folder",title:"Папка тестовой закладки",default:"GoldAPI Test"},
+  {type:"text",key:"note",title:"Заметка",default:"Тест GoldAPI"},
+  {type:"info",key:"about",title:"Личные данные",detail:"Кнопка Personal: список закладок и контакт. Контекстное меню: сохранить, проверить, удалить закладку или посмотреть автора."}
+]});
+const show=(title,text)=>GGAPI.ui.showSheet({title,text});
+const clean=(v,fallback="—")=>typeof v==="string"&&v.trim()?v:fallback;
+const date=v=>{const d=new Date(Number(v));return Number.isFinite(d.getTime())&&Number(v)>0?d.toLocaleString("ru-RU"):"—";};
+const bookmark=b=>b?[
+  "Диалог: "+clean(b.title),
+  "Папка: "+clean(b.folder,"Без папки"),
+  "Теги: "+(Array.isArray(b.tags)&&b.tags.length?b.tags.map(t=>"#"+t).join(" "):"Нет"),
+  "Дата сообщения: "+date(b.date),
+  "Заметка: "+clean(b.note,"Нет"),
+  "Тип: "+(b.archive?"Закладка с архивной ссылкой":"Ссылка на сообщение")
+].join("\n\n"):"Закладка ещё не сохранена.";
+const contact=c=>c?[
+  "Имя: "+clean(c.name),
+  "Username: "+(c.username?"@"+c.username:"Не указан"),
+  "Личная карточка: "+(c.card?"Есть":"Не создана"),
+  ...(c.card?["Псевдоним: "+clean(c.card.alias),"Заметка: "+clean(c.card.note,"Нет")]:[])
+].join("\n\n"):"Данные контакта недоступны.";
+const statuses={saved:"✓ Закладка сохранена",alreadySaved:"Закладка уже существует",removed:"✓ Закладка удалена",notFound:"Закладка не найдена",cancelled:"Действие отменено"};
+const status=v=>statuses[v]||"Действие завершено.";
+const handle=async(title,fn,format)=>{try{show(title,format(await fn()));}catch(e){const message=String(e.message||e);show(title,message.startsWith("GoldAPI unavailable:")?"Действие недоступно для выбранного сообщения или чата. Проверьте разрешения и тип сообщения.":message);}};
+GGAPI.ui.addFloatingButton({id:"personal",title:"Personal"},async()=>{
+  const choice=await GGAPI.ui.select("Личные данные",[{title:"Избранное этого чата",value:"favorites"},{title:"Текущий контакт",value:"contact"}]);
+  if(choice==="contact")await handle("Контакт",()=>GoldAPI.contacts.current(),contact);
+  if(choice==="favorites"){
+    try{
+      const r=await GoldAPI.favorites.search(GGAPI.settings.getPlugin("query",""),16);
+      if(!r.items.length){show("Личное избранное","Закладок по этому запросу нет.");return;}
+      const list=r.items.map((b,i)=>({title:String(i+1)+". "+clean(b.folder,"Без папки")+" · "+clean(b.note,clean(b.title)),value:String(i)}));
+      const idx=await GGAPI.ui.select("Найдено закладок: "+r.matched+(r.complete?"":" (первые "+r.items.length+")"),list.map(v=>({...v,title:v.title.slice(0,140)})));
+      if(idx!==null&&idx!==undefined&&/^\d+$/.test(idx)&&r.items[Number(idx)])show("Личная закладка",bookmark(r.items[Number(idx)]));
+    }catch(e){show("Личное избранное",String(e.message||e));}
+  }
+});
+GGAPI.ui.addMessageContextAction({id:"personal-add",title:"GoldAPI: добавить в избранное"},()=>handle("Личное избранное",()=>GoldAPI.favorites.addSelected({folder:GGAPI.settings.getPlugin("folder","GoldAPI Test"),tags:["GoldAPI"],note:GGAPI.settings.getPlugin("note","Тест GoldAPI")}),status));
+GGAPI.ui.addMessageContextAction({id:"personal-check",title:"GoldAPI: проверить закладку"},()=>handle("Личная закладка",()=>GoldAPI.favorites.selected(),bookmark));
+GGAPI.ui.addMessageContextAction({id:"personal-remove",title:"GoldAPI: удалить закладку"},()=>handle("Личное избранное",()=>GoldAPI.favorites.removeSelected(),status));
+GGAPI.ui.addMessageContextAction({id:"personal-author",title:"GoldAPI: карточка автора"},()=>handle("Карточка автора",()=>GoldAPI.contacts.selected(),contact));
 """#
     static let speechExample = #"""
 // @name GoldAPI Speech Test
