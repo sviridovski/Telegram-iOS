@@ -67,3 +67,7 @@ After completing and accepting the currently planned plugin sequence (including 
 ## Approved AI Search sequence (2026-11-28)
 
 User approved the proposed tiled AI Search plan. Foundation 1.0 (#300 candidate) is the native query-only planner and reviewed filters; Foundation 2.0 adds bounded multi-term search, dedup and results UI; then AI Intelligence scoped context/documents, Archive Reliability 2.0, and Semantic Search only after archive reliability with explicit eligible selected excerpts. Preserve existing ordinary search and privacy; no bulk archive transfer or global JS bridge. Verify each stage before moving on. See AI_COMMANDER_3_PLAN.md and START_HERE.md for status.
+
+## Foundation 2.0 scope addition (2026-11-28)
+
+User-approved yellow in-message match highlighting on opening a search result (ordinary and AI search, channels/groups/private chats; actual text/caption matches only). Preserve native exact jump and return, formatting and privacy. See AI_COMMANDER_3_PLAN.md for acceptance checks. Not implemented yet.
