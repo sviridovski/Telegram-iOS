@@ -2500,7 +2500,19 @@ private final class GoldgramPluginDetail: UITableViewController, UIDocumentPicke
             navigationController?.pushViewController(GoldgramPluginDetail(store: store, id: id, account: account, page: target), animated: true)
             return
         }
-        let actions = ["panel":"btnPanel","balance":"btnBalance","usage":"btnUsage"]
+        if key == "balance" || key == "usage" {
+            let baseGrant = record.grants.contains("gold.ai") && record.grants.contains("network.fetch")
+            let canBalance = baseGrant && record.grants.contains("gold.ai.balance")
+            let canUsage = baseGrant && record.grants.contains("gold.ai.usage")
+            guard canBalance || canUsage else { showPluginError("Необходимы разрешения баланса или статистики AI."); return }
+            let account = self.account, id = self.id
+            let screen = GoldgramFinanceScreen(config: GoldgramAIConfig(account: account + "." + id.uuidString), valid: catalogValidity(record), canBalance: canBalance, canUsage: canUsage, startAtUsage: key == "usage", acquire: {
+                GoldgramPluginRun.reserve(account: account, id: id)
+            }, release: { lease in GoldgramPluginRun.releaseUpdateLease(lease) })
+            navigationController?.pushViewController(screen, animated: true)
+            return
+        }
+        let actions = ["panel":"btnPanel"]
         if let action = actions[key] {
             reloadSchema()
             guard sections.flatMap({ $0["items"] as? [[String: Any]] ?? [] }).contains(where: { $0["key"] as? String == action && $0["type"] as? String == "button" }) else {
@@ -2643,7 +2655,7 @@ private final class GoldgramPluginDetail: UITableViewController, UIDocumentPicke
             alert.addAction(UIAlertAction(title: "Удалить", style: .destructive) { [weak self] _ in
                 guard let self else { return }; self.store.refresh(); var next = self.store.state
                 next.plugins.removeAll { $0.id == self.id }
-                if self.store.save(next) { GoldgramPluginRun.clearDiagnostics(account: self.account, id: self.id); let credential = GoldgramAIConfig(account: self.account + "." + self.id.uuidString); credential.clearCatalog(); credential.clearUsageLedger(); self.navigationController?.popViewController(animated: true) }
+                if self.store.save(next) { GoldgramPluginRun.clearDiagnostics(account: self.account, id: self.id); let credential = GoldgramAIConfig(account: self.account + "." + self.id.uuidString); credential.clearCatalog(); credential.clearUsageLedger(); credential.clearFinancePreferences(); self.navigationController?.popViewController(animated: true) }
             })
             alert.addAction(UIAlertAction(title: "Отмена", style: .cancel)); present(alert, animated: true)
         }

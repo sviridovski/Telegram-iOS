@@ -141,6 +141,135 @@ struct GoldgramAIUsageLedger {
 }
 // END GOLDGRAM_AI_USAGE_V1
 
+// BEGIN GOLDGRAM_FINANCE_V2
+struct GoldgramFinanceCost {
+    let low: Decimal
+    let high: Decimal
+}
+enum GoldgramFinancePricing {
+    // USD per million tokens, official published rate snapshot, checked 2026-11-28.
+    static let version = "2026-11-28"
+    static let validFrom: Double = 1795824000
+    static let validUntil: Double = validFrom + 30 * 86400
+    static func modelGroup(_ model: String?) -> String {
+        switch model {
+        case "deepseek-flash", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp": return "Flash"
+        case "deepseek-v4-pro": return "Pro"
+        default: return "Другие / неизвестно"
+        }
+    }
+    static func estimate(_ record: GoldgramAIUsageRecord) -> GoldgramFinanceCost? {
+        guard record.outcome == "completed", record.timestamp >= validFrom, record.timestamp < validUntil,
+              record.durationMs >= 0, record.durationMs <= 3_600_000,
+              record.timestamp + Double(record.durationMs) / 1000 < validUntil,
+              let input = record.tokens["prompt_tokens"], let hit = record.tokens["prompt_cache_hit_tokens"],
+              let miss = record.tokens["prompt_cache_miss_tokens"], let output = record.tokens["completion_tokens"],
+              [input, hit, miss, output].allSatisfy({ (0...100_000_000).contains($0) }), hit + miss == input else { return nil }
+        let prices: [String]
+        switch modelGroup(record.model) {
+        case "Flash": prices = ["0.003", "0.15", "0.6"]
+        case "Pro": prices = ["0.022", "0.66", "1.98"]
+        default: return nil
+        }
+        let rate = prices.compactMap { Decimal(string: $0, locale: Locale(identifier: "en_US_POSIX")) }
+        guard rate.count == 3 else { return nil }
+        let low = (Decimal(hit) * rate[0] + Decimal(miss) * rate[1] + Decimal(output) * rate[2]) / Decimal(1_000_000)
+        // A weekday peak interval may be a Chinese public holiday. Never guess the holiday calendar.
+        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let start = Date(timeIntervalSince1970: record.timestamp)
+        let end = start.addingTimeInterval(Double(record.durationMs) / 1000)
+        let day = calendar.startOfDay(for: start)
+        let mayPeak = [day, day.addingTimeInterval(86400)].contains { date in
+            let weekday = calendar.component(.weekday, from: date)
+            guard (2...6).contains(weekday) else { return false }
+            return [(1,4),(6,10)].contains { hours in
+                start < date.addingTimeInterval(Double(hours.1 * 3600)) && end >= date.addingTimeInterval(Double(hours.0 * 3600))
+            }
+        }
+        return GoldgramFinanceCost(low: low, high: mayPeak ? low * 2 : low)
+    }
+    static func positive(_ text: String) -> Decimal? {
+        guard text.utf8.count <= 20, text.range(of: #"^[0-9]{1,7}(\.[0-9]{1,6})?$"#, options: .regularExpression) != nil,
+              let value = Decimal(string: text, locale: Locale(identifier: "en_US_POSIX")), value > 0 else { return nil }
+        return value
+    }
+    static func day(_ timestamp: Double) -> Int? {
+        guard timestamp.isFinite, timestamp >= 0, timestamp <= 4_102_444_800 else { return nil }
+        return Int(timestamp / 86400)
+    }
+}
+struct GoldgramFinanceTotals: Codable {
+    var requests: Int64 = 0
+    var completed: Int64 = 0
+    var known: Int64 = 0
+    var priced: Int64 = 0
+    var milliseconds: Int64 = 0
+    var tokens: [String: Int64] = [:]
+    var low: Decimal = 0
+    var high: Decimal = 0
+    static let tokenKeys = ["prompt_tokens", "completion_tokens", "total_tokens", "prompt_cache_hit_tokens", "prompt_cache_miss_tokens", "reasoning_tokens"]
+    static let cap: Int64 = 1_000_000_000_000
+    static func add(_ a: Int64, _ b: Int64) -> Int64 { min(cap, max(0, min(cap, a)) + max(0, min(cap, b))) }
+    mutating func record(_ item: GoldgramAIUsageRecord, priced allowPrice: Bool) {
+        requests = Self.add(requests, 1)
+        if item.outcome == "completed" { completed = Self.add(completed, 1) }
+        milliseconds = Self.add(milliseconds, Int64(max(0, min(3_600_000, item.durationMs))))
+        let usage = item.tokens.filter { Self.tokenKeys.contains($0.key) && (0...100_000_000).contains($0.value) }
+        if !usage.isEmpty { known = Self.add(known, 1) }
+        for (k,v) in usage { tokens[k] = Self.add(tokens[k] ?? 0, Int64(v)) }
+        if allowPrice, let cost = GoldgramFinancePricing.estimate(item) {
+            priced = Self.add(priced, 1); low = min(Decimal(Self.cap), low + cost.low); high = min(Decimal(Self.cap), high + cost.high)
+        }
+    }
+    mutating func merge(_ other: Self) {
+        requests = Self.add(requests, other.requests); completed = Self.add(completed, other.completed)
+        known = Self.add(known, other.known); priced = Self.add(priced, other.priced)
+        milliseconds = Self.add(milliseconds, other.milliseconds)
+        for k in Self.tokenKeys { if let v = other.tokens[k] { tokens[k] = Self.add(tokens[k] ?? 0,v) } }
+        low = min(Decimal(Self.cap), low + other.low); high = min(Decimal(Self.cap), high + other.high)
+    }
+    var valid: Bool {
+        [requests,completed,known,priced,milliseconds].allSatisfy { (0...Self.cap).contains($0) } && completed <= requests && known <= requests && priced <= known &&
+        tokens.allSatisfy { Self.tokenKeys.contains($0.key) && (0...Self.cap).contains($0.value) } && !low.isNaN && !high.isNaN && low >= 0 && high >= low && high <= Decimal(Self.cap)
+    }
+}
+struct GoldgramFinanceLedger: Codable {
+    var recent: [GoldgramAIUsageRecord] = []
+    var days: [Int: [String: GoldgramFinanceTotals]] = [:]
+    static let groups = ["Flash", "Pro", "Другие / неизвестно"]
+    init() {}
+    init(data: Data?, legacy: [GoldgramAIUsageRecord]) {
+        if let data, data.count <= 2 * 1024 * 1024, let value = try? JSONDecoder().decode(Self.self, from: data),
+           value.recent.count <= 128, value.days.count <= 366,
+           value.days.allSatisfy({ (0...47482).contains($0.key) && $0.value.count <= 3 && $0.value.allSatisfy { Self.groups.contains($0.key) && $0.value.valid } }) {
+            self = value; return
+        }
+        for item in legacy.suffix(128) { append(item, priced: false) }
+    }
+    mutating func append(_ item: GoldgramAIUsageRecord, priced: Bool = true) {
+        guard let day = GoldgramFinancePricing.day(item.timestamp) else { return }
+        recent.append(item); recent = Array(recent.suffix(128))
+        let group = GoldgramFinancePricing.modelGroup(item.model)
+        var models = days[day] ?? [:]
+        var totals = models[group] ?? GoldgramFinanceTotals()
+        totals.record(item, priced: priced); models[group] = totals; days[day] = models
+        if let latest = days.keys.max() { days = days.filter { $0.key >= latest - 365 } }
+    }
+    func selected(_ period: Int, now: Date = Date()) -> [Int: [String: GoldgramFinanceTotals]] {
+        guard let today = GoldgramFinancePricing.day(now.timeIntervalSince1970) else { return [:] }
+        var cal = Calendar(identifier: .gregorian); cal.timeZone = TimeZone(secondsFromGMT: 0)!
+        let month = cal.dateInterval(of: .month, for: now)?.start.timeIntervalSince1970 ?? now.timeIntervalSince1970
+        let first = period == 0 ? today : period == 1 ? today - 6 : period == 2 ? (GoldgramFinancePricing.day(month) ?? today) : today - 365
+        return days.filter { $0.key >= first && $0.key <= today }
+    }
+    static func totals(_ days: [Int: [String: GoldgramFinanceTotals]]) -> GoldgramFinanceTotals {
+        var result = GoldgramFinanceTotals()
+        for day in days.values { for value in day.values { result.merge(value) } }
+        return result
+    }
+}
+// END GOLDGRAM_FINANCE_V2
+
 struct GoldgramAIConfig {
     let account: String
     private var prefix: String { "goldgram.ai.v1." + account + "." }
@@ -165,15 +294,50 @@ struct GoldgramAIConfig {
         nonmutating set { UserDefaults.standard.set(newValue, forKey: prefix + "horizontal") }
     }
     private var usageLedgerKey: String { prefix + "usageLedger.v1" }
+    private var financeLedgerKey: String { prefix + "financeLedger.v2" }
+    func financeLedger() -> GoldgramFinanceLedger {
+        GoldgramFinanceLedger(data: UserDefaults.standard.data(forKey: financeLedgerKey),
+                              legacy: GoldgramAIUsageLedger(data: UserDefaults.standard.data(forKey: usageLedgerKey)).records)
+    }
     func recordUsage(_ record: GoldgramAIUsageRecord) {
-        var ledger = GoldgramAIUsageLedger(data: UserDefaults.standard.data(forKey: usageLedgerKey))
+        var ledger = financeLedger()
         ledger.append(record)
-        if let data = ledger.encoded(), data.count <= 128 * 1024 { UserDefaults.standard.set(data, forKey: usageLedgerKey) }
+        if let data = try? JSONEncoder().encode(ledger), data.count <= 2 * 1024 * 1024 {
+            UserDefaults.standard.set(data, forKey: financeLedgerKey)
+        } else {
+            // Retain the last known aggregate; never replace it with an empty history.
+            return
+        }
+        // Preserve the last 128 records for older app versions.
+        if let recent = try? JSONEncoder().encode(ledger.recent), recent.count <= 128 * 1024 {
+            UserDefaults.standard.set(recent, forKey: usageLedgerKey)
+        }
     }
     func usageReport() -> [String: Any] {
-        GoldgramAIUsagePolicy.report(GoldgramAIUsageLedger(data: UserDefaults.standard.data(forKey: usageLedgerKey)).records)
+        GoldgramAIUsagePolicy.report(financeLedger().recent)
     }
-    func clearUsageLedger() { UserDefaults.standard.removeObject(forKey: usageLedgerKey) }
+    func clearUsageLedger() {
+        UserDefaults.standard.removeObject(forKey: financeLedgerKey)
+        UserDefaults.standard.removeObject(forKey: usageLedgerKey)
+    }
+    func financeThreshold(_ name: String) -> Decimal? {
+        guard ["budgetUSD", "lowUSD", "lowCNY"].contains(name), let value = UserDefaults.standard.string(forKey: prefix + "finance." + name) else { return nil }
+        return GoldgramFinancePricing.positive(value)
+    }
+    func setFinanceThreshold(_ name: String, value: Decimal?) {
+        guard ["budgetUSD", "lowUSD", "lowCNY"].contains(name) else { return }
+        let key = prefix + "finance." + name
+        if let value { UserDefaults.standard.set(NSDecimalNumber(decimal: value).stringValue, forKey: key) }
+        else { UserDefaults.standard.removeObject(forKey: key) }
+    }
+    func clearFinancePreferences() {
+        for name in ["budgetUSD", "lowUSD", "lowCNY"] { setFinanceThreshold(name, value: nil) }
+    }
+    func financeBudgetReached() -> Bool {
+        guard let limit = financeThreshold("budgetUSD") else { return false }
+        let totals = GoldgramFinanceLedger.totals(financeLedger().selected(2))
+        return totals.priced > 0 && totals.high >= limit
+    }
     private var streamUsageKey: String { prefix + "streamUsage.v1" }
     var lastStreamUsage: [String: Int]? { UserDefaults.standard.dictionary(forKey: streamUsageKey) as? [String: Int] }
     func saveStreamUsage(_ usage: [String: Int]) { UserDefaults.standard.set(usage, forKey: streamUsageKey) }
@@ -1152,6 +1316,10 @@ final class GoldgramPluginNetwork: NSObject, UIDocumentPickerDelegate {
             let send: () -> Void = { [weak self] in
                 guard let self, !self.cancelled, self.valid(), self.config.readKey() == key else { self?.busy = false; completion(["error":"request_cancelled"]); return }
                 self.alert = nil
+                if route == .completion && self.config.financeBudgetReached() {
+                    self.busy = false
+                    completion(["error":"Локальный лимит расчётных расходов достигнут. Измените его в финансовом центре."]); return
+                }
                 let cfg = URLSessionConfiguration.ephemeral
                 cfg.httpShouldSetCookies = false; cfg.httpCookieStorage = nil; cfg.urlCache = nil; cfg.urlCredentialStorage = nil
                 cfg.timeoutIntervalForRequest = Double(ms)/1000; cfg.timeoutIntervalForResource = Double(ms)/1000
@@ -1202,6 +1370,298 @@ final class GoldgramPluginNetwork: NSObject, UIDocumentPickerDelegate {
             alert.addAction(UIAlertAction(title: "Отмена", style: .cancel) { [weak self] _ in self?.busy = false; completion(["error":"request_cancelled"]) })
             presenter.present(alert, animated: true)
         }
+    }
+}
+
+// Native financial center. No background requests or credentials in reports.
+final class GoldgramFinanceScreen: UITableViewController {
+    private let config: GoldgramAIConfig
+    private let valid: () -> Bool
+    private let canBalance: Bool
+    private let canUsage: Bool
+    private let acquire: () -> String?
+    private let release: (String) -> Void
+    private let startAtUsage: Bool
+    private var opened = false
+    private var broker: GoldgramPluginNetwork?
+    private var lease: String?
+    private var balance: [String: Any]?
+    private var status = "Обновите баланс вручную."
+    private var period = 1
+    private var ledger = GoldgramFinanceLedger()
+    private var selectedDays: [Int: [String: GoldgramFinanceTotals]] = [:]
+    private var totals = GoldgramFinanceTotals()
+    private var models: [(String, GoldgramFinanceTotals)] = []
+    private let accent = UIColor { traits in
+        traits.userInterfaceStyle == .dark ? UIColor(red: 0.96, green: 0.79, blue: 0.40, alpha: 1) : UIColor(red: 0.48, green: 0.33, blue: 0.06, alpha: 1)
+    }
+    init(config: GoldgramAIConfig, valid: @escaping () -> Bool, canBalance: Bool, canUsage: Bool, startAtUsage: Bool, acquire: @escaping () -> String?, release: @escaping (String) -> Void) {
+        self.config = config; self.valid = valid; self.canBalance = canBalance; self.canUsage = canUsage
+        self.startAtUsage = startAtUsage; self.acquire = acquire; self.release = release
+        super.init(style: .insetGrouped)
+    }
+    required init?(coder: NSCoder) { return nil }
+    override func viewDidLoad() {
+        super.viewDidLoad(); title = "DeepSeek · Финансы"
+        tableView.rowHeight = UITableView.automaticDimension; tableView.estimatedRowHeight = 64
+        NotificationCenter.default.addObserver(self, selector: #selector(stop), name: UIApplication.didEnterBackgroundNotification, object: nil)
+    }
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+        broker?.cancel()
+        if let lease { release(lease) }
+    }
+    override func viewWillAppear(_ animated: Bool) { super.viewWillAppear(animated); reload() }
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        if !opened {
+            opened = true
+            if startAtUsage && valid() && canUsage { tableView.scrollToRow(at: IndexPath(row: 0, section: 1), at: .top, animated: false) }
+        }
+    }
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        if navigationController?.topViewController !== self || isBeingDismissed { stop() }
+    }
+    @objc private func stop() {
+        broker?.cancel(); broker = nil
+        if let lease { release(lease); self.lease = nil }
+        balance = nil; status = "Обновите баланс вручную."; reload()
+    }
+    private func reload() {
+        if valid() && canUsage {
+            ledger = config.financeLedger(); selectedDays = ledger.selected(period)
+            totals = GoldgramFinanceLedger.totals(selectedDays)
+            models = GoldgramFinanceLedger.groups.compactMap { group in
+                var sum = GoldgramFinanceTotals()
+                for day in selectedDays.values { if let value = day[group] { sum.merge(value) } }
+                return sum.requests > 0 ? (group, sum) : nil
+            }
+        } else { ledger = GoldgramFinanceLedger(); selectedDays = [:]; totals = GoldgramFinanceTotals(); models = [] }
+        if !valid() { balance = nil }
+        tableView.reloadData()
+    }
+    private func usd(_ value: Decimal) -> String {
+        let f = NumberFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.numberStyle = .decimal
+        f.minimumFractionDigits = 2; f.maximumFractionDigits = 8; f.usesGroupingSeparator = false
+        return "$" + (f.string(from: NSDecimalNumber(decimal: value)) ?? "—")
+    }
+    private func cost(_ value: GoldgramFinanceTotals) -> String {
+        guard value.priced > 0 else { return "Нет данных" }
+        return value.low == value.high ? usd(value.low) : usd(value.low) + " – " + usd(value.high)
+    }
+    private func known(_ key: String) -> String { totals.tokens[key].map { String($0) } ?? "—" }
+    override func numberOfSections(in tableView: UITableView) -> Int { 6 }
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        guard valid() else { return section == 0 ? 1 : 0 }
+        switch section {
+        case 0: return canBalance ? 2 : 1
+        case 1: return canUsage ? 6 : 0
+        case 2: return canUsage ? 1 : 0
+        case 3: return canUsage ? models.count : 0
+        case 4: return canUsage ? 2 : 0
+        default: return (canUsage ? 1 : 0) + (canBalance ? 2 : 0)
+        }
+    }
+    override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
+        guard self.tableView(tableView, numberOfRowsInSection: section) > 0 else { return nil }
+        return ["Баланс DeepSeek", "Использование", "Запросы по дням", "По моделям", "История", "Лимиты и предупреждения"][section]
+    }
+    override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
+        guard valid(), self.tableView(tableView, numberOfRowsInSection: section) > 0 else { return nil }
+        switch section {
+        case 0: return status + "\nБаланс всего аккаунта по этому ключу; не равен расходам только этого плагина."
+        case 1: return "Статистика этого плагина, периоды UTC. До 366 дней агрегатов, последние 128 запросов подробно. Расходы в USD — оценка по опубликованным тарифам от 28.11.2026, только новые запросы с полными токенами. Пиковые интервалы показаны диапазоном; не выписка. Снимок тарифов применяется к запросам в течение 30 дней, затем стоимость новых запросов неизвестна."
+        case 2: return period == 3 ? "Последние 30 дней из выбранной истории, количество запросов." : "Количество запросов за выбранный период (UTC)."
+        case 4: return "Без промптов, переписки, ключей и идентификаторов чатов. Неучтённые или незавершённые запросы могут быть тарифицированы."
+        case 5: return "Лимит USD добровольный: блокирует следующий запрос только при достижении верхней оценки уже учтённых расходов текущего месяца UTC. Не учитывает внешние расходы и неизвестные списания, не прерывает запросы. Предупреждения о балансе действуют после ручного обновления."
+        default: return nil
+        }
+    }
+    private func chartCell() -> UITableViewCell {
+        let cell = UITableViewCell(style: .default, reuseIdentifier: nil)
+        cell.selectionStyle = .none
+        let day = GoldgramFinancePricing.day(Date().timeIntervalSince1970) ?? 0
+        var count = period == 0 ? 1 : period == 1 ? 7 : 30
+        if period == 2 {
+            var calendar = Calendar(identifier: .gregorian); calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+            count = calendar.component(.day, from: Date())
+        }
+        let values = (0..<count).map { offset -> Int64 in
+            let key = day - count + 1 + offset
+            return selectedDays[key]?.values.reduce(Int64(0)) { GoldgramFinanceTotals.add($0, $1.requests) } ?? 0
+        }
+        let chart = UIStackView(); chart.axis = .horizontal; chart.distribution = .fillEqually; chart.spacing = 2
+        chart.translatesAutoresizingMaskIntoConstraints = false
+        let maximum = max(Int64(1), values.max() ?? 0)
+        for value in values {
+            let column = UIView()
+            let bar = UIView(); bar.backgroundColor = value == 0 ? .tertiarySystemFill : accent
+            bar.layer.cornerRadius = 2; bar.translatesAutoresizingMaskIntoConstraints = false
+            column.addSubview(bar)
+            NSLayoutConstraint.activate([bar.leadingAnchor.constraint(equalTo: column.leadingAnchor), bar.trailingAnchor.constraint(equalTo: column.trailingAnchor), bar.bottomAnchor.constraint(equalTo: column.bottomAnchor), bar.heightAnchor.constraint(equalToConstant: max(1, CGFloat(value) / CGFloat(maximum) * 86))])
+            chart.addArrangedSubview(column)
+        }
+        cell.contentView.addSubview(chart)
+        NSLayoutConstraint.activate([chart.leadingAnchor.constraint(equalTo: cell.contentView.leadingAnchor, constant: 16),chart.trailingAnchor.constraint(equalTo: cell.contentView.trailingAnchor, constant: -16),chart.topAnchor.constraint(equalTo: cell.contentView.topAnchor, constant: 12),chart.bottomAnchor.constraint(equalTo: cell.contentView.bottomAnchor, constant: -12),chart.heightAnchor.constraint(equalToConstant: 90)])
+        chart.isAccessibilityElement = true; chart.accessibilityLabel = "Запросы по дням: " + values.map { String($0) }.joined(separator: ", ")
+        return cell
+    }
+    override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
+        cell.textLabel?.numberOfLines = 0; cell.detailTextLabel?.numberOfLines = 0
+        cell.selectionStyle = .none
+        guard valid() else { cell.textLabel?.text = "Плагин или аккаунт недоступен."; return cell }
+        switch indexPath.section {
+        case 0:
+            if !canBalance { cell.textLabel?.text = "Требуется разрешение gold.ai.balance."; return cell }
+            if indexPath.row == 0 {
+                let rows = balance?["balance_infos"] as? [[String: String]] ?? []
+                cell.textLabel?.font = .preferredFont(forTextStyle: .title2); cell.textLabel?.textColor = accent
+                cell.textLabel?.text = rows.isEmpty ? "Баланс не обновлён" : rows.map { ($0["currency"] ?? "") + " " + ($0["total_balance"] ?? "—") }.joined(separator: "\n")
+                var details = rows.map { row -> String in
+                    let currency = row["currency"] ?? ""
+                    var text = currency + ": пополнено " + (row["topped_up_balance"] ?? "—") + " · бонус " + (row["granted_balance"] ?? "—")
+                    if let raw = row["total_balance"], let amount = Decimal(string: raw, locale: Locale(identifier:"en_US_POSIX")), let low = config.financeThreshold("low" + currency), amount <= low { text += "\n⚠ Низкий баланс" }
+                    return text
+                }
+                if let available = balance?["is_available"] as? Bool { details.append(available ? "API доступен" : "⚠ API недоступен") }
+                if let time = balance?["updatedAt"] as? Double { details.append("Обновлено: " + DateFormatter.localizedString(from: Date(timeIntervalSince1970: time), dateStyle: .short, timeStyle: .short)) }
+                cell.detailTextLabel?.text = details.joined(separator: "\n")
+            } else {
+                cell.textLabel?.text = broker == nil ? "Обновить баланс" : "Отменить обновление"
+                cell.textLabel?.textColor = accent; cell.selectionStyle = .default; cell.accessoryType = .disclosureIndicator
+            }
+        case 1:
+            if indexPath.row == 0 {
+                let control = UISegmentedControl(items: ["День","Неделя","Месяц","Всё"])
+                control.selectedSegmentIndex = period; control.translatesAutoresizingMaskIntoConstraints = false
+                cell.contentView.addSubview(control)
+                NSLayoutConstraint.activate([control.leadingAnchor.constraint(equalTo:cell.contentView.leadingAnchor,constant:12),control.trailingAnchor.constraint(equalTo:cell.contentView.trailingAnchor,constant:-12),control.topAnchor.constraint(equalTo:cell.contentView.topAnchor,constant:10),control.bottomAnchor.constraint(equalTo:cell.contentView.bottomAnchor,constant:-10)])
+                control.addTarget(self, action: #selector(changePeriod(_:)), for: .valueChanged)
+                return cell
+            }
+            switch indexPath.row {
+            case 1:
+                cell.textLabel?.text = "Расчётные расходы: " + cost(totals)
+                cell.textLabel?.font = .preferredFont(forTextStyle: .headline); cell.textLabel?.textColor = accent
+                cell.detailTextLabel?.text = "Оценено \(totals.priced) из \(totals.requests) запросов. Без оценки: \(max(0,totals.requests-totals.priced))."
+            case 2:
+                cell.textLabel?.text = "Запросы: \(totals.requests)"
+                cell.detailTextLabel?.text = "Завершено: \(totals.completed) · другие исходы: \(max(0,totals.requests-totals.completed)) · с токенами: \(totals.known)"
+            case 3:
+                cell.textLabel?.text = "Токены: " + known("total_tokens")
+                cell.detailTextLabel?.text = "Вход: " + known("prompt_tokens") + " · Выход: " + known("completion_tokens")
+            case 4:
+                cell.textLabel?.text = "Кэш и мышление"
+                cell.detailTextLabel?.text = "Cache hit: " + known("prompt_cache_hit_tokens") + " · miss: " + known("prompt_cache_miss_tokens") + "\nReasoning: " + known("reasoning_tokens") + " (в составе выходных)"
+            default:
+                cell.textLabel?.text = "Среднее время"
+                cell.detailTextLabel?.text = totals.requests > 0 ? String(format: "%.2f сек.", Double(totals.milliseconds) / Double(totals.requests) / 1000) : "Нет данных"
+            }
+        case 2: return chartCell()
+        case 3:
+            guard models.indices.contains(indexPath.row) else { return cell }
+            let (name, value) = models[indexPath.row]
+            cell.textLabel?.text = name + " · " + String(value.requests) + " запросов"
+            cell.detailTextLabel?.text = "Известные токены: " + (value.tokens["total_tokens"].map { String($0) } ?? "—") + " · оценка: " + cost(value)
+        case 4:
+            cell.textLabel?.text = indexPath.row == 0 ? "Последние запросы (\(ledger.recent.count))" : "Очистить локальную статистику"
+            if indexPath.row == 1 { cell.textLabel?.textColor = .systemRed }
+            cell.accessoryType = .disclosureIndicator; cell.selectionStyle = .default
+        default:
+            let names = thresholdNames()
+            guard names.indices.contains(indexPath.row) else { return cell }
+            let name = names[indexPath.row]
+            cell.textLabel?.text = name == "budgetUSD" ? "Локальный лимит в месяц (USD)" : "Низкий баланс (" + String(name.suffix(3)) + ")"
+            cell.detailTextLabel?.text = config.financeThreshold(name).map { NSDecimalNumber(decimal: $0).stringValue } ?? "Выключен"
+            if name == "budgetUSD" && config.financeBudgetReached() { cell.detailTextLabel?.text = (cell.detailTextLabel?.text ?? "") + " · достигнут" }
+            cell.accessoryType = .disclosureIndicator; cell.selectionStyle = .default
+        }
+        return cell
+    }
+    @objc private func changePeriod(_ sender: UISegmentedControl) { guard valid(), canUsage else { return }; period = sender.selectedSegmentIndex; reload() }
+    private func thresholdNames() -> [String] { (canUsage ? ["budgetUSD"] : []) + (canBalance ? ["lowUSD","lowCNY"] : []) }
+    override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at:indexPath,animated:true)
+        guard valid() else { stop(); return }
+        if indexPath.section == 0, indexPath.row == 1, canBalance {
+            if broker != nil { stop() } else { refreshBalance() }; return
+        }
+        guard broker == nil else { return }
+        if indexPath.section == 4, canUsage {
+            if indexPath.row == 0 {
+                navigationController?.pushViewController(GoldgramFinanceHistoryScreen(records: Array(ledger.recent.reversed()), valid: valid), animated: true)
+            } else {
+                let alert = UIAlertController(title:"Очистить статистику?",message:"Будут удалены локальные агрегаты и журнал этого плагина. Баланс и настройки лимита не изменятся; расчёт лимита начнётся заново.",preferredStyle:.alert)
+                alert.addAction(UIAlertAction(title:"Очистить",style:.destructive) { [weak self] _ in
+                    guard let self, self.valid(), let lease = self.acquire() else { return }
+                    defer { self.release(lease) }
+                    self.config.clearUsageLedger(); self.reload()
+                })
+                alert.addAction(UIAlertAction(title:"Отмена",style:.cancel)); present(alert,animated:true)
+            }
+        }
+        if indexPath.section == 5 {
+            let names = thresholdNames()
+            if names.indices.contains(indexPath.row) { editThreshold(names[indexPath.row]) }
+        }
+    }
+    private func editThreshold(_ name: String) {
+        let alert = UIAlertController(title: name == "budgetUSD" ? "Месячный лимит USD" : "Предупреждение: " + String(name.suffix(3)),message:"Положительное число. Пустое поле выключает. Значение относится только к этому плагину.",preferredStyle:.alert)
+        alert.addTextField { field in
+            field.keyboardType = .decimalPad
+            field.text = self.config.financeThreshold(name).map { NSDecimalNumber(decimal: $0).stringValue }
+        }
+        alert.addAction(UIAlertAction(title:"Сохранить",style:.default) { [weak self, weak alert] _ in
+            guard let self, self.valid(), let text = alert?.textFields?.first?.text?.trimmingCharacters(in:.whitespacesAndNewlines).replacingOccurrences(of:",",with:".") else { return }
+            let value = GoldgramFinancePricing.positive(text)
+            guard text.isEmpty || value != nil else { self.status = "Некорректное значение; лимит не изменён."; self.reload(); return }
+            self.config.setFinanceThreshold(name,value:value); self.reload()
+        })
+        alert.addAction(UIAlertAction(title:"Отмена",style:.cancel)); present(alert,animated:true)
+    }
+    private func refreshBalance() {
+        guard canBalance, valid(), broker == nil else { return }
+        guard config.readKey() != nil else { status = "Сначала сохраните ключ в настройках модели."; reload(); return }
+        guard let lease = acquire() else { status = "Плагин занят. Повторите позже."; reload(); return }
+        self.lease = lease; status = "Обновление…"; reload()
+        let network = GoldgramPluginNetwork(config:config,presenter:self,valid:{ [weak self] in
+            guard let self else { return false }
+            return self.valid() && self.viewIfLoaded?.window != nil && UIApplication.shared.applicationState == .active
+        })
+        broker = network
+        network.fetch(["url":"https://api.deepseek.com/user/balance","method":"GET"],allowBalance:true) { [weak self, weak network] result in
+            guard let self, let network, self.broker === network else { return }
+            self.broker = nil
+            if let lease = self.lease { self.release(lease); self.lease = nil }
+            guard self.valid() else { self.stop(); return }
+            if let value = result["value"] as? [String: Any], result["status"] as? Int == 200 {
+                self.balance = value; self.status = "Баланс получен от DeepSeek."
+            } else { self.status = "Не удалось обновить или запрос отменён. Предыдущие данные могут быть устаревшими." }
+            self.reload()
+        }
+    }
+}
+private final class GoldgramFinanceHistoryScreen: UITableViewController {
+    private let records: [GoldgramAIUsageRecord]
+    private let valid: () -> Bool
+    init(records: [GoldgramAIUsageRecord], valid: @escaping () -> Bool) {
+        self.records = records; self.valid = valid; super.init(style:.insetGrouped)
+    }
+    required init?(coder: NSCoder) { return nil }
+    override func viewDidLoad() { super.viewDidLoad(); title = "История запросов" }
+    override func viewWillAppear(_ animated: Bool) { super.viewWillAppear(animated); tableView.reloadData() }
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { valid() ? records.count : 0 }
+    override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = UITableViewCell(style:.subtitle,reuseIdentifier:nil); cell.selectionStyle = .none
+        guard valid(), records.indices.contains(indexPath.row) else { return cell }
+        let record = records[indexPath.row]
+        cell.textLabel?.text = DateFormatter.localizedString(from: Date(timeIntervalSince1970:record.timestamp),dateStyle:.short,timeStyle:.short)
+        let outcome = ["completed":"Завершён","failed":"Ошибка","cancelled":"Отменён","partial":"Частичный"][record.outcome] ?? "Неизвестно"
+        cell.detailTextLabel?.numberOfLines = 0
+        cell.detailTextLabel?.text = (record.model ?? "Модель неизвестна") + " · " + outcome + " · \(record.durationMs) ms\nТокены: " + (record.tokens["total_tokens"].map { String($0) } ?? "нет данных") + (record.httpStatus.map { " · HTTP \($0)" } ?? "")
+        return cell
     }
 }
 

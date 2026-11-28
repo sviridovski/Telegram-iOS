@@ -269,3 +269,45 @@ with tempfile.TemporaryDirectory() as tmp:
 assert 'allowBalance: true, completion: diagnosticNetworkCallback(callback)' in plugins
 assert 'if route != .balance {' in s
 assert 'usageStart = nil' in s and 'if route == .completion { self.beginUsage() }' in s
+
+# Finance V2: pure Foundation pricing/aggregation fixture.
+finance = s.split("// BEGIN GOLDGRAM_FINANCE_V2\n",1)[1].split("// END GOLDGRAM_FINANCE_V2",1)[0]
+record = s.split("struct GoldgramAIUsageRecord: Codable {",1)[1].split("\nstruct GoldgramAIUsageLedger",1)[0]
+fixture = r'''
+let t = GoldgramFinancePricing.validFrom
+func record(_ timestamp: Double, model: String? = "deepseek-flash", outcome: String = "completed", tokens: [String:Int] = ["prompt_tokens":1000,"prompt_cache_hit_tokens":500,"prompt_cache_miss_tokens":500,"completion_tokens":100,"total_tokens":1100]) -> GoldgramAIUsageRecord {
+    GoldgramAIUsageRecord(timestamp:timestamp,durationMs:1000,outcome:outcome,model:model,httpStatus:200,tokens:tokens)
+}
+let price = GoldgramFinancePricing.estimate(record(t))!
+precondition(price.low == Decimal(string:"0.0001365")! && price.high == price.low)
+let weekday = GoldgramFinancePricing.estimate(record(t + 2*86400 + 2*3600))!
+precondition(weekday.high == weekday.low*2)
+precondition(GoldgramFinancePricing.estimate(record(t-1)) == nil)
+precondition(GoldgramFinancePricing.estimate(record(t+30*86400)) == nil)
+precondition(GoldgramFinancePricing.estimate(record(t,model:"unknown")) == nil)
+precondition(GoldgramFinancePricing.estimate(record(t,outcome:"partial")) == nil)
+precondition(GoldgramFinancePricing.estimate(record(t,tokens:["prompt_tokens":1000])) == nil)
+precondition(GoldgramFinancePricing.positive("1.25") == Decimal(string:"1.25"))
+precondition(GoldgramFinancePricing.positive("0") == nil && GoldgramFinancePricing.positive("nan") == nil)
+var ledger = GoldgramFinanceLedger(data:nil,legacy:[record(t)])
+precondition(GoldgramFinanceLedger.totals(ledger.selected(3,now:Date(timeIntervalSince1970:t))).priced == 0)
+for _ in 0..<140 { ledger.append(record(t)) }
+let totals = GoldgramFinanceLedger.totals(ledger.selected(0,now:Date(timeIntervalSince1970:t)))
+precondition(ledger.recent.count == 128 && totals.requests == 141 && totals.priced == 140)
+precondition(totals.tokens["total_tokens"] == 155100 && totals.high == price.high * 140)
+let restored = GoldgramFinanceLedger(data:try! JSONEncoder().encode(ledger),legacy:[record(t)])
+precondition(GoldgramFinanceLedger.totals(restored.selected(0,now:Date(timeIntervalSince1970:t))).requests == 141)
+precondition(restored.selected(0,now:Date(timeIntervalSince1970:t+86400)).isEmpty)
+precondition(!restored.selected(1,now:Date(timeIntervalSince1970:t+86400)).isEmpty)
+ledger.append(record(t+366*86400))
+precondition(ledger.days.count == 1)
+print("Finance V2: 16 checks passed")
+'''
+with tempfile.TemporaryDirectory() as tmp:
+    path = pathlib.Path(tmp)/"main.swift"
+    path.write_text("import Foundation\nstruct GoldgramAIUsageRecord: Codable {"+record+"\n"+finance+fixture)
+    subprocess.run(["swift",str(path)],check=True,timeout=90)
+assert 'route == .completion && self.config.financeBudgetReached()' in s
+assert 'network.fetch(["url":"https://api.deepseek.com/user/balance","method":"GET"],allowBalance:true)' in s
+assert 'GoldgramFinanceScreen(config:' in plugins
+assert 'GoldgramPluginRun.releaseUpdateLease(lease)' in plugins
