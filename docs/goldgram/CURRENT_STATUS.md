@@ -1,6 +1,6 @@
 # CURRENT_STATUS — verified checkpoint
 
-  > **2026-11-28 local user date — #292 accepted by general report; AI Commander 3.0 plan proposed, no implementation yet.** Start with [START_HERE.md](./START_HERE.md) and [AI_COMMANDER_3_PLAN.md](./AI_COMMANDER_3_PLAN.md). Check latest GitHub branch/jobs/artifact before changes.
+  > **2026-11-28 local user date — #292 accepted; AI Commander 3.0 plan approved with Usage & Balance and AI Search additions; no implementation yet.** Start with [START_HERE.md](./START_HERE.md) and [AI_COMMANDER_3_PLAN.md](./AI_COMMANDER_3_PLAN.md). Check latest GitHub branch/jobs/artifact before changes.
 
 ## P0 development priority (user-approved 2026-11-25)
 
@@ -17,7 +17,7 @@
 | Last green CI | [#292](https://github.com/sviridovski/Telegram-iOS/actions/runs/46083992903), success, 10m08s elapsed, IPA 15238940725 present/unexpired at verification |
 | Last installed | #292 — installed and user reports all excellent, authorizes move to AI Commander 3.0; no separate template test protocol. |
 | Failed candidate | #289 native preflight test_goldgram_ai.py:56 stale string assertion after refactor; #288 missing sample ui.read fixed in #289; #287 failure not separately diagnosed. |
-| Next task | AI Commander 3.0 — review proposed plan with user; compatible core first, focused engine extensions only as needed; independent JS plugin. |
+| Next task | AI Commander 3.0 Core: compatible independent JS plugin and focused reusable native AI options/usage/balance; then Workspace and Intelligence. AI Search query planner after Core; bounded reranking after Archive Reliability 2.0. |
 | Recovery | #292 `6adc8db8e378e2aa9e4216efc9c40c6936c756a2` green/general acceptance, runtime unchanged from #291; #291 previous diagnostics checkpoint, #290 explicit update/rollback acceptance. Historical archive/media limitations remain. |
 
 ## #252 corrections retained in #253
@@ -622,3 +622,7 @@ Live CI verification: #285 run 45966802832, exact SHA 2b33ec756b15def83dab2786e4
 ## 2026-11-28 — #292 general acceptance; AI Commander 3.0 proposed plan
 
 User reports "Все отлично" and requests plan for AI Commander 3.0. Verified exact #292 code HEAD and CI success. Record general acceptance, not per-template protocol or real GoldAPI.ai provider proof. #292 recovery checkpoint (runtime unchanged from #291). Inspected uploaded AI_Command_Center_Ghostgram_2.1.8(1).js, Ghostgram plugins(1).md and exact Goldgram Worker/SDK. Proposed [AI_COMMANDER_3_PLAN.md](./AI_COMMANDER_3_PLAN.md); user has approved moving to the plugin but not yet approved each proposed feature. No implementation/source commit, no CI launched. Preserve author identity and user data through explicit migration; no new broad access. Engine continues evolving based on tested need. Archive Reliability 2.0 remains next priority after current plugin work.
+
+## 2026-11-28 — approved AI Commander 3.0 plan additions
+
+User approves original AI Commander 3.0 proposal and requests usage statistics, account balance, and DeepSeek-enhanced expanded search. Verified exact #292 code HEAD and CI success, inspected GoldgramAI.swift network routes/usage and GoldgramAuthorSearch.swift unified-search implementation. Official balance/usage/pricing references and detailed proposed scope/acceptance recorded in AI_COMMANDER_3_PLAN.md. Proposed reusable native usage/balance (provider account balance vs local estimated spend; scoped managed keys, bounded persistent metadata), AI query planner over existing filters, optional explicitly consented bounded semantic rerank and source-backed summaries after Archive Reliability 2.0; exact search retained and no bulk/private archive external upload. No source changes, no new CI; #292 remains accepted recovery checkpoint. First implementation Core; stages not reserved.
