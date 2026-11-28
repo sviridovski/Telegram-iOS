@@ -720,3 +720,39 @@ print("Goldgram native diagnostics policy passed (13 checks)")
 assert "Self.journal.append(key: lease, entry: diagnostics.finish(outcome))" in source
 assert "diagnosticNetworkCallback(callback)" in source
 assert "UIActivityViewController(activityItems: [text]" in source
+
+# AICC dashboard routing is pure Foundation; test every route and complete management coverage.
+if sys.platform == "darwin":
+    routing = source.split("// BEGIN GOLDGRAM_AICC_DASHBOARD_ROUTING\n",1)[1].split("// END GOLDGRAM_AICC_DASHBOARD_ROUTING",1)[0]
+    fixture = r'''
+
+let source: [[String: Any]] = [
+ ["title":"Модель и сеть", "group":"Модель и сеть", "items":[["key":"apiKey"]]],
+ ["title":"Профили", "group":"Профили", "items":[["key":"asstProfile"],["key":"cp1Prompt"],["key":"asstContext"],["key":"perChatProfile"]]],
+ ["title":"Инструменты и команды", "items":[["key":"cmdAsst"]]],
+ ["title":"Кнопка и вывод", "items":[["key":"resultMode"]]]
+]
+private func keys(_ page: GoldgramAICCSettingsPage) -> [String] {
+ page.sections(source).flatMap { ($0["items"] as? [[String: String]] ?? []).compactMap { $0["key"] } }
+}
+precondition(keys(.model) == ["apiKey"])
+precondition(keys(.profiles) == ["asstProfile","cp1Prompt"])
+precondition(keys(.context) == ["asstContext","perChatProfile"])
+precondition(keys(.tools) == ["cmdAsst"])
+precondition(keys(.button) == ["resultMode"])
+precondition(keys(.management).isEmpty)
+precondition(GoldgramAICCSettingsPage.profiles.sections(source)[0]["group"] == nil)
+precondition(GoldgramAICCSettingsPage.model.managementRows(network:true,running:false) == [8,9])
+precondition(GoldgramAICCSettingsPage.model.managementRows(network:false,running:false).isEmpty)
+precondition(GoldgramAICCSettingsPage.context.managementRows(network:true,running:true) == [1])
+precondition(Set(GoldgramAICCSettingsPage.allCases.flatMap { $0.managementRows(network:true,running:false) }) == Set(0...12))
+print("AICC dashboard routing: 11 checks passed")
+'''
+    with tempfile.TemporaryDirectory() as tmp:
+        path = pathlib.Path(tmp)/"main.swift"
+        path.write_text("import Foundation\n"+routing+fixture)
+        subprocess.run(["swift",str(path)],check=True,timeout=90)
+assert 'store.record(id)?.code == GoldgramPluginManager.aiccAlpha' in source
+assert 'GoldgramPluginConfirmations(store: store, onlyID: id)' in source
+assert 'onlyID == nil || next.plugins[i].id == onlyID' in source
+assert 'if isDashboard && indexPath.section == 0 { return dashboardCell() }' in source

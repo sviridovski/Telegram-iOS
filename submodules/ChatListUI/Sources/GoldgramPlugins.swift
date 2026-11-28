@@ -1886,15 +1886,22 @@ GGAPI.events.on("plugin.start",function(){ GGAPI.log("Плагин запуще�
 
 private final class GoldgramPluginConfirmations: UITableViewController {
     private let store: GoldgramPluginStore
-    init(store: GoldgramPluginStore) { self.store = store; super.init(style: .insetGrouped) }
+    private let onlyID: UUID?
+    private var plugins: [GoldgramPluginRecord] {
+        if let onlyID { return store.state.plugins.filter { $0.id == onlyID } }
+        return store.state.plugins
+    }
+    init(store: GoldgramPluginStore, onlyID: UUID? = nil) {
+        self.store = store; self.onlyID = onlyID; super.init(style: .insetGrouped)
+    }
     required init?(coder: NSCoder) { return nil }
     override func viewDidLoad() { super.viewDidLoad(); title = "Подтверждения плагинов" }
     override func viewWillAppear(_ animated: Bool) { super.viewWillAppear(animated); store.refresh(); tableView.reloadData() }
-    override func numberOfSections(in tableView: UITableView) -> Int { store.isCurrent() ? store.state.plugins.count + 1 : 1 }
+    override func numberOfSections(in tableView: UITableView) -> Int { store.isCurrent() ? plugins.count + 1 : 1 }
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? 1 : 3 }
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
-        guard store.isCurrent(), section > 0, section <= store.state.plugins.count else { return nil }
-        return store.state.plugins[section - 1].manifest.name
+        guard store.isCurrent(), section > 0, section <= plugins.count else { return nil }
+        return plugins[section - 1].manifest.name
     }
     override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
         section == 0 ? "По умолчанию все запросы подтверждаются. Настройки действуют только для этого аккаунта и версии установленного кода. После изменения кода или повторного включения подтверждения возвращаются. Отправка сообщений в Telegram остаётся ручной." : nil
@@ -1903,13 +1910,13 @@ private final class GoldgramPluginConfirmations: UITableViewController {
         let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
         cell.textLabel?.numberOfLines = 0; cell.detailTextLabel?.numberOfLines = 0
         if indexPath.section == 0 {
-            cell.textLabel?.text = "Восстановить все подтверждения"
-            cell.detailTextLabel?.text = "Для всех плагинов этого аккаунта"
+            cell.textLabel?.text = onlyID == nil ? "Восстановить все подтверждения" : "Восстановить подтверждения"
+            cell.detailTextLabel?.text = onlyID == nil ? "Для всех плагинов этого аккаунта" : "Только для этого плагина"
             cell.accessoryType = .disclosureIndicator
             return cell
         }
-        guard store.isCurrent(), indexPath.section <= store.state.plugins.count else { return cell }
-        let p = store.state.plugins[indexPath.section - 1]
+        guard store.isCurrent(), indexPath.section <= plugins.count else { return cell }
+        let p = plugins[indexPath.section - 1]
         let row = indexPath.row
         let network = row == 0, timed = row == 2
         let allowed = p.enabled && p.grants.contains(network ? "network.fetch" : (timed ? "messages.read" : "chat.write")) && (!timed || p.grants.contains("ui.mutate"))
@@ -1920,7 +1927,7 @@ private final class GoldgramPluginConfirmations: UITableViewController {
         toggle.accessibilityLabel = cell.textLabel?.text
         toggle.addAction(UIAction { [weak self, weak toggle] _ in
             toggle?.setOn(!skipped, animated: false)
-            guard let self, let index = self.store.state.plugins.firstIndex(where: { $0.id == p.id }) else { return }
+            guard let self, let index = self.plugins.firstIndex(where: { $0.id == p.id }) else { return }
             self.tableView(self.tableView, didSelectRowAt: IndexPath(row: row, section: index + 1))
         }, for: .valueChanged)
         cell.accessoryView = toggle
@@ -1933,12 +1940,12 @@ private final class GoldgramPluginConfirmations: UITableViewController {
         if indexPath.section == 0 {
             store.refresh()
             var next = store.state
-            for i in next.plugins.indices { next.plugins[i].confirmationPolicy = nil }
+            for i in next.plugins.indices where onlyID == nil || next.plugins[i].id == onlyID { next.plugins[i].confirmationPolicy = nil }
             if !store.save(next) { showPluginError("Не удалось сохранить настройки.") }
             tableView.reloadData(); return
         }
-        guard indexPath.section <= store.state.plugins.count else { return }
-        let p = store.state.plugins[indexPath.section - 1]
+        guard indexPath.section <= plugins.count else { return }
+        let p = plugins[indexPath.section - 1]
         let network = indexPath.row == 0, timed = indexPath.row == 2
         let grant = network ? "network.fetch" : (timed ? "messages.read" : "chat.write")
         guard p.enabled, p.grants.contains(grant), !timed || p.grants.contains("ui.mutate") else { return }
@@ -2288,6 +2295,57 @@ private final class GoldgramPluginDiagnosticsScreen: UIViewController {
     }
 }
 
+// BEGIN GOLDGRAM_AICC_DASHBOARD_ROUTING
+private enum GoldgramAICCSettingsPage: String, CaseIterable {
+    case model, profiles, tools, context, button, management
+    var title: String {
+        switch self {
+        case .model: return "Модель и сеть"
+        case .profiles: return "Профили"
+        case .tools: return "Инструменты и команды"
+        case .context: return "Контекст и память"
+        case .button: return "Кнопка AI"
+        case .management: return "Управление"
+        }
+    }
+    func managementRows(network: Bool, running: Bool) -> [Int] {
+        var rows: [Int]
+        switch self {
+        case .model: rows = network ? [8, 9] : []
+        case .button: rows = [7, 10]
+        case .management: rows = [0, 1, 2, 3, 4, 5, 6, 11, 12]
+        default: rows = []
+        }
+        if running && !rows.contains(1) { rows.insert(1, at: 0) }
+        return rows
+    }
+    func sections(_ source: [[String: Any]]) -> [[String: Any]] {
+        let sectionTitle: String
+        switch self {
+        case .model: sectionTitle = "Модель и сеть"
+        case .profiles, .context: sectionTitle = "Профили"
+        case .tools: sectionTitle = "Инструменты и команды"
+        case .button: sectionTitle = "Кнопка и вывод"
+        case .management: return []
+        }
+        return source.filter { $0["title"] as? String == sectionTitle }.map { section in
+            var next = section
+            next.removeValue(forKey: "group")
+            next["title"] = title
+            if self == .profiles || self == .context {
+                let contextKeys = Set(["asstContext", "perChatProfile"])
+                next["items"] = (section["items"] as? [[String: Any]] ?? []).filter {
+                    let key = $0["key"] as? String ?? ""
+                    return contextKeys.contains(key) == (self == .context)
+                }
+                if self == .profiles { next.removeValue(forKey: "footer") }
+            }
+            return next
+        }
+    }
+}
+// END GOLDGRAM_AICC_DASHBOARD_ROUTING
+
 private final class GoldgramPluginDetail: UITableViewController, UIDocumentPickerDelegate {
     private let store: GoldgramPluginStore
     private let id: UUID
@@ -2298,11 +2356,30 @@ private final class GoldgramPluginDetail: UITableViewController, UIDocumentPicke
     private var logs: [String] = []
     private var status = "Не запускался"
     private var updateBaseCode: String?
-    init(store: GoldgramPluginStore, id: UUID, account: String) { self.store = store; self.id = id; self.account = account; super.init(style: .insetGrouped) }
+    private let page: GoldgramAICCSettingsPage?
+    init(store: GoldgramPluginStore, id: UUID, account: String, page: GoldgramAICCSettingsPage? = nil) {
+        self.store = store; self.id = id; self.account = account; self.page = page
+        super.init(style: .insetGrouped)
+    }
+    private var isAICC: Bool { store.record(id)?.code == GoldgramPluginManager.aiccAlpha }
+    private var isDashboard: Bool { isAICC && page == nil }
+    private var visibleSections: [[String: Any]] {
+        if isDashboard { return [] }
+        if isAICC, let page { return page.sections(sections) }
+        return sections
+    }
+    private var visibleManagement: [Int] {
+        let network = store.record(id)?.grants.contains("network.fetch") == true
+        if isAICC, let page { return page.managementRows(network: network, running: run != nil) }
+        return network ? Array(0...12) : Array(0...7) + Array(10...12)
+    }
+    private func refreshTitle() {
+        title = isAICC ? (page?.title ?? "AI Commander 3.0") : (store.record(id)?.manifest.name ?? "Плагин")
+    }
     required init?(coder: NSCoder) { return nil }
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = store.record(id)?.code == GoldgramPluginManager.aiccAlpha ? "AI Commander 3.0 · Alpha" : (store.record(id)?.manifest.name ?? "Плагин")
+        refreshTitle()
         if let p = store.record(id), p.enabled, let data = p.settingsSchema,
            let raw = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
            let valid = GoldgramPluginStore.validatedSections(raw) { sections = valid; status = "Настройки сохранены; запуск по запросу." }
@@ -2311,25 +2388,129 @@ private final class GoldgramPluginDetail: UITableViewController, UIDocumentPicke
     deinit { NotificationCenter.default.removeObserver(self) }
     @objc private func stopInBackground() { run?.cancel() }
     override func viewDidDisappear(_ animated: Bool) { super.viewDidDisappear(animated); if navigationController?.topViewController !== self || isBeingDismissed || navigationController?.isBeingDismissed == true { run?.cancel() } }
-    override func viewWillAppear(_ animated: Bool) { super.viewWillAppear(animated); store.refresh(); reloadSchema(); tableView.reloadData() }
+    override func viewWillAppear(_ animated: Bool) { super.viewWillAppear(animated); store.refresh(); reloadSchema(); refreshTitle(); tableView.reloadData() }
     private func reloadSchema() {
         guard store.failure == nil, !store.state.safe, let p = store.record(id), p.enabled, p.grants.contains("settings.read"), let data = p.settingsSchema, let raw = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]], let checked = GoldgramPluginStore.validatedSections(raw) else { sections = []; return }
         sections = checked
     }
     private var enhanced: Bool { store.record(id)?.uiOptions?.enhanced ?? true }
-    private func group(_ section: Int) -> String? { sections[section-1]["group"] as? String }
+    private func group(_ section: Int) -> String? { visibleSections[section-1]["group"] as? String }
     private func groupCollapsed(_ section: Int) -> Bool { enhanced && group(section).map { collapsedGroups.contains($0) } == true }
-    private func managementRow(_ index: Int) -> Int { store.record(id)?.grants.contains("network.fetch") == true ? index : (index >= 8 ? index + 2 : index) }
-    override func numberOfSections(in tableView: UITableView) -> Int { 1 + sections.count }
+    private func managementRow(_ index: Int) -> Int { visibleManagement[index] }
+    override func numberOfSections(in tableView: UITableView) -> Int { 1 + visibleSections.count }
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
-        guard section > 0 else { return "Управление" }
-        let title = sections[section-1]["title"] as? String ?? ""
-        return group(section).map { $0 + " / " + title } ?? title
+        guard section > 0 else { return isDashboard || visibleManagement.isEmpty ? nil : "Управление" }
+        let title = visibleSections[section-1]["title"] as? String ?? ""
+        return group(section).map { $0 == title ? title : $0 + " / " + title } ?? title
     }
-    private func items(_ section: Int) -> [[String: Any]] { sections[section-1]["items"] as? [[String: Any]] ?? [] }
-    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? (store.record(id)?.grants.contains("network.fetch") == true ? 13 : 11) : (enhanced && group(section) != nil ? 1 + (groupCollapsed(section) ? 0 : items(section).count) : items(section).count) }
-    override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? { section == 0 ? status : sections[section-1]["footer"] as? String }
+    private func items(_ section: Int) -> [[String: Any]] { visibleSections[section-1]["items"] as? [[String: Any]] ?? [] }
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? (isDashboard ? 1 : visibleManagement.count) : (enhanced && group(section) != nil ? 1 + (groupCollapsed(section) ? 0 : items(section).count) : items(section).count) }
+    override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? { section == 0 ? (isDashboard || !visibleManagement.isEmpty ? status : nil) : visibleSections[section-1]["footer"] as? String }
+    private func dashboardCell() -> UITableViewCell {
+        let cell = UITableViewCell(style: .default, reuseIdentifier: nil)
+        cell.selectionStyle = .none
+        cell.backgroundColor = .clear
+        let stack = UIStackView(); stack.axis = .vertical; stack.spacing = 12
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        cell.contentView.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: cell.contentView.topAnchor, constant: 12),
+            stack.bottomAnchor.constraint(equalTo: cell.contentView.bottomAnchor, constant: -12),
+            stack.leadingAnchor.constraint(equalTo: cell.contentView.leadingAnchor, constant: 4),
+            stack.trailingAnchor.constraint(equalTo: cell.contentView.trailingAnchor, constant: -4)
+        ])
+        let p = store.record(id)
+        let enabled = p?.enabled == true && !store.state.safe
+        let values = GoldgramPluginStore.decodeValues(p?.settings ?? [:])
+        let model = values["deepseekModel"] as? String ?? "Не выбрана"
+        let mode = values["routeMode"] as? String ?? "adaptive"
+        let modes = ["adaptive":"Адаптивное","fast":"Быстрое","smart":"Глубокое","max":"Максимальное"]
+        let header = UILabel()
+        header.numberOfLines = 0; header.font = .preferredFont(forTextStyle: .headline)
+        header.adjustsFontForContentSizeCategory = true
+        header.text = "✦ Goldgram Intelligence · " + (p?.manifest.version ?? "3.0")
+        stack.addArrangedSubview(header)
+        let summary = UILabel()
+        summary.numberOfLines = 0; summary.font = .preferredFont(forTextStyle: .subheadline)
+        summary.adjustsFontForContentSizeCategory = true; summary.textColor = .secondaryLabel
+        summary.text = (enabled ? "Активен" : "Неактивен") + "\nМодель: " + String(model.prefix(100)) + "\nМышление: " + (modes[mode] ?? "По настройке") + "\nПотоковый режим: " + (p?.streamingOptions?.enabled == true ? "включён" : "выключен")
+        stack.addArrangedSubview(summary)
+        let tiles: [(String, String, String)] = [
+            ("panel", "AI-панель", "sparkles"), ("balance", "Баланс DeepSeek", "wallet.pass"),
+            ("model", "Модель и сеть", "brain"), ("profiles", "Профили", "person.crop.circle"),
+            ("tools", "Инструменты", "wand.and.stars"), ("context", "Контекст и память", "bubble.left.and.bubble.right"),
+            ("button", "Кнопка AI", "slider.horizontal.3"), ("confirmations", "Подтверждения", "shield"),
+            ("usage", "Статистика", "chart.bar"), ("management", "Управление", "gearshape")
+        ]
+        let accent = UIColor { traits in
+            traits.userInterfaceStyle == .dark ? UIColor(red: 0.96, green: 0.79, blue: 0.40, alpha: 1) : UIColor(red: 0.48, green: 0.33, blue: 0.06, alpha: 1)
+        }
+        let columns = traitCollection.preferredContentSizeCategory.isAccessibilityCategory ? 1 : 2
+        for offset in stride(from: 0, to: tiles.count, by: columns) {
+            let row = UIStackView(); row.axis = .horizontal; row.spacing = 12; row.distribution = .fillEqually
+            for index in offset..<min(offset + columns, tiles.count) {
+                let tile = tiles[index]
+                let button = UIButton(type: .system)
+                button.backgroundColor = .secondarySystemGroupedBackground
+                button.layer.cornerRadius = 16; button.tintColor = accent
+                if #available(iOS 15.0, *) {
+                    var config = UIButton.Configuration.plain()
+                    config.title = tile.1
+                    config.image = UIImage(systemName: tile.2, withConfiguration: UIImage.SymbolConfiguration(pointSize: 24, weight: .medium))
+                    config.imagePlacement = .top; config.imagePadding = 8; config.titleAlignment = .center
+                    config.baseForegroundColor = accent
+                    config.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 8, bottom: 12, trailing: 8)
+                    button.configuration = config
+                } else { button.setTitle(tile.1, for: .normal) }
+                button.titleLabel?.numberOfLines = 0
+                button.titleLabel?.adjustsFontForContentSizeCategory = true
+                button.accessibilityLabel = tile.1
+                button.heightAnchor.constraint(greaterThanOrEqualToConstant: 96).isActive = true
+                button.isEnabled = run == nil && (enabled || tile.0 == "management")
+                button.addAction(UIAction { [weak self] _ in self?.openDashboardTile(tile.0) }, for: .touchUpInside)
+                row.addArrangedSubview(button)
+            }
+            stack.addArrangedSubview(row)
+        }
+        if run != nil {
+            let stop = UIButton(type: .system)
+            stop.setTitle("Остановить", for: .normal)
+            stop.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+            stop.addAction(UIAction { [weak self] _ in
+                guard let run = self?.run else { return }
+                if !run.stopStream() { run.cancel() }
+            }, for: .touchUpInside)
+            stack.addArrangedSubview(stop)
+        }
+        return cell
+    }
+    private func openDashboardTile(_ key: String) {
+        store.refresh()
+        guard isDashboard, store.isCurrent(), store.failure == nil, run == nil, let record = store.record(id) else { return }
+        if key == "management" {
+            navigationController?.pushViewController(GoldgramPluginDetail(store: store, id: id, account: account, page: .management), animated: true)
+            return
+        }
+        guard record.enabled, !store.state.safe else { return }
+        if key == "confirmations" {
+            navigationController?.pushViewController(GoldgramPluginConfirmations(store: store, onlyID: id), animated: true)
+            return
+        }
+        if let target = GoldgramAICCSettingsPage(rawValue: key) {
+            navigationController?.pushViewController(GoldgramPluginDetail(store: store, id: id, account: account, page: target), animated: true)
+            return
+        }
+        let actions = ["panel":"btnPanel","balance":"btnBalance","usage":"btnUsage"]
+        if let action = actions[key] {
+            reloadSchema()
+            guard sections.flatMap({ $0["items"] as? [[String: Any]] ?? [] }).contains(where: { $0["key"] as? String == action && $0["type"] as? String == "button" }) else {
+                showPluginError("Сначала запустите / обновите настройки в разделе Управление."); return
+            }
+            execute(event: "settings.action", key: action)
+        }
+    }
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        if isDashboard && indexPath.section == 0 { return dashboardCell() }
         let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
         cell.textLabel?.numberOfLines = 0; cell.detailTextLabel?.numberOfLines = 2
         if indexPath.section == 0 {
@@ -2384,7 +2565,7 @@ private final class GoldgramPluginDetail: UITableViewController, UIDocumentPicke
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
         store.refresh()
-        guard store.isCurrent(), store.failure == nil, var p = store.record(id) else { return }
+        guard store.isCurrent(), store.failure == nil, var p = store.record(id), !isDashboard else { return }
         if indexPath.section > 0 {
             let grouped = enhanced && group(indexPath.section) != nil
             if grouped, indexPath.row == 0, let name = group(indexPath.section) { if !collapsedGroups.insert(name).inserted { collapsedGroups.remove(name) }; tableView.reloadData(); return }
@@ -2398,6 +2579,7 @@ private final class GoldgramPluginDetail: UITableViewController, UIDocumentPicke
             }
             return
         }
+        guard visibleManagement.indices.contains(indexPath.row) else { tableView.reloadData(); return }
         let row = managementRow(indexPath.row)
         if row == 1, let run { if !run.stopStream() { run.cancel() }; return }
         guard run == nil else { return }
@@ -2566,7 +2748,7 @@ private final class GoldgramPluginDetail: UITableViewController, UIDocumentPicke
         defer { GoldgramPluginRun.releaseUpdateLease(lease) }
         let next = GoldgramPluginUpdate.replacement(current, code: code)
         guard store.put(next) else { presenter.showPluginError("Не удалось сохранить."); return false }
-        sections = []; logs = []; status = "Код заменён; разрешите заново."; title = next.code == GoldgramPluginManager.aiccAlpha ? "AI Commander 3.0 · Alpha" : next.manifest.name; tableView.reloadData()
+        sections = []; logs = []; status = "Код заменён; разрешите заново."; refreshTitle(); tableView.reloadData()
         return true
     }
     private func execute(event: String, key: String? = nil, value: Any? = nil) {
