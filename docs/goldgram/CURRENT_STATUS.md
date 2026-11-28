@@ -1,6 +1,6 @@
 # CURRENT_STATUS — verified checkpoint
 
-  > **2026-11-28 local user date — #297 CI green and installed, Workspace list UX feedback; tiled library/editor separation proposed, functional acceptance pending.** Start with [START_HERE.md](./START_HERE.md) and [AI_COMMANDER_3_PLAN.md](./AI_COMMANDER_3_PLAN.md). Check latest GitHub branch/jobs/artifact before changes.
+  > **2026-11-28 local user date — #298 Workspace UI 2.0 committed, CI running, device acceptance pending.** Start with [START_HERE.md](./START_HERE.md) and [AI_COMMANDER_3_PLAN.md](./AI_COMMANDER_3_PLAN.md). Check latest GitHub branch/jobs/artifact before changes.
 
 ## P0 development priority (user-approved 2026-11-25)
 
@@ -13,11 +13,11 @@
 | Item | Latest confirmed status |
 | --- | --- |
 | Feature branch | `gold-next-243-author-search` |
-| HEAD | `ba3b7d2a338b588dc46a4099378317c3cf4aa63f` (#297 Workspace), CI success; UI feedback pending correction |
+| HEAD | `a21e5ac2a75e20f2e8f33eb5267e2a6772c5d704` (#298 Workspace UI 2.0), [CI](https://github.com/sviridovski/Telegram-iOS/actions/runs/46131530191) in_progress |
 | Last green CI | [#297](https://github.com/sviridovski/Telegram-iOS/actions/runs/46116709777), success, 35m39s elapsed, IPA 15253076762 present/unexpired |
 | Last installed | #297 installed, screenshot of Свои инструменты shows 0/8 library and all editor rows together. User notes no tiled mode. CRUD, migration, variants not separately confirmed. |
 | Failed candidate | #289 native preflight test_goldgram_ai.py:56 stale string assertion after refactor; #288 missing sample ui.read fixed in #289; #287 failure not separately diagnosed. |
-| Next task | Workspace UX correction proposal: separate tile library and individual editor for tools/profiles; preserve registry, legacy settings and grants. Confirm functionality; then AI Search Foundation. |
+| Next task | Verify #298 CI/IPA and real-device tiled tools/profiles, CRUD, preserved data, command/context menu behavior; then AI Search Foundation. |
 | Recovery | #296 `0b9093352943c5822dae83c5d020a03899464f03` green/general acceptance; #295 `f6eb6bfb1b561dc58137c9b83235002d32be8f20` previous dashboard checkpoint. Historical archive/media limitations remain. |
 
 ## #252 corrections retained in #253
@@ -691,3 +691,10 @@ User approves original AI Commander 3.0 proposal and requests usage statistics, 
 
 - Verified exact HEAD ba3b7d2a338b588dc46a4099378317c3cf4aa63f, [CI #297](https://github.com/sviridovski/Telegram-iOS/actions/runs/46116709777) completed success, 35m39s elapsed; jobs native:success, mx:success, build:success; IPA 15253076762, expired=false. User installed and reports «Бро, поставил, но у меня вот так, не плиточный режим». Screenshot shows Свои инструменты page, library 0/8, new/edit controls, inline name/command/prompt/thinking/output/source/menu/save/delete rows. No evidence of CRUD success/failure, profile migration or result picker tests. #296 stays accepted recovery.
 - Verified source: Workspace section uses existing declarative settings rows and GoldgramAICCSettingsPage.customTools routes that section unchanged. Main dashboard and chat panel are tiled; library/editor screen is not. No setting to make this screen tiled. UI implementation does not meet user preference for a compact tiled Workspace. Proposed separate library dashboard with plus/new tile and saved tool/profile cards, tap opens focused editor, save/delete there; empty state displays new tile, no unused editor fields; direct context menu entry retained. Preserve current JSON registry IDs, existing settings/permissions and manual send; no unnecessary data migration. This is a design proposal, not implemented. No source changes or new CI now. After agreement and device acceptance resume AI Search Foundation.
+
+## 2026-11-28 — #298 Workspace UI 2.0 (candidate)
+
+- User approved tiled library/editor separation after #297 screenshot. Code [a21e5ac2a75e20f2e8f33eb5267e2a6772c5d704](https://github.com/sviridovski/Telegram-iOS/commit/a21e5ac2a75e20f2e8f33eb5267e2a6772c5d704), direct parent #297, verified branch HEAD; [CI #298](https://github.com/sviridovski/Telegram-iOS/actions/runs/46131530191) in_progress at verification; no IPA or device acceptance claimed.
+- Two files changed: GoldgramPlugins.swift and test_plugin_engine.py. Native two-column tool/profile libraries with Dynamic Type one-column accessibility fallback, existing entry cards (tool command subtitle), create tile only below limit eight; empty library shows create only. Separate editor reuses existing schema and scratch keys, hides library controls and delete for new record; confirmed deletion returns to library. Native view reads existing per-plugin aicc-workspace-v1.json, checks bounded typed registry and reserves existing execution lease when setting editor scratch. Existing JS alone writes library records; bundled aiccWorkspace 3.1.0 and Alpha unchanged, no plugin replacement or new permissions. Existing explicit save/delete, storage, context-menu and command logic remain. Unsaved editor scratch is reset when opening another tile; saved records unchanged until explicit save/delete.
+- Added Foundation fixture (10 checks) and source assertions to existing CI preflight; reviewed source/diff and verified unchanged embedded Workspace JS. Full new tests, UIKit typecheck and device behavior not yet verified; CI pending. No changes to GoldAPI, AI broker, SQLite, Ghost, Collector or Live Bridge. #297 native build step 1449s, validation 215s, cache restore 126s, save 67s; retained workflow/cache configuration rather than speculative change. Goal 15–20m still open.
+- Acceptance after green CI: on existing #297 installation open both libraries without reinstalling plugin; check empty/create, two saved cards with command subtitle, separate editor, save/back/reopen, existing record edit, delete cancel/confirm and return, eight-record limit, profiles in general selector, commands/context menu, key/settings retained and no automatic send. #296 remains last generally accepted fallback. Then AI Search Foundation after user acceptance; preserve Archive Reliability priority.
