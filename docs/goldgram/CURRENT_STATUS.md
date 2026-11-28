@@ -1,6 +1,6 @@
 # CURRENT_STATUS — verified checkpoint
 
-  > **2026-11-28 local user date — #299 full tiled Workspace UI committed, CI queued, device acceptance pending.** Start with [START_HERE.md](./START_HERE.md).
+  > **2026-11-28 local user date — #299 CI green, installed and generally accepted; AI Search Foundation next, plan proposed.** Start with [START_HERE.md](./START_HERE.md).
 
 ## P0 development priority (user-approved 2026-11-25)
 
@@ -13,11 +13,11 @@
 | Item | Latest confirmed status |
 | --- | --- |
 | Feature branch | `gold-next-243-author-search` |
-| HEAD | `fc7b5e29f492123ccbfcc0f6556d0f4b5e6daca7` (#299 Workspace UI 3.0), [CI](https://github.com/sviridovski/Telegram-iOS/actions/runs/46148320601) queued |
-| Last green CI | [#298](https://github.com/sviridovski/Telegram-iOS/actions/runs/46131530191), success, 34m19s, IPA 15257774999 unexpired |
-| Last installed | #298, empty tiled library and separate list editor confirmed; user clarified appearance concern, approved #299 full tiled editor. |
+| HEAD | `fc7b5e29f492123ccbfcc0f6556d0f4b5e6daca7` (#299 Workspace UI 3.0), CI success, general device acceptance |
+| Last green CI | [#299](https://github.com/sviridovski/Telegram-iOS/actions/runs/46148320601), success, 33m30s, IPA 15265887403 unexpired |
+| Last installed | #299, user reports finally satisfied, asks next step. Specific CRUD etc. not separately verified. |
 | Failed candidate | #289 native preflight test_goldgram_ai.py:56 stale string assertion after refactor; #288 missing sample ui.read fixed in #289; #287 failure not separately diagnosed. |
-| Next task | Verify #299 CI/IPA and real-device full tiled editors, option pickers, CRUD, persistence and commands; then AI Search Foundation. |
+| Next task | AI Search Foundation proposed native query planner + tiled filters, await design approval then implement; Intelligence, Archive Reliability 2.0, Semantic follow. |
 | Recovery | #296 `0b9093352943c5822dae83c5d020a03899464f03` green/general acceptance; #295 `f6eb6bfb1b561dc58137c9b83235002d32be8f20` previous dashboard checkpoint. Historical archive/media limitations remain. |
 
 ## #252 corrections retained in #253
@@ -710,3 +710,8 @@ User approves original AI Commander 3.0 proposal and requests usage statistics, 
 - Two changed files: GoldgramPlugins.swift and test_plugin_engine.py (+222/-21). Workspace editor uses a native tile stack in a single nonselectable container instead of standard settings rows; wide title/command/prompt tiles, paired mode/output and source/menu, save/delete action tiles; profile title/prompt and actions. New record hides delete. Accessibility category uses one column. Values shown on tiles; tapping text opens existing native input/editor, options use new two-column tile choice screen, menu toggles existing setting. Existing libraries retained. Successful save returns to library only after persisted registry entry, matching saved ID and JS success text; errors retain editor, delete retains existing confirmation. No JS, manifest, GoldAPI, broker, SQLite, Ghost, Collector, Live Bridge, workflow or cache-key changes; plugin need not be replaced for this UI-only change. Existing account/grant checks and scratch keys retained.
 - Foundation fixture extended from 10 to 17 checks and source assertions added; embedded Workspace JS byte-identical verified, code commit diff/HEAD verified. Tests not independently run in this session; CI and UIKit/device testing pending. Build acceleration not changed in this commit to isolate UI fix; 15–20m objective open.
 - Device acceptance: verify both empty libraries, both fully tiled editors and parameter choice screens, text editing and cancellation, toggle, valid save returns to library with correct card, invalid/conflicting command stays in editor, reopen/edit and save, delete cancel/confirm, existing data and key retained, command/context-menu execution, accessibility layout. #298 CI green but only empty library and separate editor verified, not CRUD; #296 remains last generally accepted fallback. Next AI Search Foundation after user confirms #299.
+
+## 2026-11-28 — #299 green CI and general device acceptance; AI Search next
+
+- Verified exact code HEAD fc7b5e29f492123ccbfcc0f6556d0f4b5e6daca7; [CI #299](https://github.com/sviridovski/Telegram-iOS/actions/runs/46148320601) completed success, 33m30s elapsed (13:10:53–13:44:23 UTC); mx/native/build all green, native preflight and clean build successful, IPA artifact 15265887403 present/unexpired. User installed #299 and reports «наконец мне все понравилось, давай приступать к следующему шагу». Accept Workspace UI 3.0 on general reported device experience; individual CRUD, persistence, limit, command/menu, cancellation and accessibility cases not explicitly verified. #299 new recovery checkpoint for accepted general UX, previous #298 green, #296 earlier accepted fallback. No reported blockers. CI goal 15–20m remains open (native build step 1409s, preflight 201s).
+- Next proposed AI Search Foundation design, consistent with previously approved AI Search scope in AI_COMMANDER_3_PLAN.md §8: native expanded search gets distinct ordinary/AI modes, tiled controls, natural-language input, explicit query-only DeepSeek analysis, locally resolved author/chat names and relative dates, editable structured filters and explicit apply. Keep existing native search, sources, SQLite, pagination, navigation and privacy. Use bounded alternative terms/dedup; no global JS bridge, message text sent to AI, hidden network action or second SQLite. Native AI search credential isolated in Keychain or explicit scoped shared service after design review; no silent reuse of plugin key. Missing key/network/malformed response falls back to ordinary search. Subsequent Intelligence, Archive Reliability 2.0, then semantic ranking/synthesis on explicitly allowed ordinary excerpts only. UI/staging proposal awaiting approval before code; no new code or CI triggered for acceptance/planning.
