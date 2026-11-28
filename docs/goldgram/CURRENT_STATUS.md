@@ -1,6 +1,6 @@
 # CURRENT_STATUS — verified checkpoint
 
-  > **2026-11-28 local user date — #300 AI Search Foundation 1.0 committed, approved plan, CI running, device acceptance pending.** Start with [START_HERE.md](./START_HERE.md).
+  > **2026-11-28 local user date — #300 CI green and device UI accepted; real DeepSeek search flow unverified.** Start with [START_HERE.md](./START_HERE.md).
 
 ## P0 development priority (user-approved 2026-11-25)
 
@@ -13,11 +13,11 @@
 | Item | Latest confirmed status |
 | --- | --- |
 | Feature branch | `gold-next-243-author-search` |
-| HEAD | `ca83a98c2d80c77741281bf70452d272b3dd698a` (#300 AI Search Foundation 1.0), [CI](https://github.com/sviridovski/Telegram-iOS/actions/runs/46170648268) in_progress |
-| Last green CI | [#299](https://github.com/sviridovski/Telegram-iOS/actions/runs/46148320601), success, 33m30s, IPA 15265887403 unexpired |
-| Last installed | #299, user reports finally satisfied, asks next step. Specific CRUD etc. not separately verified. |
+| HEAD | `ca83a98c2d80c77741281bf70452d272b3dd698a` (#300 AI Search Foundation 1.0), CI success, UI accepted |
+| Last green CI | [#300](https://github.com/sviridovski/Telegram-iOS/actions/runs/46170648268), success, 32m53s, IPA 15274603294 unexpired |
+| Last installed | #300, user likes tiled interface, screenshots show key not set; functional AI flow not demonstrated. |
 | Failed candidate | #289 native preflight test_goldgram_ai.py:56 stale string assertion after refactor; #288 missing sample ui.read fixed in #289; #287 failure not separately diagnosed. |
-| Next task | Verify #300 CI/IPA, native AI query preview, confirmed filters and single-term search on iPhone; then Foundation 2.0 → Intelligence → Archive Reliability 2.0 → Semantic. |
+| Next task | Verify real #300 DeepSeek query and apply flow; Foundation 2.0 follows, then Intelligence, Archive Reliability 2.0, Semantic. |
 | Recovery | #296 `0b9093352943c5822dae83c5d020a03899464f03` green/general acceptance; #295 `f6eb6bfb1b561dc58137c9b83235002d32be8f20` previous dashboard checkpoint. Historical archive/media limitations remain. |
 
 ## #252 corrections retained in #253
@@ -724,3 +724,8 @@ User approves original AI Commander 3.0 proposal and requests usage statistics, 
 - Provider returns bounded JSON proposal: up to six deduplicated terms, author/chat hints (names, not IDs), source/event/media/sort/date. Strict allowed keys/types/enums, response finish_reason stop, reject malformed/truncated/contradictory proposals and invalid dates. Relative days/months calculated locally with calendar; absolute inclusive range. Model does not resolve contacts or select IDs; existing local picker explicitly selects author/chat or user explicitly clears hint. Date/media/archive/source compatibility preserved. Existing active filters copied into AI mode, proposed changes visible and editable before explicit apply. Applying returns to ordinary native search screen and starts the existing single-term search, preserving pagination and exact navigation/back; alternatives are shown/selectable manually, not OR-executed yet. Existing result renderer retained, not the proposed new cards. Empty unbounded plan rejected. No semantic ranking or analysis of results yet. Ordinary search remains usable after cancel/failure/missing key. No change to archive/Collector/Live Bridge/Ghost rules or existing search execution logic.
 - Local exact Foundation helper and fixture compiled with Linux swiftc -swift-version 5, 17/17 preconditions passed; FNV hashes 4fcfbc83 and 9236ffa5 match committed source and fixture, respectively. Added to existing CI preflight plus source assertions. UIKit typecheck/full CI and actual provider/on-device flows not yet verified. No workflow/cache change; CI target 15–20m remains open.
 - Device acceptance after green CI: open expanded search → AI-поиск; enter separate existing DeepSeek API key (no need to replace AICC plugin), select model, enter synthetic query, inspect consent (only query + system instructions), cancel separately; analyze, verify suggestions/date/author/chat and choose actual contact manually; edit source/term/dates; apply and compare against equivalent ordinary search, test exact jump/back, archive-only and ordinary mode, cancel/return, invalid key, network/malformed result, no query with empty filters, local finance usage/limit. #299 remains accepted rollback. Next Foundation 2.0 only after #300 feedback: bounded OR terms/pagination/dedup with existing engine, result UX. Then Intelligence → Archive Reliability → Semantic.
+
+## 2026-11-28 — #300 green CI and device UI acceptance
+
+- Verified exact code HEAD ca83a98c2d80c77741281bf70452d272b3dd698a; [CI #300](https://github.com/sviridovski/Telegram-iOS/actions/runs/46170648268) completed success in 32m53s (17:28:24–18:01:17 UTC); mx/native/build all green, native validation 189s and clean build 1314s successful. IPA 15274603294 present/unexpired. User installed and reported «Бро я проверил 300 коммит, получилось вот так, мне нравится». Two screenshots confirm the native tiled AI search screen, query, key, model, parse, sources, author, period, dialog, media, archive events, sorting, finance, ordinary-search return tiles and scrolling. API key displays «Не задан», so screenshots do not demonstrate DeepSeek generation, JSON parsing, author resolution, filter application, search or actual finance behavior. Accept UI only; no functional/provider acceptance inferred. #299 remains generally accepted rollback; #300 green/UI checkpoint. No new code or build.
+- Next: verify real query-only DeepSeek call after user enters key, model, confirms request, reviews filters, selects author/chat if required, applies and checks ordinary results/jump/back. Then Foundation 2.0 bounded alternative-term OR search, merged results/dedup/pagination and result UI; subsequently AI Intelligence → Archive Reliability 2.0 → Semantic Search. Preserve current privacy and account scoping, no bulk archive transfer. CI goal remains 15–20m; no cache changes.
