@@ -14,13 +14,13 @@
 | --- | --- |
 | Последняя рабочая/принятая в проверенных сценариях | #293, GoldAPI AI Engine 2.0: CI green, пользователь сообщил «все поставил, проверил», скриншоты подтверждают включённый тестовый плагин, Keychain label, Flash, thinking on, пункты balance/generate/usage; без отдельных результатов запросов |
 | Резервный коммит | `487884c25fd88ce9ed5e3f9e24225cbd298c2a9f` (#293); предыдущий #292 `6adc8db8e378e2aa9e4216efc9c40c6936c756a2` |
-| HEAD кода | `74fb906a4cf071d2b6db10bba1e16244582487d5` (#294 AI Commander 3.0 Alpha + reusable GGAPI tile picker candidate) |
-| Последний CI | [#294](https://github.com/sviridovski/Telegram-iOS/actions/runs/46095404638) — in_progress при проверке, точный HEAD; #293 success и общая приёмка |
-| Блокер | #294 iOS CI/нативные плитки, миграция и реальные запросы на iPhone ещё не проверены. Alpha: legacy memory retained but inactive, экспорт/импорт и полная библиотека/варианты отдельно впереди. #293 резерв. |
+| HEAD кода | `74fb906a4cf071d2b6db10bba1e16244582487d5` (#294 AI Commander 3.0 Alpha + reusable GGAPI tile picker) |
+| Последний CI | [#294](https://github.com/sviridovski/Telegram-iOS/actions/runs/46095404638) — success, 28m39s, IPA 15244295514; пользователь установил и сообщает «все нормально», но лишние окна подтверждения |
+| Блокер | #294 CI green, реальный ответ AI и окна подтверждения видны на скриншотах. Пользователь жалуется на два окна при AI/context. Существующий per-plugin opt-in сброшен при update; рекомендовано отключить только DeepSeek confirmation и draft preview, оставить timed text confirmation. Результат проверки после настройки ожидается. Плитки/миграция отдельно не подтверждены. |
 | GoldAPI | 1.4.0 unchanged (22 service methods); GGAPI 5 additive ui.select(...,{layout:"tiles"}) and runtime.features().tilePicker; 351/351 V8 mock assertions. |
-| Следующее действие | Проверить #294 CI/jobs/IPA, обновление старого AICC через карточку > Обновление плагина > AI Commander 3.0 · Alpha, regrant; проверить сохранение ключа/профилей/промптов, плитки в чате и настройках, быстрый режим, команды, канал, баланс/usage, отмену/rollback. Затем Usage & Balance UI, Workspace, AI Search Foundation, Intelligence, Archive Reliability 2.0, AI Search Semantic. |
+| Следующее действие | Проверить #294 после настройки двух подтверждений только для AICC; подтвердить quick/tile mode, визуальный UI, сохранение ключа/профилей и остальные открытые сценарии. Затем Usage & Balance UI, Workspace, AI Search Foundation, Intelligence, Archive Reliability 2.0, AI Search Semantic. |
 | Открытые проверки | #293 отдельные результаты real balance/complete/usage persistence, SSE/Stop/partial, ошибки и teardown не протоколированы; #292 шаблоны; #291 отдельные граничные проверки; #290 ручной импорт/вставка/отмена/негативные случаи; #286 пункт 1, поиск по датам, расширенные разрешения. |
-| CI | Цель 15–20 мин, без отключения проверок; #293 — 33m58s, #292 — 10m08s (без native runtime changes), #291 — 34m19s; ускорение native changes не доказано. |
+| CI | Цель 15–20 мин, без отключения проверок; #294 — 28m39s, #293 — 33m58s, #292 — 10m08s (без native runtime changes); ускорение native changes не доказано. |
 
 ## 3. Очерёдность
 1. Search & Documents 2.0 — принят в 15 проверенных сценариях #286.
