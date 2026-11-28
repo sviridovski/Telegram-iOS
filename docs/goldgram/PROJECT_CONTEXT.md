@@ -308,3 +308,7 @@ Existing GGAPI.ui.select(title,choices) remains alert-based. Additive opt-in `aw
 ## AICC compact native dashboard (#295 candidate)
 
 Existing full schema and code preserved; native route enum filters display only. Exact built-in AICC gets a dashboard, other plugins retain detail. Per-plugin confirmations use UUID-scoped existing native screen; no consent bypass added. See CURRENT_STATUS for limits and tests.
+
+## Usage & Balance 2.0 (#296 candidate)
+
+Native per-plugin finance screen and bounded metadata ledger v2 in UserDefaults, 366 day aggregates +128 recent shadow-compatible records; exact scoped balance RPC reused via native broker lease; opt-in local known-cost monthly guard, published tariff estimate with expiry and unknown-cost coverage. No additional API/JS or SQLite, privacy invariants preserved. See CURRENT_STATUS and DECISIONS_LOG for limits and test evidence.
