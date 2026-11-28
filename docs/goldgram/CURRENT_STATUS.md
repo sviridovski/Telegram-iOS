@@ -1,6 +1,6 @@
 # CURRENT_STATUS — verified checkpoint
 
-  > **2026-11-28 local user date — #292 SDK 1.0 CI green, installed on iPhone; template acceptance open.** Start with [START_HERE.md](./START_HERE.md); consult [SDK_DEVELOPER_GUIDE.md](./SDK_DEVELOPER_GUIDE.md) and relevant project documents. Check latest GitHub branch/jobs/artifact before further changes.
+  > **2026-11-28 local user date — #292 accepted by general report; AI Commander 3.0 plan proposed, no implementation yet.** Start with [START_HERE.md](./START_HERE.md) and [AI_COMMANDER_3_PLAN.md](./AI_COMMANDER_3_PLAN.md). Check latest GitHub branch/jobs/artifact before changes.
 
 ## P0 development priority (user-approved 2026-11-25)
 
@@ -15,10 +15,10 @@
 | Feature branch | `gold-next-243-author-search` |
 | HEAD | `6adc8db8e378e2aa9e4216efc9c40c6936c756a2` (#292 SDK 1.0), CI success; native runtime unchanged from #291 |
 | Last green CI | [#292](https://github.com/sviridovski/Telegram-iOS/actions/runs/46083992903), success, 10m08s elapsed, IPA 15238940725 present/unexpired at verification |
-| Last installed | #292 — installation confirmed by user; no individual SDK example device results yet. #291 accepted by general device report. |
+| Last installed | #292 — installed and user reports all excellent, authorizes move to AI Commander 3.0; no separate template test protocol. |
 | Failed candidate | #289 native preflight test_goldgram_ai.py:56 stale string assertion after refactor; #288 missing sample ui.read fixed in #289; #287 failure not separately diagnosed. |
-| Next task | **P0 Engine 2.0**: SDK template device acceptance, then AI Commander 3.0 from actual source 2.1.8; continue engine evolution as required. |
-| Recovery | #291 `d07836aee261218ada14a8cbd790007e07d78ab3` green and accepted for reported device flows; #290 prior update/rollback `f9f889dc93f1a836cbe7eb5c5cb4434d1c2bbe41`; #286 search/documents baseline. Historical archive/media limitations remain. |
+| Next task | AI Commander 3.0 — review proposed plan with user; compatible core first, focused engine extensions only as needed; independent JS plugin. |
+| Recovery | #292 `6adc8db8e378e2aa9e4216efc9c40c6936c756a2` green/general acceptance, runtime unchanged from #291; #291 previous diagnostics checkpoint, #290 explicit update/rollback acceptance. Historical archive/media limitations remain. |
 
 ## #252 corrections retained in #253
 
@@ -618,3 +618,7 @@ Live CI verification: #285 run 45966802832, exact SHA 2b33ec756b15def83dab2786e4
 
 - Verified exact HEAD 6adc8db8e378e2aa9e4216efc9c40c6936c756a2, [CI #292](https://github.com/sviridovski/Telegram-iOS/actions/runs/46083992903) completed success; native/mx/build all success; created 2026-11-27 23:42:37 UTC, updated 23:52:45 UTC, elapsed 10m08s. IPA 15238940725 present and unexpired at verification. User reported "я установил 292". Record installation only; do not infer SDK template device acceptance. Runtime unchanged from #291. #291 remains accepted recovery checkpoint. #292 substantially faster than #291 but no native code changed; no general 15–20m native build guarantee, no cache/workflow changes. CI goal remains open for native changes.
 - Suggested device checks: import individual SDK JS files, Starter label/count, Search Find SDK current chat (confirmed history separately), Documents user-selected harmless file, AI explicit generation with managed key on synthetic text (optional real potentially billable provider request). No new app UI from SDK commit. Template device results remain open; all earlier unreported checks remain open. Next AI Commander 3.0 after SDK acceptance; engine/SDK ongoing. No source changes or new build launched; docs only.
+
+## 2026-11-28 — #292 general acceptance; AI Commander 3.0 proposed plan
+
+User reports "Все отлично" and requests plan for AI Commander 3.0. Verified exact #292 code HEAD and CI success. Record general acceptance, not per-template protocol or real GoldAPI.ai provider proof. #292 recovery checkpoint (runtime unchanged from #291). Inspected uploaded AI_Command_Center_Ghostgram_2.1.8(1).js, Ghostgram plugins(1).md and exact Goldgram Worker/SDK. Proposed [AI_COMMANDER_3_PLAN.md](./AI_COMMANDER_3_PLAN.md); user has approved moving to the plugin but not yet approved each proposed feature. No implementation/source commit, no CI launched. Preserve author identity and user data through explicit migration; no new broad access. Engine continues evolving based on tested need. Archive Reliability 2.0 remains next priority after current plugin work.
