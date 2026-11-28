@@ -1,6 +1,6 @@
 # Goldgram SDK 1.0.0 — руководство разработчика
 
-Дата: 28.11.2026. SDK candidate #292, runtime принят на #291. GGAPI apiVersion() = 5 (ограниченная совместимость, не весь Ghostgram), GoldAPI apiVersion() = 1.3.0. Источник истины: GoldgramPlugins.swift и реальные CI/device tests. Не считать документацию обещанием новых API. Движок продолжает развиваться вместе с плагинами.
+Дата: 28.11.2026. SDK #292 CI success, установлен пользователем; проверка шаблонов на устройстве открыта. Runtime принят на #291. GGAPI apiVersion() = 5 (ограниченная совместимость, не весь Ghostgram), GoldAPI apiVersion() = 1.3.0. Источник истины: GoldgramPlugins.swift и реальные CI/device tests. Не считать документацию обещанием новых API. Движок продолжает развиваться вместе с плагинами.
 
 ## 1. Быстрый старт
 
@@ -101,8 +101,14 @@ Use GoldAPI.runtime.has("service.method") and capabilities() for scope + grants 
 
 Detail > Диагностика: last 32 runs per plugin, 256 total, session memory only, typed outcome, event, elapsed, RPC/error counts, broker network attempts/status. Manual export and clear, no raw messages/prompts/keys/URLs/identifiers. Completed worker != successful downstream save or insertion. No exact per-worker CPU/RAM. Use synthetic input; do not share raw console containing personal data.
 
-Test with test_plugin_engine.py in existing CI, worker mock and native fixtures; for actual device validate install/grants, settings, explicit action, cancel/error, restart/update/rollback, no unintended network, safe-mode and isolation. Mock provider not real provider. #292 300/300 V8 mock assertions with accelerated timers; actual CI and SDK device examples pending. Full GoldAPI.ai provider call, optional history/picker boundaries, previous unreported scenarios remain open. No claim of full Ghostgram compatibility.
+Test with test_plugin_engine.py in existing CI, worker mock and native fixtures; for actual device validate install/grants, settings, explicit action, cancel/error, restart/update/rollback, no unintended network, safe-mode and isolation. Mock provider not real provider. #292 300/300 V8 mock assertions with accelerated timers; actual CI success, SDK device examples pending. Full GoldAPI.ai provider call, optional history/picker boundaries, previous unreported scenarios remain open. No claim of full Ghostgram compatibility.
 
 ## 8. Extending SDK and engine
 
 For each new plugin inspect exact existing source/API first. If missing capability is justified, define minimal native scope, grants, lifecycle, limits, cancellation and privacy; preserve existing method signatures or increment version explicitly. Update native supported grants, worker discovery, contract.json, this guide, GOLDAPI reference, tests and START_HERE as appropriate. Add positive and denied/absent-context fixtures, verify real iPhone when needed. Never silently broaden existing permissions. No rebuild purely for docs. SDK and engine evolve continuously with real plugin development; next AI Commander 3.0, then Archive Reliability 2.0 according to current plan.
+
+
+## 2026-11-28 — #292 SDK CI green and installation confirmed
+
+- Verified exact HEAD 6adc8db8e378e2aa9e4216efc9c40c6936c756a2, [CI #292](https://github.com/sviridovski/Telegram-iOS/actions/runs/46083992903) completed success; native/mx/build all success; created 2026-11-27 23:42:37 UTC, updated 23:52:45 UTC, elapsed 10m08s. IPA 15238940725 present and unexpired at verification. User reported "я установил 292". Record installation only; do not infer SDK template device acceptance. Runtime unchanged from #291. #291 remains accepted recovery checkpoint. #292 substantially faster than #291 but no native code changed; no general 15–20m native build guarantee, no cache/workflow changes. CI goal remains open for native changes.
+- Suggested device checks: import individual SDK JS files, Starter label/count, Search Find SDK current chat (confirmed history separately), Documents user-selected harmless file, AI explicit generation with managed key on synthetic text (optional real potentially billable provider request). No new app UI from SDK commit. Template device results remain open; all earlier unreported checks remain open. Next AI Commander 3.0 after SDK acceptance; engine/SDK ongoing. No source changes or new build launched; docs only.

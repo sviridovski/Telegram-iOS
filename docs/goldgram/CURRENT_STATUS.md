@@ -1,6 +1,6 @@
 # CURRENT_STATUS — verified checkpoint
 
-  > **2026-11-28 local user date — #291 accepted; #292 SDK 1.0 candidate in CI. Runtime unchanged.** Start with [START_HERE.md](./START_HERE.md); consult [SDK_DEVELOPER_GUIDE.md](./SDK_DEVELOPER_GUIDE.md) and relevant sections of [PROJECT_CONTEXT](./PROJECT_CONTEXT.md), [DECISIONS_LOG](./DECISIONS_LOG.md). Check latest GitHub branch/jobs/artifact before further changes.
+  > **2026-11-28 local user date — #292 SDK 1.0 CI green, installed on iPhone; template acceptance open.** Start with [START_HERE.md](./START_HERE.md); consult [SDK_DEVELOPER_GUIDE.md](./SDK_DEVELOPER_GUIDE.md) and relevant project documents. Check latest GitHub branch/jobs/artifact before further changes.
 
 ## P0 development priority (user-approved 2026-11-25)
 
@@ -13,11 +13,11 @@
 | Item | Latest confirmed status |
 | --- | --- |
 | Feature branch | `gold-next-243-author-search` |
-| HEAD | `6adc8db8e378e2aa9e4216efc9c40c6936c756a2` (#292 SDK 1.0 templates, contract and compatibility tests), parent #291 |
-| Last green CI | [#291](https://github.com/sviridovski/Telegram-iOS/actions/runs/46067250709), success, 34m19s wall, IPA 15232314061 present/unexpired at verification |
-| Last installed | #291 — user reports all checked and normal, no individually enumerated device results; #290 prior explicit update/restart/rollback acceptance. |
+| HEAD | `6adc8db8e378e2aa9e4216efc9c40c6936c756a2` (#292 SDK 1.0), CI success; native runtime unchanged from #291 |
+| Last green CI | [#292](https://github.com/sviridovski/Telegram-iOS/actions/runs/46083992903), success, 10m08s elapsed, IPA 15238940725 present/unexpired at verification |
+| Last installed | #292 — installation confirmed by user; no individual SDK example device results yet. #291 accepted by general device report. |
 | Failed candidate | #289 native preflight test_goldgram_ai.py:56 stale string assertion after refactor; #288 missing sample ui.read fixed in #289; #287 failure not separately diagnosed. |
-| Next task | **P0 Engine 2.0**: verify [#292](https://github.com/sviridovski/Telegram-iOS/actions/runs/46083992903) and SDK examples; then AI Commander 3.0 based on actual 2.1.8 source. Continue engine/SDK evolution as plugins require. |
+| Next task | **P0 Engine 2.0**: SDK template device acceptance, then AI Commander 3.0 from actual source 2.1.8; continue engine evolution as required. |
 | Recovery | #291 `d07836aee261218ada14a8cbd790007e07d78ab3` green and accepted for reported device flows; #290 prior update/rollback `f9f889dc93f1a836cbe7eb5c5cb4434d1c2bbe41`; #286 search/documents baseline. Historical archive/media limitations remain. |
 
 ## #252 corrections retained in #253
@@ -613,3 +613,8 @@ Live CI verification: #285 run 45966802832, exact SHA 2b33ec756b15def83dab2786e4
 
 - User approved next commit and clarified engine development is ongoing: future plugin development may require expansion and updates. This is not an engine freeze or final completion. Preserve current priority order, security/privacy invariants, versioned additive APIs, compatibility tests and explicit grants. AI Commander 3.0 next after SDK; inspect original source and Ghostgram documentation before porting, not guess compatibility. Archive Reliability 2.0 remains planned.
 - Verified #291 accepted code HEAD, docs HEAD and CI success before change. #292 [6adc8db8](https://github.com/sviridovski/Telegram-iOS/commit/6adc8db8e378e2aa9e4216efc9c40c6936c756a2) direct parent d07836aee261218ada14a8cbd790007e07d78ab3. Seven files: existing test_plugin_engine.py extended, new build-system/gold-next/sdk/{starter.js,search.js,documents.js,ai.js,contract.json,README.md}. No native app/Worker source, SQLite, Ghost, Collector, Live Bridge or cache/workflow changes. SDK 1.0 targets GGAPI 5 limited compatibility, GoldAPI 1.3.0. Manifest permission set and 20 service name/scope/permission entries derived from actual source. Existing CI test reads templates, checks declared permissions and target version, compares runtime-discovered contract, then exercises all four examples under mock RPC including missing history grant, missing managed key and no network during startup. V8 replay of exact JS harness 300/300 assertions (265 prior +35 new) with simulated RPC and accelerated timers; initial local comparator failed on JSON key order, normalized object key comparison and reran successfully before commit. No real provider call, full Python/native CI or device test performed locally. Existing app runtime unchanged, no new native UI required. CI #292 in_progress when checked by exact SHA, not a green result. Code commit contains executable examples/tests, not docs-only build. Documentation branch updates do not trigger builds. #291 remains accepted recovery checkpoint. Guide [SDK_DEVELOPER_GUIDE.md](./SDK_DEVELOPER_GUIDE.md) and current contract; no exhaustive Ghostgram compatibility claim. Runtime extensions must update contract and tests intentionally.
+
+## 2026-11-28 — #292 SDK CI green and installation confirmed
+
+- Verified exact HEAD 6adc8db8e378e2aa9e4216efc9c40c6936c756a2, [CI #292](https://github.com/sviridovski/Telegram-iOS/actions/runs/46083992903) completed success; native/mx/build all success; created 2026-11-27 23:42:37 UTC, updated 23:52:45 UTC, elapsed 10m08s. IPA 15238940725 present and unexpired at verification. User reported "я установил 292". Record installation only; do not infer SDK template device acceptance. Runtime unchanged from #291. #291 remains accepted recovery checkpoint. #292 substantially faster than #291 but no native code changed; no general 15–20m native build guarantee, no cache/workflow changes. CI goal remains open for native changes.
+- Suggested device checks: import individual SDK JS files, Starter label/count, Search Find SDK current chat (confirmed history separately), Documents user-selected harmless file, AI explicit generation with managed key on synthetic text (optional real potentially billable provider request). No new app UI from SDK commit. Template device results remain open; all earlier unreported checks remain open. Next AI Commander 3.0 after SDK acceptance; engine/SDK ongoing. No source changes or new build launched; docs only.

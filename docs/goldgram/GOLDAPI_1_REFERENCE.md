@@ -95,3 +95,5 @@ Requires gold.documents and gold.documents.import. Native file picker, explicit 
 ## Current SDK 1.0 reference (#292 candidate)
 
 See [SDK_DEVELOPER_GUIDE.md](./SDK_DEVELOPER_GUIDE.md) for current GGAPI surface, manifest, lifecycle, permission and resource contracts, and executable examples. GoldAPI remains 1.3.0 with 20 service methods. #286 search/document core scenarios accepted, #290 update/restart/rollback accepted, #291 diagnostics accepted by general device report. Earlier candidate labels above are historical; unreported edge cases and actual GoldAPI.ai provider calls remain open. SDK adds no runtime methods; authoritative executable contract is [contract.json](https://github.com/sviridovski/Telegram-iOS/blob/6adc8db8e378e2aa9e4216efc9c40c6936c756a2/build-system/gold-next/sdk/contract.json). CI pending. Continue versioned extensions as plugin development requires.
+
+#292 SDK CI success and installation confirmed on 2026-11-28. GoldAPI runtime unchanged; individual device template tests pending. See CURRENT_STATUS.md.
