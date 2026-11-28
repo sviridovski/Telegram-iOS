@@ -13,6 +13,7 @@ personal_sample = source.split('static let personalExample = #"""\n',1)[1].split
 searchdoc_sample = source.split('static let searchDocumentsExample = #"""\n',1)[1].split('\n"""#',1)[0]
 update_sample = source.split('static let updateExampleV1 = #"""\n',1)[1].split('\n"""#',1)[0]
 diag_sample = source.split('static let diagnosticsExample = #"""\n',1)[1].split('\n"""#',1)[0]
+ai_engine_sample = source.split('static let aiEngineExample = #"""\n',1)[1].split('\n"""#',1)[0]
 sdk_dir = root / "build-system/gold-next/sdk"
 sdk_examples = {name: (sdk_dir / (name + ".js")).read_text(encoding="utf-8") for name in ("starter", "search", "documents", "ai")}
 sdk_contract = json.loads((sdk_dir / "contract.json").read_text(encoding="utf-8"))
@@ -22,14 +23,15 @@ assert native_permissions is not None
 assert sorted(json.loads(native_permissions.group(1))) == sdk_contract["permissions"]
 for name, code in sdk_examples.items():
     assert len(code.encode("utf-8")) <= 512 * 1024, name
-    assert "// @requiresGoldAPI " + sdk_contract["goldApi"] in code, name
+    minimum = re.search(r"^// @requiresGoldAPI ([0-9.]+)$", code, re.M)
+    assert minimum and tuple(map(int, minimum.group(1).split("."))) <= tuple(map(int, sdk_contract["goldApi"].split("."))), name
     declared = re.findall(r"^// @permission\.([^\s]+) (required|optional)$", code, re.M)
     assert declared and len({key for key, _ in declared}) == len(declared), name
     assert all(key in sdk_contract["permissions"] for key, _ in declared), name
 harness = """
 const assert = require('node:assert/strict');
 let result, requests=[], failModels=false, personalChoice="favorites";
-global.self = {postMessage: raw => {const v=JSON.parse(raw);if(v.rpc!==undefined){requests.push(v);const isModels=v.args.url==="https://api.deepseek.com/models";if(v.args.progress)self.onmessage({data:{rpcProgress:v.rpc,event:{text:"partial",thinking:false,done:false}}});const response=v.method==="gold.search.history"?{value:{items:[{id:"1",text:"synthetic test",timestamp:123}],scope:"currentPeerHistory",complete:false,serverCompleted:true,truncated:false}}:v.method==="gold.documents.pickText"?{value:{name:"test.docx",format:"docx",text:"Hello world",bytes:100,pageCount:0,truncated:false}}:v.method==="ui.select"?{value:v.args.title==="Личные данные"?personalChoice:"0"}:v.method==="gold.favorites.search"?{value:{items:[{title:"Test chat",folder:"Test",note:"synthetic",tags:[]}],matched:1,scope:"currentPeer",complete:true}}:v.method==="gold.favorites.selected"?{value:{title:"Test chat",folder:"Test"}}:v.method==="gold.favorites.addSelected"?{status:"saved"}:v.method==="gold.favorites.removeSelected"?{status:"removed"}:v.method==="gold.contacts.current"||v.method==="gold.contacts.selected"?{value:{name:"Test user",username:"test",card:{alias:"Test alias",note:"Test note"}}}:v.method==="gold.speech.voices"?{voices:[{id:"mock-ru",name:"Mock",language:"ru-RU"}]}:v.method==="gold.speech.speak"?{status:"ended",started:true}:v.method==="gold.speech.stop"?{stopped:false}:isModels?{status:failModels?503:200,body:JSON.stringify({object:"list",data:[{id:"fresh-model",object:"model"}]})}:{status:200,body:'{"choices":[{"message":{"content":"mock answer"}}]}'};self.onmessage({data:{rpcResult:v.rpc,result:response}});}else result=v;}};
+global.self = {postMessage: raw => {const v=JSON.parse(raw);if(v.rpc!==undefined){requests.push(v);if(v.method==="gold.ai.balance"){self.onmessage({data:{rpcResult:v.rpc,result:{value:{is_available:true,balance_infos:[{currency:"USD",total_balance:"2.50",granted_balance:"0.50",topped_up_balance:"2.00"}]}}}});return;}if(v.method==="gold.ai.usage"){self.onmessage({data:{rpcResult:v.rpc,result:{value:{requests:2,requestsWithUsage:1,totals:{total_tokens:12}}}}});return;}const isModels=v.args.url==="https://api.deepseek.com/models";if(v.args.progress)self.onmessage({data:{rpcProgress:v.rpc,event:{text:"partial",thinking:false,done:false}}});const response=v.method==="gold.search.history"?{value:{items:[{id:"1",text:"synthetic test",timestamp:123}],scope:"currentPeerHistory",complete:false,serverCompleted:true,truncated:false}}:v.method==="gold.documents.pickText"?{value:{name:"test.docx",format:"docx",text:"Hello world",bytes:100,pageCount:0,truncated:false}}:v.method==="ui.select"?{value:v.args.title==="Личные данные"?personalChoice:"0"}:v.method==="gold.favorites.search"?{value:{items:[{title:"Test chat",folder:"Test",note:"synthetic",tags:[]}],matched:1,scope:"currentPeer",complete:true}}:v.method==="gold.favorites.selected"?{value:{title:"Test chat",folder:"Test"}}:v.method==="gold.favorites.addSelected"?{status:"saved"}:v.method==="gold.favorites.removeSelected"?{status:"removed"}:v.method==="gold.contacts.current"||v.method==="gold.contacts.selected"?{value:{name:"Test user",username:"test",card:{alias:"Test alias",note:"Test note"}}}:v.method==="gold.speech.voices"?{voices:[{id:"mock-ru",name:"Mock",language:"ru-RU"}]}:v.method==="gold.speech.speak"?{status:"ended",started:true}:v.method==="gold.speech.stop"?{stopped:false}:isModels?{status:failModels?503:200,body:JSON.stringify({object:"list",data:[{id:"fresh-model",object:"model"}]})}:{status:200,body:'{"model":"mock-model","usage":{"total_tokens":12,"prompt_tokens":8,"completion_tokens":4,"completion_tokens_details":{"reasoning_tokens":2}},"choices":[{"message":{"content":"mock answer"}}]}',durationMs:123};self.onmessage({data:{rpcResult:v.rpc,result:response}});}else result=v;}};
 """ + worker + """
 goldWorkerMain();
 const sample = """ + json.dumps(example) + """;
@@ -187,7 +189,7 @@ console.log('Goldgram #280 caption text independent of media grant, metadata rem
 const goldGrants=[...compat,'gold.ai','gold.documents','gold.search'];
 const goldCapsScript='GGAPI.storage.set("version",GoldAPI.runtime.apiVersion());GGAPI.storage.set("caps",GoldAPI.runtime.capabilities());GGAPI.storage.set("fake",GoldAPI.runtime.has("speech.say"));';
 await self.onmessage({data:{source:goldCapsScript,grants:compat,event:"settings.action"}});
-assert.equal(result.storage.version,"1.3.0");assert.equal(result.storage.caps.length,20);assert.equal(result.storage.caps.every(c=>!c.available),true);assert.equal(result.storage.fake,false);
+assert.equal(result.storage.version,"1.4.0");assert.equal(result.storage.caps.length,22);assert.equal(result.storage.caps.every(c=>!c.available),true);assert.equal(result.storage.fake,false);
 await self.onmessage({data:{source:goldCapsScript,grants:goldGrants,event:"settings.action",managedKey:true}});
 assert.equal(result.storage.caps.find(c=>c.name==="ai.complete").available,true);assert.equal(result.storage.caps.find(c=>c.name==="search.messages").available,false);
 await self.onmessage({data:{source:goldCapsScript,grants:goldGrants,event:"plugin.start",managedKey:true}});
@@ -412,6 +414,31 @@ assert.ok(aiDenied.output.text.includes("Нет ключа"));assert.equal(reque
 const aiResult=await sdkRun("ai","settings.action",{key:"generate",managedKey:true,settings:{model:"deepseek-chat",prompt:"synthetic prompt",sample:"synthetic text"}});
 assert.equal(aiResult.output.text,"mock answer");assert.equal(requests.at(-1).method,"gold.ai.complete");assert.equal(JSON.parse(requests.at(-1).args.body).messages[1].content,"synthetic text");
 console.log("Goldgram SDK 1.0 contract and four example plugins passed");
+
+const aiEngine = """ + json.dumps(ai_engine_sample) + """;
+const aiEngineGrants=sdkGrants(aiEngine);
+const beforeEngine=requests.length;
+await self.onmessage({data:{source:aiEngine,grants:aiEngineGrants,event:"plugin.start",managedKey:true}});
+assert.ok(!result.error);assert.equal(requests.length,beforeEngine);
+await self.onmessage({data:{source:aiEngine,grants:aiEngineGrants,event:"settings.action",key:"balance",managedKey:true}});
+assert.ok(result.output.text.includes("USD 2.50"));assert.equal(requests.at(-1).method,"gold.ai.balance");assert.deepEqual(requests.at(-1).args,{});
+await self.onmessage({data:{source:aiEngine,grants:aiEngineGrants,event:"settings.action",key:"usage",managedKey:false}});
+assert.ok(result.output.text.includes("Последние запросы: 2"));assert.equal(requests.at(-1).method,"gold.ai.usage");
+const deniedBefore=requests.length;
+await self.onmessage({data:{source:aiEngine,grants:aiEngineGrants.filter(x=>x!=="gold.ai.balance"),event:"settings.action",key:"balance",managedKey:true}});
+assert.equal(requests.length,deniedBefore);
+await self.onmessage({data:{source:aiEngine,grants:aiEngineGrants,event:"settings.action",key:"generate",managedKey:true,settings:{thinking:true,model:"mock-model"}}});
+assert.ok(result.output.text.includes("Токены: 12"));assert.ok(result.output.text.includes("123 ms"));
+const engineBody=JSON.parse(requests.at(-1).args.body);
+assert.equal(engineBody.thinking.type,"enabled");assert.equal(engineBody.reasoning_effort,"low");
+const enhancedAI='GGAPI.events.on("settings.action",async()=>GGAPI.storage.set("enhanced",await GoldAPI.ai.complete({model:"mock-model",prompt:"p",text:"t",thinking:false,timeoutMs:12000})));';
+await self.onmessage({data:{source:enhancedAI,grants:goldGrants,event:"settings.action",managedKey:true}});
+assert.equal(result.storage.enhanced.usage.reasoning_tokens,2);assert.equal(result.storage.enhanced.model,"mock-model");assert.equal(result.storage.enhanced.durationMs,123);assert.equal(requests.at(-1).args.timeoutMs,12000);
+const invalidBefore=requests.length;
+await self.onmessage({data:{source:enhancedAI.replace("thinking:false","thinking:false,reasoningEffort:'max'"),grants:goldGrants,event:"settings.action",managedKey:true}});
+assert.ok(result.error);assert.equal(requests.length,invalidBefore);
+console.log("Goldgram AI Engine 1.4 contracts passed");
+
 
 })().catch(e=>{console.error(e);process.exit(1)});
 """

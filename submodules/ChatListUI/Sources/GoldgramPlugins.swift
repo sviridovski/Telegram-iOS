@@ -7,7 +7,7 @@ import AVFoundation
 // #267: deliberately foreground, on-demand and local-only. Never expose Telegram,
 // account objects, credentials, filesystem or network to imported JavaScript.
 private struct GoldgramPluginManifest {
-    static let supported: Set<String> = ["settings.read", "events", "console", "ui.read", "storage", "chat.read", "chat.write", "messages.read", "network.fetch", "ui.mutate", "clipboard", "media.read", "gold.ai", "gold.search", "gold.documents", "gold.speech", "gold.favorites", "gold.contacts", "gold.search.history", "gold.documents.import"]
+    static let supported: Set<String> = ["settings.read", "events", "console", "ui.read", "storage", "chat.read", "chat.write", "messages.read", "network.fetch", "ui.mutate", "clipboard", "media.read", "gold.ai", "gold.search", "gold.documents", "gold.speech", "gold.favorites", "gold.contacts", "gold.search.history", "gold.documents.import", "gold.ai.balance", "gold.ai.usage"]
     let name: String
     let version: String
     let author: String
@@ -114,7 +114,7 @@ private struct GoldgramPluginRecord: Codable {
 
 // Explicit update of a selected local plugin; never infer identity from a file name.
 private enum GoldgramPluginUpdate {
-    static let hostVersion = "1.3.0"
+    static let hostVersion = "1.4.0"
     static func version(_ value: String) -> [Int]? {
         let parts = value.split(separator: ".", omittingEmptySubsequences: false)
         guard (1...3).contains(parts.count) else { return nil }
@@ -676,6 +676,13 @@ private final class GoldgramPluginRun: NSObject, WKNavigationDelegate, WKScriptM
                       !selectedMethod || grants.contains("messages.read"), let personal else { callback(["error": "Permission denied"]); return }
                 personal.perform(method, args: args, completion: callback); return
             }
+            if method == "gold.ai.balance", grants.contains("gold.ai"), grants.contains("network.fetch"), grants.contains("gold.ai.balance"), args.isEmpty {
+                broker.fetch(["url":"https://api.deepseek.com/user/balance","method":"GET"], allowBalance: true, completion: diagnosticNetworkCallback(callback))
+                return
+            }
+            if method == "gold.ai.usage", grants.contains("gold.ai"), grants.contains("network.fetch"), grants.contains("gold.ai.usage"), args.isEmpty {
+                callback(["value":broker.usageReport()]); return
+            }
             if method == "network.fetch", grants.contains("network.fetch") {
                 broker.fetch(args, progress: { [weak self] event in
                     if args["progress"] as? Bool == true { self?.replyProgress(rpc, event: event) }
@@ -907,6 +914,8 @@ function goldWorkerMain() {
       "ai.complete":{grants:["gold.ai","network.fetch"],scope:"deepseek.explicit",active:goldInteractive&&p.managedKey===true},
       "ai.models":{grants:["gold.ai","network.fetch"],scope:"deepseek.cache",active:!passive},
       "ai.refreshModels":{grants:["gold.ai","network.fetch"],scope:"deepseek.explicit",active:goldInteractive&&p.managedKey===true},
+      "ai.balance":{grants:["gold.ai","network.fetch","gold.ai.balance"],scope:"deepseek.accountBalance",active:goldInteractive&&p.managedKey===true},
+      "ai.usage":{grants:["gold.ai","network.fetch","gold.ai.usage"],scope:"localPluginRetainedRequests",active:goldInteractive},
       "search.messages":{grants:["gold.search","chat.read","messages.read"],scope:"visibleSnapshot",active:goldInteractive&&!!ctx.peerId},
       "documents.analyze":{grants:["gold.documents"],scope:"providedText",active:goldInteractive},
       "documents.saveText":{grants:["gold.documents","storage"],scope:"pluginFiles",active:goldInteractive},
@@ -928,29 +937,41 @@ function goldWorkerMain() {
     const goldHas=name=>own(goldPolicy,name)&&goldPolicy[name].active&&goldPolicy[name].grants.every(allowed);
     const goldNeed=name=>{if(!goldHas(name))throw Error("GoldAPI unavailable: "+name);};
     const goldCaps=()=>Object.keys(goldPolicy).map(name=>({name,scope:goldPolicy[name].scope,permissions:[...goldPolicy[name].grants],granted:goldPolicy[name].grants.every(allowed),available:goldHas(name)}));
-    const gold={runtime:Object.freeze({apiVersion:()=>"1.3.0",has:goldHas,capabilities:goldCaps})};
+    const gold={runtime:Object.freeze({apiVersion:()=>"1.4.0",has:goldHas,capabilities:goldCaps})};
     const byteCount=text=>{let n=0;for(const ch of text){const cp=ch.codePointAt(0);n+=cp<=127?1:cp<=2047?2:cp<=65535?3:4;}return n;};
     const checkedText=(v,max)=>{if(typeof v!=="string"||byteCount(v)>max)throw Error("Invalid or oversized text");return v;};
     if(allowed("gold.ai")&&allowed("network.fetch")){
       gold.ai=Object.freeze({
         models:()=>{goldNeed("ai.models");return base.network.models();},
         refreshModels:async(force=false)=>{goldNeed("ai.refreshModels");return base.network.refreshModels(force===true);},
+        balance:async()=>{goldNeed("ai.balance");const r=await rpc("gold.ai.balance",{});return r.value;},
+        usage:async()=>{goldNeed("ai.usage");const r=await rpc("gold.ai.usage",{});return r.value;},
         complete:async(options,onProgress)=>{
           goldNeed("ai.complete");
-          if(!options||typeof options!=="object"||Array.isArray(options)||Object.keys(options).some(k=>!["model","prompt","text","maxTokens","temperature"].includes(k)))throw Error("Invalid AI options");
-          const {model,prompt,text,maxTokens=900,temperature}=options;
+          if(!options||typeof options!=="object"||Array.isArray(options)||Object.keys(options).some(k=>!["model","prompt","text","maxTokens","temperature","thinking","reasoningEffort","timeoutMs"].includes(k)))throw Error("Invalid AI options");
+          const {model,prompt,text,maxTokens=900,temperature,thinking,reasoningEffort,timeoutMs=75000}=options;
           if(typeof model!=="string"||!model.trim()||model.length>100||!Number.isInteger(maxTokens)||maxTokens<1||maxTokens>2048)throw Error("Invalid model or maxTokens");
           checkedText(prompt,16000);checkedText(text,28000);
           if(!prompt.trim()||!text.trim())throw Error("Prompt and text required");
           const body={model,messages:[{role:"system",content:prompt},{role:"user",content:text}],max_tokens:maxTokens};
           if(temperature!==undefined){if(!Number.isFinite(temperature)||temperature<0||temperature>2)throw Error("Invalid temperature");body.temperature=temperature;}
+          if(thinking!==undefined){if(typeof thinking!=="boolean")throw Error("Invalid thinking mode");body.thinking={type:thinking?"enabled":"disabled"};}
+          if(reasoningEffort!==undefined){if(!["low","high","max"].includes(reasoningEffort)||thinking===false)throw Error("Invalid reasoning effort");body.reasoning_effort=reasoningEffort;}
+          if(!Number.isInteger(timeoutMs)||timeoutMs<1000||timeoutMs>240000)throw Error("Invalid timeout");
           const raw=JSON.stringify(body);checkedText(raw,48000);
           const progress=p.streamingEnabled===true&&typeof onProgress==="function"?onProgress:null;
-          const r=await rpc("gold.ai.complete",{url:"https://api.deepseek.com/chat/completions",method:"POST",body:raw,timeoutMs:75000,progress:!!progress},progress);
+          const r=await rpc("gold.ai.complete",{url:"https://api.deepseek.com/chat/completions",method:"POST",body:raw,timeoutMs,progress:!!progress},progress);
           if(r.status!==200)throw Error("AI HTTP "+r.status);
           const data=JSON.parse(r.body),choice=data.choices?.[0],answer=choice?.message?.content;
           if(typeof answer!=="string"||!answer.trim()||byteCount(answer)>64000)throw Error("Invalid AI response");
-          return {text:answer,partial:data.goldgram_partial===true,finishReason:typeof choice.finish_reason==="string"?choice.finish_reason:null};
+          const partial=data.goldgram_partial===true, usage={};
+          if(!partial&&data.usage&&typeof data.usage==="object"){
+            for(const key of ["prompt_tokens","completion_tokens","total_tokens","prompt_cache_hit_tokens","prompt_cache_miss_tokens","reasoning_tokens"]){
+              const v=data.usage[key]??(key==="reasoning_tokens"?data.usage.completion_tokens_details?.reasoning_tokens:undefined);
+              if(Number.isInteger(v)&&v>=0&&v<=100000000)usage[key]=v;
+            }
+          }
+          return {text:answer,partial,finishReason:typeof choice.finish_reason==="string"?choice.finish_reason:null,usage:Object.keys(usage).length?usage:null,model:typeof data.model==="string"&&/^[A-Za-z0-9_.:-]{1,100}$/.test(data.model)?data.model:null,durationMs:Number.isInteger(r.durationMs)&&r.durationMs>=0&&r.durationMs<=3600000?r.durationMs:null};
         }
       });
     }
@@ -1115,7 +1136,7 @@ final class GoldgramPluginManager: UITableViewController, UIDocumentPickerDelega
     override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
         section == 0 ? (store.failure ?? "GGAPI: открытый чат и локальные настройки; подтверждения управляются для каждого плагина. Не все методы Ghostgram поддерживаются.") : "Импортируйте только доверенный код. Не вводите API-ключи в обычные настройки."
     }
-    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? (store.isCurrent() ? store.state.plugins.count : 0) : (section == 1 ? 15 : 1) }
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? (store.isCurrent() ? store.state.plugins.count : 0) : (section == 1 ? 16 : 1) }
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
         if indexPath.section == 0 {
@@ -1128,7 +1149,7 @@ final class GoldgramPluginManager: UITableViewController, UIDocumentPickerDelega
             cell.detailTextLabel?.text = "DeepSeek · промпт и плавающая кнопка"
             cell.imageView?.image = UIImage(systemName: "sparkles")
         } else {
-            cell.textLabel?.text = ["Вставить JavaScript", "Импортировать .js из файлов", "Установить тестовый плагин", "Безопасный режим", "Подтверждения плагинов", "Установить тесты многоплагинности", "Установить тест интерфейса", "Установить тест событий", "Установить тест GGAPI", "Установить тест GoldAPI", "Установить тест озвучивания", "Установить / обновить тест избранного и контактов", "Установить тест поиска и документов", "Установить тест обновления плагина", "Установить тест диагностики"][indexPath.row]
+            cell.textLabel?.text = ["Вставить JavaScript", "Импортировать .js из файлов", "Установить тестовый плагин", "Безопасный режим", "Подтверждения плагинов", "Установить тесты многоплагинности", "Установить тест интерфейса", "Установить тест событий", "Установить тест GGAPI", "Установить тест GoldAPI", "Установить тест озвучивания", "Установить / обновить тест избранного и контактов", "Установить тест поиска и документов", "Установить тест обновления плагина", "Установить тест диагностики", "Установить тест AI Engine"][indexPath.row]
             if indexPath.row == 3 { cell.detailTextLabel?.text = store.state.safe ? "Включён — выполнение заблокировано" : "Выключен" }
             if indexPath.row == 4 { cell.detailTextLabel?.text = "Запросы к сервисам и вставка ответа" }
         }
@@ -1205,6 +1226,9 @@ final class GoldgramPluginManager: UITableViewController, UIDocumentPickerDelega
         case 14:
             store.refresh()
             if !store.state.plugins.contains(where: { $0.code == Self.diagnosticsExample }) && !install(Self.diagnosticsExample) { notice("Не удалось установить тест диагностики.") }
+        case 15:
+            store.refresh()
+            if !store.state.plugins.contains(where: { $0.code == Self.aiEngineExample }) && !install(Self.aiEngineExample) { notice("Не удалось установить тест AI Engine.") }
         default:
             store.refresh()
             var next = store.state; next.safe.toggle()
@@ -1228,6 +1252,45 @@ final class GoldgramPluginManager: UITableViewController, UIDocumentPickerDelega
         tableView.reloadData(); return result
     }
     private func notice(_ text: String) { showPluginError(text) }
+    static let aiEngineExample = #"""
+// @name Goldgram AI Engine Test
+// @author Goldgram
+// @version 1.0
+// @requiresGoldAPI 1.4.0
+// @permission.settings.read required
+// @permission.events required
+// @permission.ui.read required
+// @permission.network.fetch required
+// @permission.gold.ai required
+// @permission.gold.ai.balance required
+// @permission.gold.ai.usage required
+GGAPI.settings.addSection({title:"AI Engine",items:[
+  {type:"text",key:"apiKey",title:"DeepSeek API key"},
+  {type:"select",key:"model",title:"Модель",modelSource:"deepseek",default:"deepseek-flash",options:[{value:"deepseek-flash",title:"Flash"},{value:"deepseek-v4-pro",title:"Pro"}]},
+  {type:"toggle",key:"thinking",title:"Режим мышления",default:false},
+  {type:"button",key:"balance",title:"Проверить баланс"},
+  {type:"button",key:"generate",title:"Тест генерации"},
+  {type:"button",key:"usage",title:"Локальная статистика"}
+]});
+GGAPI.events.on("settings.action",async p=>{
+  try{
+    if(p.key==="balance"){
+      if(!GoldAPI.runtime.has("ai.balance"))throw Error("Unavailable");
+      const b=await GoldAPI.ai.balance();
+      GGAPI.ui.showSheet({title:"Баланс DeepSeek",text:b.balance_infos.map(x=>x.currency+" "+x.total_balance+" (пополнено "+x.topped_up_balance+", бонус "+x.granted_balance+")").join("\n")+"\nДоступен API: "+(b.is_available?"да":"нет")});
+    }
+    if(p.key==="generate"){
+      const thinking=GGAPI.settings.getPlugin("thinking",false);
+      const a=await GoldAPI.ai.complete({model:GGAPI.settings.getPlugin("model","deepseek-flash"),prompt:"Ответь кратко.",text:"Что такое SDK?",maxTokens:256,thinking, ...(thinking?{reasoningEffort:"low"}:{})});
+      GGAPI.ui.showSheet({title:"AI Engine",text:a.text+"\nТокены: "+(a.usage?.total_tokens??"нет данных")+"\nВремя: "+(a.durationMs??"нет данных")+" ms"});
+    }
+    if(p.key==="usage"){
+      const u=await GoldAPI.ai.usage();
+      GGAPI.ui.showSheet({title:"Локальная статистика",text:"Последние запросы: "+u.requests+"\nС данными токенов: "+u.requestsWithUsage+"\nВсего известных токенов: "+(u.totals.total_tokens??"нет данных")+"\nЭто локальный журнал, не выписка расходов."});
+    }
+  }catch(_){GGAPI.ui.showSheet({title:"AI Engine",text:"Запрос отменён, отсутствует ключ/разрешение или сервис недоступен."});}
+});
+"""#
     static let diagnosticsExample = #"""
 // @name Goldgram Diagnostics Test
 // @version 1.0
@@ -2167,7 +2230,7 @@ private final class GoldgramPluginDetail: UITableViewController, UIDocumentPicke
             alert.addAction(UIAlertAction(title: "Удалить", style: .destructive) { [weak self] _ in
                 guard let self else { return }; self.store.refresh(); var next = self.store.state
                 next.plugins.removeAll { $0.id == self.id }
-                if self.store.save(next) { GoldgramPluginRun.clearDiagnostics(account: self.account, id: self.id); GoldgramAIConfig(account: self.account + "." + self.id.uuidString).clearCatalog(); self.navigationController?.popViewController(animated: true) }
+                if self.store.save(next) { GoldgramPluginRun.clearDiagnostics(account: self.account, id: self.id); let credential = GoldgramAIConfig(account: self.account + "." + self.id.uuidString); credential.clearCatalog(); credential.clearUsageLedger(); self.navigationController?.popViewController(animated: true) }
             })
             alert.addAction(UIAlertAction(title: "Отмена", style: .cancel)); present(alert, animated: true)
         }

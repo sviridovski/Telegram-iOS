@@ -1,4 +1,5 @@
 import Foundation
+import CoreFoundation
 import UIKit
 import Security
 import UniformTypeIdentifiers
@@ -14,10 +15,11 @@ public struct GoldgramAIDraft: Equatable {
 
 // #272: provider endpoint policy and sanitized model catalog; no credentials in JS.
 enum GoldgramNetworkPolicy {
-    enum Route: Equatable { case models, completion }
-    static func route(url: String?, method: String?, hasBody: Bool) -> Route? {
+    enum Route: Equatable { case models, completion, balance }
+    static func route(url: String?, method: String?, hasBody: Bool, allowBalance: Bool = false) -> Route? {
         switch (url, method) {
         case ("https://api.deepseek.com/models", "GET"): return hasBody ? nil : .models
+        case ("https://api.deepseek.com/user/balance", "GET"): return !hasBody && allowBalance ? .balance : nil
         case ("https://api.deepseek.com/chat/completions", "POST"): return hasBody ? .completion : nil
         default: return nil
         }
@@ -54,6 +56,91 @@ enum GoldgramNetworkPolicy {
     static func fresh(updated: Double, now: Double) -> Bool { updated > 0 && now >= updated && now - updated < 86400 }
 }
 
+// BEGIN GOLDGRAM_AI_USAGE_V1
+enum GoldgramAIUsagePolicy {
+    static func integer(_ value: Any?) -> Int? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+              number.doubleValue.isFinite, number.doubleValue >= 0, number.doubleValue <= 100_000_000,
+              number.doubleValue.rounded() == number.doubleValue else { return nil }
+        return Int(number.doubleValue)
+    }
+    static func tokens(_ raw: Any?) -> [String: Int] {
+        guard let root = raw as? [String: Any] else { return [:] }
+        var result: [String: Int] = [:]
+        for key in ["prompt_tokens", "completion_tokens", "total_tokens", "prompt_cache_hit_tokens", "prompt_cache_miss_tokens"] {
+            if let n = integer(root[key]) { result[key] = n }
+        }
+        if let details = root["completion_tokens_details"] as? [String: Any], let n = integer(details["reasoning_tokens"]) {
+            result["reasoning_tokens"] = n
+        }
+        return result
+    }
+    static func balance(_ data: Data) -> [String: Any]? {
+        guard data.count <= 16 * 1024,
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let available = root["is_available"] as? NSNumber, CFGetTypeID(available) == CFBooleanGetTypeID(),
+              let rows = root["balance_infos"] as? [[String: Any]], !rows.isEmpty, rows.count <= 2 else { return nil }
+        var seen = Set<String>()
+        var clean: [[String: String]] = []
+        for row in rows {
+            guard let currency = row["currency"] as? String, ["CNY", "USD"].contains(currency), seen.insert(currency).inserted else { return nil }
+            var entry = ["currency": currency]
+            for field in ["total_balance", "granted_balance", "topped_up_balance"] {
+                guard let value = row[field] as? String, value.utf8.count <= 32,
+                      value.range(of: #"^-?[0-9]{1,16}(\.[0-9]{1,12})?$"#, options: .regularExpression) != nil,
+                      Decimal(string: value, locale: Locale(identifier: "en_US_POSIX")) != nil else { return nil }
+                entry[field] = value
+            }
+            clean.append(entry)
+        }
+        return ["is_available": available.boolValue, "balance_infos": clean]
+    }
+    static func elapsed(_ start: TimeInterval, now: TimeInterval) -> Int {
+        let ms = (now - start) * 1000
+        guard ms.isFinite else { return 0 }
+        return Int(max(0, min(3_600_000, ms.rounded())))
+    }
+    static func report(_ records: [GoldgramAIUsageRecord]) -> [String: Any] {
+        var totals: [String: Int64] = [:]
+        var outcomes: [String: Int] = [:]
+        for record in records {
+            outcomes[record.outcome, default: 0] += 1
+            for (key, value) in record.tokens { totals[key, default: 0] += Int64(value) }
+        }
+        let rows = records.map { item -> [String: Any] in
+            var row: [String: Any] = ["timestamp": item.timestamp, "durationMs": item.durationMs, "outcome": item.outcome, "usage": item.tokens]
+            if let model = item.model { row["model"] = model }
+            if let status = item.httpStatus { row["httpStatus"] = status }
+            return row
+        }
+        return ["scope": "localPluginRetainedRequests", "capacity": 128, "requests": records.count,
+                "requestsWithUsage": records.filter { !$0.tokens.isEmpty }.count, "totals": totals,
+                "outcomes": outcomes, "records": rows, "cost": NSNull()]
+    }
+}
+struct GoldgramAIUsageRecord: Codable {
+    let timestamp: Double
+    let durationMs: Int
+    let outcome: String
+    let model: String?
+    let httpStatus: Int?
+    let tokens: [String: Int]
+}
+struct GoldgramAIUsageLedger {
+    private(set) var records: [GoldgramAIUsageRecord] = []
+    init(data: Data?) {
+        guard let data, data.count <= 128 * 1024,
+              let decoded = try? JSONDecoder().decode([GoldgramAIUsageRecord].self, from: data) else { return }
+        records = Array(decoded.suffix(128))
+    }
+    mutating func append(_ record: GoldgramAIUsageRecord) {
+        records.append(record)
+        if records.count > 128 { records.removeFirst(records.count - 128) }
+    }
+    func encoded() -> Data? { try? JSONEncoder().encode(records) }
+}
+// END GOLDGRAM_AI_USAGE_V1
+
 struct GoldgramAIConfig {
     let account: String
     private var prefix: String { "goldgram.ai.v1." + account + "." }
@@ -77,6 +164,16 @@ struct GoldgramAIConfig {
         get { (UserDefaults.standard.object(forKey: prefix + "horizontal") as? NSNumber)?.doubleValue ?? 0.0 }
         nonmutating set { UserDefaults.standard.set(newValue, forKey: prefix + "horizontal") }
     }
+    private var usageLedgerKey: String { prefix + "usageLedger.v1" }
+    func recordUsage(_ record: GoldgramAIUsageRecord) {
+        var ledger = GoldgramAIUsageLedger(data: UserDefaults.standard.data(forKey: usageLedgerKey))
+        ledger.append(record)
+        if let data = ledger.encoded(), data.count <= 128 * 1024 { UserDefaults.standard.set(data, forKey: usageLedgerKey) }
+    }
+    func usageReport() -> [String: Any] {
+        GoldgramAIUsagePolicy.report(GoldgramAIUsageLedger(data: UserDefaults.standard.data(forKey: usageLedgerKey)).records)
+    }
+    func clearUsageLedger() { UserDefaults.standard.removeObject(forKey: usageLedgerKey) }
     private var streamUsageKey: String { prefix + "streamUsage.v1" }
     var lastStreamUsage: [String: Int]? { UserDefaults.standard.dictionary(forKey: streamUsageKey) as? [String: Int] }
     func saveStreamUsage(_ usage: [String: Int]) { UserDefaults.standard.set(usage, forKey: streamUsageKey) }
@@ -595,6 +692,7 @@ struct GoldgramSSEParser {
     private(set) var text = ""
     private(set) var thinking = false
     private(set) var usage: [String: Int] = [:]
+    private(set) var model: String?
     private(set) var reason = "stop"
     private var sawFinish = false
     private(set) var done = false
@@ -630,11 +728,8 @@ struct GoldgramSSEParser {
         if value == "[DONE]" { guard sawFinish else { return false }; done = true; thinking = false; return true }
         guard let root = try? JSONSerialization.jsonObject(with: Data(value.utf8)) as? [String: Any],
               (root["error"] == nil || root["error"] is NSNull), let choices = root["choices"] as? [[String: Any]], choices.count <= 1 else { return false }
-        if let tokens = root["usage"] as? [String: Any] {
-            for key in ["prompt_tokens", "completion_tokens", "total_tokens", "prompt_cache_hit_tokens", "prompt_cache_miss_tokens"] {
-                if let n = tokens[key] as? Int, n >= 0, n <= 100_000_000 { usage[key] = n }
-            }
-        }
+        if let reported = root["model"] as? String, GoldgramNetworkPolicy.modelID(reported) { model = reported }
+        for (key, n) in GoldgramAIUsagePolicy.tokens(root["usage"]) { usage[key] = n }
         if let choice = choices.first {
             if let delta = choice["delta"] as? [String: Any] {
                 if let reasoning = delta["reasoning_content"] as? String, !reasoning.isEmpty { thinking = true }
@@ -654,6 +749,7 @@ struct GoldgramSSEParser {
     func response(partial: Bool) -> [String: Any] {
         var root: [String: Any] = ["choices": [["message": ["role": "assistant", "content": text], "finish_reason": partial ? "cancelled" : reason]], "goldgram_partial": partial]
         if !usage.isEmpty { root["usage"] = usage }
+        if let model { root["model"] = model }
         return root
     }
 }
@@ -769,8 +865,22 @@ final class GoldgramPluginNetwork: NSObject, UIDocumentPickerDelegate {
     private var streamPanel: GoldgramStreamPanel?
     private var streamGuard: (() -> Bool)?
     private var activeOptions = GoldgramStreamOptions()
+    private var usageStart: (timestamp: Double, uptime: TimeInterval)?
+    private func beginUsage() {
+        usageStart = (Date().timeIntervalSince1970, ProcessInfo.processInfo.systemUptime)
+    }
+    @discardableResult private func endUsage(_ outcome: String, status: Int? = nil, model: String? = nil, tokens: [String: Int] = [:]) -> Int? {
+        guard let start = usageStart else { return nil }
+        usageStart = nil
+        let duration = GoldgramAIUsagePolicy.elapsed(start.uptime, now: ProcessInfo.processInfo.systemUptime)
+        let safeModel = model.flatMap { GoldgramNetworkPolicy.modelID($0) ? $0 : nil }
+        config.recordUsage(GoldgramAIUsageRecord(timestamp: start.timestamp, durationMs: duration, outcome: outcome, model: safeModel, httpStatus: status, tokens: tokens))
+        return duration
+    }
+    func usageReport() -> [String: Any] { config.usageReport() }
     init(config: GoldgramAIConfig, presenter: UIViewController, valid: @escaping () -> Bool, skipRequestConfirmation: @escaping () -> Bool = { false }, streamingOptions: @escaping () -> GoldgramStreamOptions = { GoldgramStreamOptions() }) { self.config = config; self.presenter = presenter; self.valid = valid; self.skipRequestConfirmation = skipRequestConfirmation; self.streamingOptions = streamingOptions; super.init() }
     func cancel() {
+        _ = endUsage("cancelled")
         cancelled = true; streamID = nil; streamReply = nil; streamGuard = nil; streamState = nil; streamPanel?.removeFromSuperview(); streamPanel = nil
         task?.cancel(); session?.invalidateAndCancel(); task = nil; session = nil
         if let alert, alert.presentingViewController != nil { alert.dismiss(animated: false) }
@@ -824,14 +934,18 @@ final class GoldgramPluginNetwork: NSObject, UIDocumentPickerDelegate {
         streamID = nil; streamReply = nil; streamGuard = nil; streamState = nil; busy = false
         streamPanel?.removeFromSuperview(); streamPanel = nil
         task?.cancel(); session?.invalidateAndCancel(); task = nil; session = nil
-        guard allowed else { reply?(["error":"request_cancelled"]); return }
+        guard allowed else { endUsage("cancelled"); reply?(["error":"request_cancelled"]); return }
         guard let value, let data = try? JSONSerialization.data(withJSONObject: value.response(partial: partial)), let body = String(data: data, encoding: .utf8) else {
+            endUsage(error == "request_cancelled" ? "cancelled" : "failed")
             reply?(["error":error ?? "Invalid stream"]); return
         }
         if activeOptions.usage, !partial {
             if value.usage.isEmpty { config.clearStreamUsage() } else { config.saveStreamUsage(value.usage) }
         }
-        reply?(["status":200,"body":body])
+        let duration = endUsage(partial ? "partial" : "completed", status: partial ? nil : 200, model: value.model, tokens: partial ? [:] : value.usage)
+        var response: [String: Any] = ["status":200,"body":body]
+        if let duration { response["durationMs"] = duration }
+        reply?(response)
     }
     private func startStream(_ request: URLRequest, config sessionConfig: URLSessionConfiguration, options: GoldgramStreamOptions, key: String, progress: @escaping ([String: Any]) -> Void, completion: @escaping ([String: Any]) -> Void) {
         guard !cancelled, valid(), streamingOptions() == options, self.config.readKey() == key, let presenter, let host = presenter.viewIfLoaded, host.window != nil else { busy = false; completion(["error":"request_cancelled"]); return }
@@ -863,13 +977,13 @@ final class GoldgramPluginNetwork: NSObject, UIDocumentPickerDelegate {
         })
         let session = URLSession(configuration: sessionConfig, delegate: transport, delegateQueue: nil)
         self.session = session
-        let task = session.dataTask(with: request); self.task = task; task.resume()
+        let task = session.dataTask(with: request); self.task = task; beginUsage(); task.resume()
     }
-    func fetch(_ args: [String: Any], progress: @escaping ([String: Any]) -> Void = { _ in }, completion: @escaping ([String: Any]) -> Void) {
+    func fetch(_ args: [String: Any], allowBalance: Bool = false, progress: @escaping ([String: Any]) -> Void = { _ in }, completion: @escaping ([String: Any]) -> Void) {
         let raw = args["body"]
         let hasBody = raw != nil && !(raw is NSNull)
         guard !cancelled, !busy, valid(), count < 3, let key = config.readKey(),
-              let route = GoldgramNetworkPolicy.route(url: args["url"] as? String, method: args["method"] as? String, hasBody: hasBody) else {
+              let route = GoldgramNetworkPolicy.route(url: args["url"] as? String, method: args["method"] as? String, hasBody: hasBody, allowBalance: allowBalance) else {
             completion(["error":"Нет ключа, разрешения или поддерживаемого адреса/метода."]); return
         }
         let options = streamingOptions()
@@ -884,6 +998,10 @@ final class GoldgramPluginNetwork: NSObject, UIDocumentPickerDelegate {
             url = URL(string: "https://api.deepseek.com/models")!
             method = "GET"; title = "Обновить каталог DeepSeek?"
             message = "Запрос списка моделей. Переписка, промпты и файлы не передаются."
+        case .balance:
+            url = URL(string: "https://api.deepseek.com/user/balance")!
+            method = "GET"; title = "Проверить баланс DeepSeek?"
+            message = "Только запрос баланса аккаунта по ключу этого плагина. Переписка и файлы не передаются."
         case .completion:
             guard let raw = raw as? String, raw.utf8.count <= 48000,
                   let body = try? JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any],
@@ -902,7 +1020,7 @@ final class GoldgramPluginNetwork: NSObject, UIDocumentPickerDelegate {
             method = "POST"; payload = data; title = "Передать данные плагина в DeepSeek?"
             message = "Модель: "+model+"\n\nПромпт:\n"+prompt+"\n\nТекст:\n"+text
         }
-        let ms = max(1000,min(route == .models ? 30000 : 240000,args["timeoutMs"] as? Int ?? (route == .models ? 15000 : 75000)))
+        let ms = max(1000,min(route != .completion ? 30000 : 240000,args["timeoutMs"] as? Int ?? (route != .completion ? 15000 : 75000)))
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: Double(ms)/1000)
         request.httpMethod = method; request.httpBody = payload
         request.setValue(streaming ? "text/event-stream" : "application/json", forHTTPHeaderField: "Accept")
@@ -926,7 +1044,14 @@ final class GoldgramPluginNetwork: NSObject, UIDocumentPickerDelegate {
                     DispatchQueue.main.async { [weak self] in
                         guard let self, !self.cancelled else { return }
                         self.busy = false; self.task = nil; self.session?.finishTasksAndInvalidate(); self.session = nil
-                        guard self.valid(), self.config.readKey() == key, error == nil, let http = response as? HTTPURLResponse, let data, data.count <= 512*1024 else { completion(["error":"Network error or invalid response"]); return }
+                        guard self.valid(), self.config.readKey() == key else { self.endUsage("cancelled"); completion(["error":"request_cancelled"]); return }
+                        guard error == nil, let http = response as? HTTPURLResponse, let data, data.count <= 512*1024 else { self.endUsage("failed"); completion(["error":"Network error or invalid response"]); return }
+                        if route == .balance {
+                            guard http.statusCode == 200 else { completion(["error":"Balance HTTP \(http.statusCode)"]); return }
+                            guard var balance = GoldgramAIUsagePolicy.balance(data) else { completion(["error":"Invalid balance response"]); return }
+                            balance["updatedAt"] = Date().timeIntervalSince1970
+                            completion(["value":balance, "status":200]); return
+                        }
                         if route == .models {
                             guard http.statusCode == 200 else { completion(["status":http.statusCode,"body":"{\"error\":\"Model discovery failed\"}"]); return }
                             guard let models = GoldgramNetworkPolicy.catalog(data),
@@ -934,13 +1059,22 @@ final class GoldgramPluginNetwork: NSObject, UIDocumentPickerDelegate {
                             self.config.saveCatalog(models)
                             completion(["status":200,"body":body]); return
                         }
-                        guard let text = String(data: data, encoding: .utf8) else { completion(["error":"Invalid response"]); return }
-                        completion(["status":http.statusCode,"body":text])
+                        guard let text = String(data: data, encoding: .utf8) else { self.endUsage("failed", status: http.statusCode); completion(["error":"Invalid response"]); return }
+                        let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+                        let success = http.statusCode == 200 && (root?["choices"] as? [[String: Any]])?.isEmpty == false
+                        let duration = self.endUsage(success ? "completed" : "failed", status: http.statusCode, model: success ? root?["model"] as? String : nil, tokens: success ? GoldgramAIUsagePolicy.tokens(root?["usage"]) : [:])
+                        var response: [String: Any] = ["status":http.statusCode,"body":text]
+                        if let duration { response["durationMs"] = duration }
+                        completion(response)
                     }
                 }
-                self.task = task; task.resume()
+                self.task = task
+                if route == .completion { self.beginUsage() }
+                task.resume()
             }
-            if self.skipRequestConfirmation() { send(); return }
+            if route != .balance {
+                if self.skipRequestConfirmation() { send(); return }
+            }
             guard presenter.presentedViewController == nil else { self.busy = false; completion(["error":"Закройте открытое окно и повторите запрос."]); return }
             let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
             self.alert = alert

@@ -110,10 +110,14 @@ print("Goldgram #271 multi-plugin source contracts passed")
 
 
 # #272 exact route allow-list, catalog sanitization, freshness and bounds.
-policy = s.split("enum GoldgramNetworkPolicy {",1)[1].split("\nstruct GoldgramAIConfig",1)[0]
+policy = s.split("enum GoldgramNetworkPolicy {",1)[1].split("// BEGIN GOLDGRAM_AI_USAGE_V1",1)[0]
 fixture = '''
 let root = "https://api.deepseek.com"
 precondition(GoldgramNetworkPolicy.route(url:root+"/models",method:"GET",hasBody:false) == .models)
+precondition(GoldgramNetworkPolicy.route(url:root+"/user/balance",method:"GET",hasBody:false) == nil)
+precondition(GoldgramNetworkPolicy.route(url:root+"/user/balance",method:"GET",hasBody:false,allowBalance:true) == .balance)
+precondition(GoldgramNetworkPolicy.route(url:root+"/user/balance",method:"GET",hasBody:true,allowBalance:true) == nil)
+precondition(GoldgramNetworkPolicy.route(url:root+"/user/balance?x=1",method:"GET",hasBody:false,allowBalance:true) == nil)
 precondition(GoldgramNetworkPolicy.route(url:root+"/models",method:"GET",hasBody:true) == nil)
 precondition(GoldgramNetworkPolicy.route(url:root+"/models?secret=x",method:"GET",hasBody:false) == nil)
 precondition(GoldgramNetworkPolicy.route(url:root+"/models",method:"POST",hasBody:true) == nil)
@@ -190,7 +194,7 @@ print("Goldgram #274 SSE parser and default options fixtures passed")
 '''
 with tempfile.TemporaryDirectory() as tmp:
     path = pathlib.Path(tmp)/"main.swift"
-    path.write_text("import Foundation\nstruct GoldgramStreamOptions:"+stream+fixture)
+    path.write_text("import Foundation\nimport CoreFoundation\nenum GoldgramNetworkPolicy {"+policy+"\n"+s.split("// BEGIN GOLDGRAM_AI_USAGE_V1\n",1)[1].split("// END GOLDGRAM_AI_USAGE_V1",1)[0]+"\nstruct GoldgramStreamOptions:"+stream+fixture)
     subprocess.run(["swift",str(path)],check=True)
 assert "streamingOptions() == options" in s and "streamGuard?() == true" in s
 assert "task?.cancel(); session?.invalidateAndCancel()" in s
@@ -233,3 +237,35 @@ assert "current.settingsSchema = schema" in plugins and "current.settingsSchema 
 assert "clearSections:" in plugins and 'result["schemaCleared"] as? Bool == true' in plugins
 assert "UISwitch()" in plugins and "UISlider()" in plugins and "UIStepper()" in plugins and "UIProgressView(" in plugins
 print("Goldgram #275 native UI and hidden-action source contracts passed")
+
+# GoldAPI 1.4 balance and bounded persistent usage ledger policy.
+usage_policy = s.split("// BEGIN GOLDGRAM_AI_USAGE_V1\n",1)[1].split("// END GOLDGRAM_AI_USAGE_V1",1)[0]
+fixture = r'''
+let sample = Data(#"{"is_available":true,"balance_infos":[{"currency":"USD","total_balance":"2.50","granted_balance":"0.50","topped_up_balance":"2.00","secret":"drop"}]}"#.utf8)
+let balance = GoldgramAIUsagePolicy.balance(sample)!
+precondition(balance["is_available"] as? Bool == true)
+let rows = balance["balance_infos"] as! [[String:String]]
+precondition(rows[0]["total_balance"] == "2.50" && rows[0]["secret"] == nil)
+precondition(GoldgramAIUsagePolicy.balance(Data(#"{"is_available":1,"balance_infos":[]}"#.utf8)) == nil)
+precondition(GoldgramAIUsagePolicy.balance(Data(#"{"is_available":true,"balance_infos":[{"currency":"USD","total_balance":"NaN","granted_balance":"0","topped_up_balance":"0"}]}"#.utf8)) == nil)
+let usage = GoldgramAIUsagePolicy.tokens(["total_tokens": 10, "prompt_tokens": true, "completion_tokens": -1, "completion_tokens_details":["reasoning_tokens": 2], "secret": 1])
+precondition(usage == ["total_tokens":10,"reasoning_tokens":2])
+precondition(GoldgramAIUsagePolicy.elapsed(10,now:10.5) == 500)
+var ledger = GoldgramAIUsageLedger(data:nil)
+for i in 0..<140 { ledger.append(GoldgramAIUsageRecord(timestamp:Double(i),durationMs:10,outcome:"completed",model:"mock",httpStatus:200,tokens:usage)) }
+precondition(ledger.records.count == 128 && ledger.records.first?.timestamp == 12)
+let restored = GoldgramAIUsageLedger(data:ledger.encoded())
+precondition(restored.records.count == 128)
+let report = GoldgramAIUsagePolicy.report(restored.records)
+precondition(report["requests"] as? Int == 128)
+precondition((report["totals"] as? [String:Int64])?["total_tokens"] == 1280)
+precondition(report["cost"] is NSNull)
+print("Goldgram AI usage/balance native policy passed")
+'''
+with tempfile.TemporaryDirectory() as tmp:
+    path = pathlib.Path(tmp)/"main.swift"
+    path.write_text("import Foundation\nimport CoreFoundation\n"+usage_policy+fixture)
+    subprocess.run(["swift",str(path)],check=True)
+assert 'allowBalance: true, completion: diagnosticNetworkCallback(callback)' in plugins
+assert 'if route != .balance {' in s
+assert 'usageStart = nil' in s and 'if route == .completion { self.beginUsage() }' in s
