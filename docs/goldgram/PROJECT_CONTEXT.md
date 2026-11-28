@@ -326,3 +326,7 @@ Workspace registry is a bounded plugin-owned logical JSON file via existing stor
 ## Workspace UI 3.0 — #299 candidate
 
 - Full tiled native editor and option selector for built-in Workspace; the existing JS registry remains sole writer, native presentation uses existing editor settings/schema, existing account/permission boundaries. Save navigation requires confirmed persisted entry and JS success output, no new data format/API/permissions. CI and real-device validation pending for fc7b5e29f492123ccbfcc0f6556d0f4b5e6daca7.
+
+## AI Search Foundation 1.0 — #300 candidate
+
+- Native GoldgramAIQueryScreen beside existing unified search: typed user query only via existing GoldgramPluginNetwork broker; dedicated account-scoped .native-search Keychain/usage/budget namespace and lease; no silent plugin key reuse. Strict bounded query-plan validator, dates calculated locally, explicit author/chat pickers and reviewed filter application. Existing search performs one selected term; no new SQLite or JS global search bridge. Shared existing UI components exposed within same module only. CI and device validation pending for ca83a98c2d80c77741281bf70452d272b3dd698a.
