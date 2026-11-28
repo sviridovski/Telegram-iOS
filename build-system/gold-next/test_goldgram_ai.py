@@ -348,3 +348,45 @@ assert '["role":"user","content":query]' in search
 assert 'self.authorHint = plan.author; self.chatHint = plan.chat' in search
 assert 'analyzed,authorHint == nil,chatHint == nil' in search
 assert 'self.updateButtons(); self.submit()' in search
+
+
+# Foundation 2.0: bounded OR terms and actual Unicode ranges.
+terms = search.split("// BEGIN GOLDGRAM_SEARCH_TERMS_V2\n",1)[1].split("// END GOLDGRAM_SEARCH_TERMS_V2",1)[0]
+fixture = r'''
+let base = GoldgramSearchTerms.base("депрессия | тревога | ДЕПРЕССИЯ")
+precondition(base == ["депрессия","тревога"])
+let expanded = GoldgramSearchTerms.expand(base,morphology:true).terms
+precondition(expanded.contains("депрессии") && expanded.contains("депрессией") && expanded.contains("депрессию"))
+precondition(GoldgramSearchTerms.expand(base,morphology:false).terms == base)
+let text = "😀 Депрессией, депрессии и депрессия. антидепрессия"
+let hits = GoldgramSearchTerms.ranges(text,terms:expanded).map { (text as NSString).substring(with:$0) }
+precondition(hits == ["Депрессией","депрессии","депрессия"])
+precondition(GoldgramSearchTerms.ranges("депрессии",terms:["депрессия"]).isEmpty)
+precondition(GoldgramSearchTerms.ranges("ЛЁША",terms:["леша"]).count == 1)
+precondition(GoldgramSearchTerms.ranges("рабочий график",terms:["рабочий график"]).count == 1)
+precondition(GoldgramSearchTerms.ranges("рабочий новый график",terms:["рабочий график"]).isEmpty)
+precondition(GoldgramSearchTerms.snippet(String(repeating:"x ",count:250)+"депрессией",terms:expanded).contains("депрессией"))
+precondition(GoldgramSearchTerms.expand(["депрессия","линия","станция","решение","событие","скорость"],morphology:true).terms.count <= GoldgramSearchTerms.limit)
+print("Foundation 2.0 search terms: 10 checks passed")
+'''
+with tempfile.TemporaryDirectory() as tmp:
+    path = pathlib.Path(tmp)/"main.swift"
+    path.write_text("import Foundation\n"+terms+fixture)
+    subprocess.run(["swift",str(path)],check=True,timeout=90)
+assert "query: remoteTerm, state: state" in search
+assert '"needle": queryTerms[index]' in search
+assert "self.remoteIndex == index" in search
+assert "private func nextRemoteTerm(" in search
+assert "self.localDone.insert(index)" in search
+assert "private func resultCard(" in search
+
+controller = (root / "submodules/TelegramUI/Sources/ChatController.swift").read_text()
+shared = (root / "submodules/TelegramUI/Sources/SharedAccountContext.swift").read_text()
+highlight = (root / "submodules/TelegramUI/Components/Chat/ChatMessageTextBubbleContentNode/Sources/ChatMessageTextBubbleContentNode.swift").read_text()
+assert "GoldgramAuthorSearchBridge.nativeSearchJump" in search and "GoldgramAuthorSearchBridge.nativeSearchJump" in shared
+assert "controllerInteraction.goldgramSearchHighlight = self.goldgramSearchHighlight" in controller
+assert "goldgram?.0 == item.message.id" in highlight
+assert "!layout.segments.contains(where: { !$0.spoilers.isEmpty })" in highlight
+assert "layout.rangeRects(in:match.range)" in highlight
+assert "private final class GoldgramSearchArchivePreview" in search
+assert "remoteRequestLimit" in search and "archiveVisited" in search

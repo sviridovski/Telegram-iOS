@@ -69,6 +69,7 @@ public class ChatMessageTextBubbleContentNode: ChatMessageBubbleContentNode {
     private var textSelectionNode: TextSelectionNode?
     
     private var textHighlightingNodes: [LinkHighlightingNode] = []
+    private var goldgramHighlightColorActive = false
     
     private var cachedChatMessageText: CachedChatMessageText?
     
@@ -1414,10 +1415,29 @@ public class ChatMessageTextBubbleContentNode: ChatMessageBubbleContentNode {
             return
         }
         let rectsSet: [[CGRect]]
-        if let text = text, let messages = messages, !text.isEmpty, messages.contains(item.message.index) {
+        let goldgram = item.controllerInteraction.goldgramSearchHighlight
+        let goldgramTarget = goldgram?.0 == item.message.id && text == nil
+        if goldgramTarget, let terms = goldgram?.1, let layout = self.textNode.textNode.cachedLayout,
+           let visible = layout.attributedString?.string, !layout.segments.contains(where: { !$0.spoilers.isEmpty }) {
+            // Use actual rendered UTF-16 ranges, not approximate word prefixes.
+            let words = terms.filter { !$0.isEmpty && $0.utf8.count <= 512 }.prefix(24).sorted { $0.count > $1.count }
+            let alternatives = words.map {
+                NSRegularExpression.escapedPattern(for:$0.lowercased().replacingOccurrences(of:"ё",with:"е")).replacingOccurrences(of:"е",with:"[её]")
+            }.joined(separator:"|")
+            if !alternatives.isEmpty, let regex = try? NSRegularExpression(pattern:"(?<![\\p{L}\\p{M}\\p{N}_])(?:"+alternatives+")(?![\\p{L}\\p{M}\\p{N}_])",options:[.caseInsensitive]) {
+                rectsSet = regex.matches(in:visible,range:NSRange(location:0,length:(visible as NSString).length)).prefix(128).compactMap { match in
+                    guard let rects = layout.rangeRects(in:match.range)?.rects, !rects.isEmpty else { return nil }
+                    return rects
+                }
+            } else { rectsSet = [] }
+        } else if let text = text, let messages = messages, !text.isEmpty, messages.contains(item.message.index) {
             rectsSet = self.textNode.textNode.textRangesRects(text: text)
         } else {
             rectsSet = []
+        }
+        if self.goldgramHighlightColorActive != goldgramTarget {
+            self.textHighlightingNodes.forEach { $0.removeFromSupernode() }; self.textHighlightingNodes.removeAll()
+            self.goldgramHighlightColorActive = goldgramTarget
         }
         for i in 0 ..< rectsSet.count {
             var rects = rectsSet[i]
@@ -1435,7 +1455,7 @@ public class ChatMessageTextBubbleContentNode: ChatMessageBubbleContentNode {
             if i < self.textHighlightingNodes.count {
                 textHighlightNode = self.textHighlightingNodes[i]
             } else {
-                textHighlightNode = LinkHighlightingNode(color: item.message.effectivelyIncoming(item.context.account.peerId) ? item.presentationData.theme.theme.chat.message.incoming.textHighlightColor : item.presentationData.theme.theme.chat.message.outgoing.textHighlightColor)
+                textHighlightNode = LinkHighlightingNode(color: goldgramTarget ? UIColor.systemYellow.withAlphaComponent(0.48) : (item.message.effectivelyIncoming(item.context.account.peerId) ? item.presentationData.theme.theme.chat.message.incoming.textHighlightColor : item.presentationData.theme.theme.chat.message.outgoing.textHighlightColor))
                 self.textHighlightingNodes.append(textHighlightNode)
                 self.containerNode.insertSubnode(textHighlightNode, belowSubnode: self.textNode.textNode)
             }

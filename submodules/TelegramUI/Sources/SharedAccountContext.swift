@@ -1305,7 +1305,7 @@ public final class SharedAccountContextImpl: SharedAccountContext {
                 if hadUpdates {
                     goldgramNativeNavigationContext = self
                     GoldgramAuthorSearchBridge.bindPrimary(context: primary)
-                    GoldgramAuthorSearchBridge.nativeJump = { [weak self = self] context, id, archiveNavigation, presenter, snapshot in
+                    GoldgramAuthorSearchBridge.nativeSearchJump = { [weak self = self] context, id, archiveNavigation, presenter, snapshot, terms in
                         guard let self, let current = self.sgPrimaryAccountContextForMigration(),
                               current.account.id == context.account.id,
                               archiveNavigation.presentingViewController == nil,
@@ -1318,9 +1318,15 @@ public final class SharedAccountContextImpl: SharedAccountContext {
                         let chat = self.makeChatController(context: current, chatLocation: .peer(id: id.peerId),
                             subject: .message(id: .id(id), highlight: ChatControllerSubject.MessageHighlight(quote: nil), timecode: nil, setupReply: false),
                             botStart: nil, mode: .standard(.default), params: nil)
+                        if let chat = chat as? ChatControllerImpl, !terms.isEmpty {
+                            chat.goldgramSearchHighlight = (id, Array(terms.prefix(24)))
+                        }
                         navigation.replaceControllersAndPush(controllers: navigation.viewControllers + [back],
                             controller: chat, animated: true)
                         return true
+                    }
+                    GoldgramAuthorSearchBridge.nativeJump = { context, id, archiveNavigation, presenter, snapshot in
+                        GoldgramAuthorSearchBridge.nativeSearchJump?(context,id,archiveNavigation,presenter,snapshot,[]) ?? false
                     }
                     goldgramRegisterNativeNavigation()
                     goldgramPublishSelectedAccount(primary?.account.peerId.id._internalGetInt64Value() ?? 0)

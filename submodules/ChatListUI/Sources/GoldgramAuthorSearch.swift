@@ -192,6 +192,7 @@ public final class GoldgramAuthorSearchBridge: NSObject {
     private static weak var primaryContext: AccountContext?
     // The TelegramUI host owns the native navigation stack and account checks.
     public static var nativeJump: ((AccountContext, EngineMessage.Id, UINavigationController, UIViewController, UIView?) -> Bool)?
+    public static var nativeSearchJump: ((AccountContext, EngineMessage.Id, UINavigationController, UIViewController, UIView?, [String]) -> Bool)?
 
     public static func bindPrimary(context: AccountContext?) {
         self.primaryContext = context
@@ -1088,8 +1089,65 @@ private struct GoldgramAIQueryPlan {
 }
 // END GOLDGRAM_AI_SEARCH_FOUNDATION
 
+// BEGIN GOLDGRAM_SEARCH_TERMS_V2
+// Bounded Russian noun paradigms, not a general morphological dictionary.
+private enum GoldgramSearchTerms {
+    static let limit = 24
+    static func normalized(_ value: String) -> String {
+        value.lowercased().replacingOccurrences(of:"ё",with:"е")
+    }
+    static func base(_ text: String) -> [String] {
+        var seen = Set<String>()
+        return Array(text.components(separatedBy:"|").compactMap { raw -> String? in
+            let value = raw.trimmingCharacters(in:.whitespacesAndNewlines)
+            return !value.isEmpty && value.count <= 200 && value.utf8.count <= 512 && seen.insert(normalized(value)).inserted ? value : nil
+        }.prefix(6))
+    }
+    static func expand(_ words: [String], morphology: Bool) -> (terms:[String], truncated:Bool) {
+        var seen = Set<String>(), result:[String] = []
+        var truncated = false
+        func add(_ word:String) {
+            guard seen.insert(normalized(word)).inserted else { return }
+            if result.count < limit { result.append(word) } else { truncated = true }
+        }
+        for word in words { add(word) }
+        if morphology {
+            for word in words {
+                let value = normalized(word)
+                guard value.range(of:"^[а-я]{4,}$",options:.regularExpression) != nil else { continue }
+                let stem:String, endings:[String]
+                if value.hasSuffix("ия") { stem = String(value.dropLast(2)); endings = ["ия","ии","ию","ией","иею","ий","иям","иями","иях"] }
+                else if value.hasSuffix("ие") { stem = String(value.dropLast(2)); endings = ["ие","ия","ию","ием","ии","ий","иям","иями","иях"] }
+                else if value.hasSuffix("ость") { stem = String(value.dropLast(4)); endings = ["ость","ости","остью","остей","остям","остями","остях"] }
+                else { continue }
+                for ending in endings { add(stem+ending) }
+            }
+        }
+        return (result,truncated)
+    }
+    static func ranges(_ text:String, terms:[String]) -> [NSRange] {
+        let ns = text as NSString
+        let words = terms.filter { !$0.isEmpty }
+        guard ns.length > 0, !words.isEmpty else { return [] }
+        let alternatives = words.sorted { $0.count > $1.count }.map {
+            NSRegularExpression.escapedPattern(for:normalized($0)).replacingOccurrences(of:"е",with:"[её]")
+        }.joined(separator:"|")
+        guard let regex = try? NSRegularExpression(pattern:"(?<![\\p{L}\\p{M}\\p{N}_])(?:"+alternatives+")(?![\\p{L}\\p{M}\\p{N}_])",options:[.caseInsensitive]) else { return [] }
+        return regex.matches(in:text,range:NSRange(location:0,length:ns.length)).prefix(128).map { $0.range }
+    }
+    static func snippet(_ text:String, terms:[String]) -> String {
+        guard let first = ranges(text,terms:terms).first, let range = Range(first,in:text) else { return String(text.prefix(240)) }
+        let start = text.index(range.lowerBound,offsetBy:-55,limitedBy:text.startIndex) ?? text.startIndex
+        let end = text.index(range.upperBound,offsetBy:150,limitedBy:text.endIndex) ?? text.endIndex
+        return (start == text.startIndex ? "" : "…") + String(text[start..<end]) + (end == text.endIndex ? "" : "…")
+    }
+}
+// END GOLDGRAM_SEARCH_TERMS_V2
+
 private struct GoldgramAIQueryFilters {
     var term: String
+    var morphology: Bool = false
+    var synonyms: Bool = true
     var source: Int
     var event: Int
     var media: Int
@@ -1210,10 +1268,12 @@ private final class GoldgramAIQueryScreen: UIViewController {
         if !idle { tileRow([("Остановить","Отменить запрос","stop.circle",{ [weak self] in self?.stop() })]) }
         caption(status)
         if analyzed {
-            caption("Предварительные фильтры · проверьте перед поиском. На этом этапе используется одно выбранное слово.")
+            caption("Предварительные фильтры · проверьте перед поиском. Альтернативы объединяются по ИЛИ.")
             tileRow([("Поисковое слово",filters.term.isEmpty ? "Без текста" : filters.term,"magnifyingglass",{ [weak self] in self?.chooseTerm() })],enabled:idle)
             if terms.count > 1 { caption("Альтернативы: "+terms.joined(separator:" · ")) }
         }
+        tileRow([("Словоформы",filters.morphology ? "Включены" : "Выключены","textformat",{ [weak self] in guard let self else { return }; self.filters.morphology.toggle(); self.render() }),
+                 ("Синонимы AI",filters.synonyms ? "Все предложенные слова" : "Одно выбранное слово","arrow.triangle.branch",{ [weak self] in guard let self else { return }; self.filters.synonyms.toggle(); self.render() })],enabled:idle)
         tileRow([("Источники",sourceNames[filters.source],"tray.full",{ [weak self] in self?.chooseSource() }),
                  ("Автор",authorHint.map { "Выбрать: "+$0 } ?? filters.authorName ?? "Любой","person.crop.circle",{ [weak self] in self?.pickAuthor() })],enabled:idle)
         tileRow([("Период",dateLabel(),"calendar",{ [weak self] in self?.choosePeriod() }),
@@ -1380,11 +1440,39 @@ private final class GoldgramAIQueryScreen: UIViewController {
     private func finish() {
         guard active,broker == nil,analyzed,authorHint == nil,chatHint == nil else { return }
         // A second explicit action: never search on receipt of the model's answer.
-        let result = filters
+        var result = filters
+        if filters.synonyms && !filters.term.isEmpty { result.term = GoldgramSearchTerms.base(([filters.term]+terms).joined(separator:"|")).joined(separator:" | ") }
         guard !result.term.isEmpty || result.authorID != nil || result.chatID != nil || result.from != nil || result.period != 0 || result.event != 0 || result.media != 0 else { notice("Уточните запрос или выберите хотя бы один фильтр."); return }
         guard let nav = navigationController else { return }
         nav.popViewController(animated:false); apply(result)
     }
+}
+
+private final class GoldgramSearchArchivePreview: UIViewController {
+    private let body:String
+    private let terms:[String]
+    private let open:()->Void
+    init(title:String,text:String,terms:[String],open:@escaping ()->Void) {
+        self.body = text; self.terms = terms; self.open = open
+        super.init(nibName:nil,bundle:nil); self.title = title
+    }
+    required init?(coder:NSCoder) { return nil }
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .systemBackground
+        let text = UITextView(); text.isEditable = false; text.isSelectable = false; text.backgroundColor = .clear
+        text.adjustsFontForContentSizeCategory = true
+        let value = NSMutableAttributedString(string:body,attributes:[.font:UIFont.preferredFont(forTextStyle:.body),.foregroundColor:UIColor.label])
+        for range in GoldgramSearchTerms.ranges(body,terms:terms) {
+            value.addAttribute(.backgroundColor,value:UIColor.systemYellow.withAlphaComponent(0.5),range:range)
+        }
+        text.attributedText = value; text.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(text)
+        NSLayoutConstraint.activate([text.topAnchor.constraint(equalTo:view.safeAreaLayoutGuide.topAnchor),text.bottomAnchor.constraint(equalTo:view.safeAreaLayoutGuide.bottomAnchor),text.leadingAnchor.constraint(equalTo:view.leadingAnchor,constant:12),text.trailingAnchor.constraint(equalTo:view.trailingAnchor,constant:-12)])
+        navigationItem.leftBarButtonItem = UIBarButtonItem(barButtonSystemItem:.close,target:self,action:#selector(close))
+        navigationItem.rightBarButtonItem = UIBarButtonItem(title:"В чат",style:.plain,target:self,action:#selector(openChat))
+    }
+    @objc private func close() { dismiss(animated:true) }
+    @objc private func openChat() { let callback = open; dismiss(animated:true,completion:callback) }
 }
 
 private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearchBarDelegate {
@@ -1423,6 +1511,19 @@ private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearch
     private var order: [EngineMessage.Id] = []
     private var generation = 0
     private var term = ""
+    private let morphology = UISwitch()
+    private let stopButton = UIButton(type:.system)
+    private var queryTerms = [""]
+    private var remoteIndex = 0
+    private var remoteRequests = 0
+    private var remoteRequestLimit: Int { max(10,240/queryTerms.count) }
+    private var localIndex = 0
+    private var localOffsets:[Int] = []
+    private var localDone = Set<Int>()
+    private var localScanned = 0
+    private var initialArchiveRound = false
+    private var archiveVisited = Set<Int>()
+    private var remoteTerm:String { queryTerms[remoteIndex] }
     private var since: Int32?
     private var requestedAuthor: EnginePeer.Id?
     private var requestedChat: EnginePeer.Id?
@@ -1465,7 +1566,7 @@ private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearch
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = "Расширенный поиск 2.0"
+        title = "Расширенный поиск 3.0"
         let ai = UIButton(type: .system)
         ai.setTitle("✦ AI-поиск", for: .normal)
         ai.titleLabel?.font = .preferredFont(forTextStyle: .headline)
@@ -1482,7 +1583,7 @@ private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearch
         source.selectedSegmentIndex = 2
         period.selectedSegmentIndex = 0
         event.selectedSegmentIndex = 0
-        input.placeholder = "Текст сообщения или редакции"
+        input.placeholder = "Слово или фразы через |"
         input.autocorrectionType = .no
         input.returnKeyType = .search
         input.delegate = self
@@ -1504,19 +1605,26 @@ private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearch
         sort.selectedSegmentIndex = 0
         sort.addTarget(self, action: #selector(filterChanged), for: .valueChanged)
         event.addTarget(self, action: #selector(eventChanged), for: .valueChanged)
+        let formLabel = UILabel(); formLabel.text = "Учитывать словоформы"; formLabel.font = .preferredFont(forTextStyle:.subheadline); formLabel.numberOfLines = 0
+        morphology.accessibilityLabel = "Учитывать словоформы"
+        morphology.addTarget(self,action:#selector(filterChanged),for:.valueChanged)
+        let formRow = UIStackView(arrangedSubviews:[formLabel,morphology]); formRow.alignment = .center; formRow.spacing = 12
+        stopButton.setTitle("Остановить поиск",for:.normal); stopButton.isEnabled = false
+        stopButton.addTarget(self,action:#selector(stopSearch),for:.touchUpInside)
+        stopButton.heightAnchor.constraint(greaterThanOrEqualToConstant:44).isActive = true
         let actions = UIStackView(arrangedSubviews: [find, reset])
         actions.distribution = .fillEqually
         let note = UILabel()
         note.font = .preferredFont(forTextStyle: .footnote)
         note.textColor = .secondaryLabel
         note.numberOfLines = 0
-        note.text = "Дата — время отправки. Тип вложений — только Telegram: архив не хранит надёжную классификацию медиа. Сортировка применяется к загруженным результатам."
+        note.text = "Слова через | — любое совпадение. Словоформы: ограниченная поддержка русских существительных. Дата — время отправки. Тип вложений — только Telegram. Сортировка по загруженным результатам."
         info.numberOfLines = 0
         info.textColor = .secondaryLabel
         info.font = .preferredFont(forTextStyle: .footnote)
         info.text = "Введите текст или выберите автора, диалог либо период."
-        let stack = UIStackView(arrangedSubviews: [ai, source, input, authorButton, dialogButton, period,
-            dateButton, mediaButton, event, sort, presetsButton, actions, note, info])
+        let stack = UIStackView(arrangedSubviews: [ai, source, input, formRow, authorButton, dialogButton, period,
+            dateButton, mediaButton, event, sort, presetsButton, actions, stopButton, note, info])
         stack.axis = .vertical
         stack.spacing = 7
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -1588,10 +1696,10 @@ private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearch
     @objc private func openAIQuery() {
         guard accountOK else { return }
         input.resignFirstResponder()
-        let filters = GoldgramAIQueryFilters(term: input.text ?? "", source: source.selectedSegmentIndex, event: event.selectedSegmentIndex, media: mediaMode, period: period.selectedSegmentIndex, oldest: sort.selectedSegmentIndex == 1, from: customFrom, through: customThrough, authorID: author?.id ?? personalAuthorId, authorName: author?.compactDisplayTitle ?? personalAuthorName, chatID: chosenChat, chatName: chosenChatName)
+        let filters = GoldgramAIQueryFilters(term: input.text ?? "", morphology: morphology.isOn, source: source.selectedSegmentIndex, event: event.selectedSegmentIndex, media: mediaMode, period: period.selectedSegmentIndex, oldest: sort.selectedSegmentIndex == 1, from: customFrom, through: customThrough, authorID: author?.id ?? personalAuthorId, authorName: author?.compactDisplayTitle ?? personalAuthorName, chatID: chosenChat, chatName: chosenChatName)
         let screen = GoldgramAIQueryScreen(context: context, filters: filters) { [weak self] value in
             guard let self, self.accountOK, self.navigationController?.topViewController === self else { return }
-            self.input.text = value.term; self.source.selectedSegmentIndex = value.source; self.event.selectedSegmentIndex = value.event; self.mediaMode = value.media
+            self.input.text = value.term; self.morphology.isOn = value.morphology; self.source.selectedSegmentIndex = value.source; self.event.selectedSegmentIndex = value.event; self.mediaMode = value.media
             self.period.selectedSegmentIndex = value.period; self.sort.selectedSegmentIndex = value.oldest ? 1 : 0
             self.customFrom = value.from; self.customThrough = value.through; self.author = nil
             self.personalAuthorId = value.authorID; self.personalAuthorName = value.authorName; self.chosenChat = value.chatID; self.chosenChatName = value.chatName
@@ -1645,7 +1753,7 @@ private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearch
         navigationController?.pushViewController(picker, animated: true)
     }
     @objc private func resetFilters() {
-        input.text = ""; author = nil; personalAuthorId = nil; personalAuthorName = nil
+        input.text = ""; morphology.isOn = false; author = nil; personalAuthorId = nil; personalAuthorName = nil
         chosenChat = nil; chosenChatName = nil
         source.selectedSegmentIndex = 2; event.selectedSegmentIndex = 0; period.selectedSegmentIndex = 0
         customFrom = nil; customThrough = nil; mediaMode = 0; sort.selectedSegmentIndex = 0
@@ -1733,7 +1841,7 @@ private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearch
     }
     private func applyPreset(_ value: GoldgramSearchPreset) {
         guard accountOK, value.valid else { return }
-        input.text = value.text
+        input.text = value.text; morphology.isOn = false
         source.selectedSegmentIndex = value.source; period.selectedSegmentIndex = value.period
         event.selectedSegmentIndex = value.event; mediaMode = value.media; sort.selectedSegmentIndex = value.oldest ? 1 : 0
         customFrom = value.from; customThrough = value.through
@@ -1798,13 +1906,18 @@ private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearch
     func searchBar(_ searchBar: UISearchBar, textDidChange searchText: String) { filterChanged() }
     func searchBarSearchButtonClicked(_ searchBar: UISearchBar) { submit() }
 
+    @objc private func stopSearch() {
+        cancelWork(); localMore = false; partial = true
+        remoteStatus = "Поиск остановлен · показаны найденные записи"; localStatus = ""
+        rebuild(); updateStatus()
+    }
     private func cancelWork() {
         generation += 1
         dialogs.set(nil); global.set(nil)
         for task in running.values { task.dispose() }
         running.removeAll(); pending.removeAll()
         localBusy = false; remoteBusy = false; jumping = false
-        waitingDialogs = false; globalPage = -1; peerPages.removeAll()
+        waitingDialogs = false; globalPage = -1; peerPages.removeAll(); initialArchiveRound = false; stopButton.isEnabled = false
     }
     private func invalidate(_ message: String) {
         cancelWork()
@@ -1819,7 +1932,11 @@ private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearch
         input.resignFirstResponder()
         invalidate("Поиск…")
         term = (input.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        guard term.count <= 200 else { invalidate("Введите не более 200 символов."); return }
+        guard term.count <= 1230, term.components(separatedBy:"|").count <= 6, term.components(separatedBy:"|").allSatisfy({ $0.trimmingCharacters(in:.whitespacesAndNewlines).count <= 200 && $0.trimmingCharacters(in:.whitespacesAndNewlines).utf8.count <= 512 }) else { invalidate("До 6 слов/фраз по 200 символов."); return }
+        let expanded = GoldgramSearchTerms.expand(GoldgramSearchTerms.base(term),morphology:morphology.isOn)
+        guard term.isEmpty || !expanded.terms.isEmpty else { invalidate("Введите поисковые слова."); return }
+        queryTerms = expanded.terms.isEmpty ? [""] : expanded.terms
+        remoteIndex = 0; remoteRequests = 0; localIndex = 0; localOffsets = Array(repeating:0,count:queryTerms.count); localDone.removeAll(); archiveVisited.removeAll(); localScanned = 0; initialArchiveRound = queryTerms.count > 1
         let now = Date()
         let start: Date?
         switch period.selectedSegmentIndex {
@@ -1838,7 +1955,7 @@ private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearch
         if wantsTelegram && term.isEmpty && requestedAuthor == nil && requestedChat == nil && since == nil && requestedMedia == 0 {
             invalidate("Для Telegram задайте текст, автора, диалог или период. Для всех записей выберите «Архив»."); return
         }
-        localOffset = 0; checked = 0; total = 0; partial = false
+        localOffset = 0; checked = 0; total = 0; partial = expanded.truncated
         let token = generation
         if wantsTelegram {
             remoteBusy = true; remoteStatus = "Telegram: поиск…"
@@ -1867,7 +1984,7 @@ private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearch
         dialogs.set((combineLatest(root, archive) |> deliverOnMainQueue).start(next: { [weak self = self] a, b in
             guard let self, self.generation == token, self.accountOK, self.waitingDialogs else { return }
             self.waitingDialogs = false
-            self.partial = a.hasEarlier || a.hasLater || b.hasEarlier || b.hasLater ||
+            self.partial = self.partial || a.hasEarlier || a.hasLater || b.hasEarlier || b.hasLater ||
                 a.items.count >= 1000 || b.items.count >= 1000
             for item in a.items + b.items {
                 guard case let .chatList(id) = item.id, let peer = item.renderedPeer.peer,
@@ -1876,7 +1993,7 @@ private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearch
                 self.titles[id] = peer.compactDisplayTitle
             }
             self.total = self.pending.count
-            if self.requestedAuthor == nil && (!self.term.isEmpty || self.requestedMedia != 0) {
+            if self.requestedAuthor == nil && (!self.remoteTerm.isEmpty || self.requestedMedia != 0) {
                 self.pending.removeAll()
                 self.scanGlobal(page: 0, state: nil, token: token)
             } else { self.pump(token) }
@@ -1889,7 +2006,7 @@ private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearch
                   requestedAuthor == nil || message.author?.id == requestedAuthor,
                   since == nil || message.timestamp >= (since ?? 0),
                   until == nil || message.timestamp <= (until ?? Int32.max),
-                  matchesMedia(message) else { continue }
+                  matchesMedia(message), queryTerms == [""] || !GoldgramSearchTerms.ranges(message.text,terms:queryTerms).isEmpty else { continue }
             if remoteRows.count >= maxResults && remoteRows[message.id] == nil { partial = true; break }
             remoteRows[message.id] = message
         }
@@ -1915,57 +2032,68 @@ private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearch
         }
     }
 
+    private func nextRemoteTerm(_ token:Int) {
+        guard generation == token, accountOK else { return }
+        globalPage = -1
+        if remoteIndex + 1 >= queryTerms.count || remoteRows.count >= maxResults {
+            if remoteIndex + 1 < queryTerms.count { partial = true }
+            remoteBusy = false; remoteStatus = "Telegram: \(remoteRows.count) совпадений"; updateStatus(); return
+        }
+        remoteIndex += 1; checked = 0; remoteRequests = 0
+        if requestedChat == nil && requestedAuthor == nil && (!remoteTerm.isEmpty || requestedMedia != 0) {
+            scanGlobal(page:0,state:nil,token:token)
+        } else { pending = allowed.sorted { $0.toInt64() < $1.toInt64() }; total = pending.count; pump(token) }
+    }
     private func scanGlobal(page: Int, state: SearchMessagesState?, token: Int) {
         guard generation == token, accountOK else { return }
-        globalPage = page
+        let index = remoteIndex
+        if queryTerms.count > 1 && remoteRequests >= remoteRequestLimit { partial = true; nextRemoteTerm(token); return }
+        remoteRequests += 1; globalPage = page
         DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self = self] in
-            guard let self, self.generation == token, self.remoteBusy, self.globalPage == page else { return }
+            guard let self, self.generation == token, self.remoteBusy, self.remoteIndex == index, self.globalPage == page else { return }
             self.globalPage = -1
             self.global.set(nil)
-            self.remoteBusy = false; self.partial = true
-            self.remoteStatus = "Telegram: \(self.remoteRows.count) совпадений · тайм-аут"
-            self.rebuild(); self.updateStatus()
+            self.partial = true
+            self.rebuild(); self.nextRemoteTerm(token)
         }
         let location: SearchMessagesLocation = .general(scope: .everywhere, groupId: nil, tags: mediaTags,
             minDate: since, maxDate: until, folderId: nil, communityId: nil)
-        let signal = context.engine.messages.searchMessages(location: location, query: term, state: state, limit: 100)
+        let signal = context.engine.messages.searchMessages(location: location, query: remoteTerm, state: state, limit: 100)
             |> take(1) |> deliverOnMainQueue
         global.set(signal.start(next: { [weak self = self] result, nextState in
             DispatchQueue.main.async { [weak self = self] in
                 guard let self, self.generation == token, self.accountOK,
-                      self.remoteBusy, self.globalPage == page else { return }
+                      self.remoteBusy, self.remoteIndex == index, self.globalPage == page else { return }
                 self.globalPage = -1
                 self.collect(result.messages.map { EngineMessage($0) }, token: token)
                 self.remoteStatus = "Telegram: \(self.remoteRows.count) совпадений · поиск…"
                 self.updateStatus()
-                if result.completed || page + 1 >= 10 || state == nextState || self.remoteRows.count >= self.maxResults {
+                if result.completed || page + 1 >= (self.queryTerms.count > 1 ? 3 : 10) || state == nextState || self.remoteRows.count >= self.maxResults {
                     if !result.completed { self.partial = true }
-                    self.remoteBusy = false
-                    self.remoteStatus = "Telegram: \(self.remoteRows.count) совпадений"
-                    self.updateStatus()
+                    self.nextRemoteTerm(token)
                 } else { self.scanGlobal(page: page + 1, state: nextState, token: token) }
             }
         }))
     }
     private func pump(_ token: Int) {
         guard generation == token, accountOK else { return }
-        if remoteRows.count >= maxResults { pending.removeAll(); partial = true }
-        while running.count < 2 && !pending.isEmpty {
+        if remoteRows.count >= maxResults || (queryTerms.count > 1 && remoteRequests >= remoteRequestLimit) { pending.removeAll(); partial = true }
+        while running.count < 2 && !pending.isEmpty && (queryTerms.count == 1 || remoteRequests < remoteRequestLimit) {
             let peer = pending.removeFirst()
             let disposable = MetaDisposable()
             running[peer] = disposable
             scanPeer(peer, page: 0, state: nil, token: token, disposable: disposable)
         }
         if pending.isEmpty && running.isEmpty {
-            remoteBusy = false
-            remoteStatus = "Telegram: \(remoteRows.count) совпадений, \(checked)/\(total) диалогов"
+            nextRemoteTerm(token); return
         } else { remoteStatus = "Telegram: \(remoteRows.count), проверено \(checked)/\(total)" }
         updateStatus()
     }
     private func scanPeer(_ peer: EnginePeer.Id, page: Int, state: SearchMessagesState?,
                           token: Int, disposable: MetaDisposable) {
         guard generation == token, accountOK else { return }
-        peerPages[peer] = page
+        if queryTerms.count > 1 && remoteRequests >= remoteRequestLimit { running.removeValue(forKey:peer)?.dispose(); partial = true; pump(token); return }
+        remoteRequests += 1; peerPages[peer] = page
         DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self = self] in
             guard let self, self.generation == token,
                   self.peerPages[peer] == page, self.running[peer] === disposable else { return }
@@ -1976,7 +2104,7 @@ private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearch
         }
         let location: SearchMessagesLocation = .peer(peerId: peer, fromId: requestedAuthor, tags: mediaTags,
             reactions: nil, threadId: nil, minDate: since, maxDate: until)
-        let signal = context.engine.messages.searchMessages(location: location, query: term, state: state, limit: 100)
+        let signal = context.engine.messages.searchMessages(location: location, query: remoteTerm, state: state, limit: 100)
             |> take(1) |> deliverOnMainQueue
         disposable.set(signal.start(next: { [weak self = self] result, nextState in
             DispatchQueue.main.async { [weak self = self] in
@@ -1984,7 +2112,7 @@ private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearch
                       self.running[peer] === disposable, self.peerPages[peer] == page else { return }
                 self.peerPages.removeValue(forKey: peer)
                 self.collect(result.messages.map { EngineMessage($0) }, token: token)
-                if result.completed || page + 1 >= 10 || state == nextState || self.remoteRows.count >= self.maxResults {
+                if result.completed || page + 1 >= (self.queryTerms.count > 1 ? 3 : 10) || state == nextState || self.remoteRows.count >= self.maxResults {
                     if !result.completed { self.partial = true }
                     self.running.removeValue(forKey: peer)?.dispose()
                     self.checked += 1; self.pump(token)
@@ -1995,9 +2123,11 @@ private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearch
 
     private func fetchArchive(_ token: Int) {
         guard generation == token, accountOK, localMore, !localBusy else { return }
-        guard localOffset <= 5000 else { localMore = false; updateStatus(); rebuild(); return }
+        guard localScanned < 5000, localDone.count < queryTerms.count else { localMore = false; partial = localDone.count < queryTerms.count || partial; updateStatus(); rebuild(); return }
+        guard let index = (0..<queryTerms.count).map({ (localIndex+$0)%queryTerms.count }).first(where:{ !localDone.contains($0) && (!initialArchiveRound || !archiveVisited.contains($0)) }) else { initialArchiveRound = false; updateStatus(); rebuild(); return }
+        localIndex = index; localOffset = localOffsets[index]
         localBusy = true; localStatus = "Архив: поиск…"
-        var request: [String: Any] = ["accountId": NSNumber(value: accountId), "needle": term,
+        var request: [String: Any] = ["accountId": NSNumber(value: accountId), "needle": queryTerms[index],
             "event": NSNumber(value: requestedEvent), "since": NSNumber(value: Int64(since ?? 0) * 1000),
             "offset": NSNumber(value: localOffset), "until": NSNumber(value: Int64(until ?? 0) * 1000 + (until == nil ? 0 : 999)),
             "sortMode": NSNumber(value: requestedOldest ? 2 : 1)]
@@ -2020,15 +2150,23 @@ private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearch
                 self.rebuild(); self.updateStatus(); return
             }
             let rows = answer["items"] as? [[String: Any]] ?? []
-            self.localOffset += rows.count
-            self.localMore = (answer["hasMore"] as? Bool ?? false) && self.localOffset <= 5000 && !rows.isEmpty
+            self.archiveVisited.insert(index); self.localOffsets[index] += rows.count; self.localScanned += rows.count
+            if !(answer["hasMore"] as? Bool ?? false) || rows.isEmpty { self.localDone.insert(index) }
+            self.localMore = self.localDone.count < self.queryTerms.count && self.localScanned < 5000
+            if self.localScanned >= 5000 && self.localDone.count < self.queryTerms.count { self.partial = true }
+            self.localIndex = (index+1)%self.queryTerms.count
             for row in rows {
                 guard let id = GoldgramUnifiedIdentity.message(row),
-                      self.requestedChat == nil || id.peerId == self.requestedChat else { continue }
-                self.localRows[id] = row
+                      self.requestedChat == nil || id.peerId == self.requestedChat,
+                      self.queryTerms == [""] || !GoldgramSearchTerms.ranges(self.archivedText(row),terms:self.queryTerms).isEmpty else { continue }
+                if self.localRows[id] == nil && self.localRows.count < self.maxResults { self.localRows[id] = row }
             }
             self.localStatus = "Архив: \(self.localRows.count) совпадений" + (self.localMore ? " · есть ещё" : "")
             self.rebuild(); self.updateStatus()
+            if self.initialArchiveRound {
+                if self.archiveVisited.count < self.queryTerms.count && self.localMore { DispatchQueue.main.async { [weak self] in self?.fetchArchive(token) } }
+                else { self.initialArchiveRound = false }
+            }
             let identities = rows.map { row -> [String: Any] in
                 var value: [String: Any] = [:]
                 for key in ["peerKind", "peerId", "messageId", "senderKind", "senderId", "sentAt"] { value[key] = row[key] }
@@ -2071,7 +2209,9 @@ private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearch
         let text = [remoteStatus, localStatus].filter { !$0.isEmpty }.joined(separator: "\n")
         let warning = partial ? "\nЛимит страниц/диалогов или сетевой сбой: выдача неполная." : ""
         let network = remoteStatus.isEmpty || remoteBusy ? "" : "\nTelegramEngine может использовать локальный индекс при сетевых сбоях; выдача не гарантирует доступность сообщения на сервере."
-        info.text = "\(text)\nУникальных результатов: \(order.count)" + warning + network
+        let progress = queryTerms.count > 1 && remoteBusy ? "\nЗапрос \(remoteIndex+1)/\(queryTerms.count)" : ""
+        info.text = "\(text)\nВсего: \(order.count) · Telegram: \(remoteRows.count) · Архив: \(localRows.count)" + progress + warning + network
+        stopButton.isEnabled = remoteBusy || localBusy || localMore
         view.setNeedsLayout()
     }
     private func name(_ id: EngineMessage.Id) -> String {
@@ -2098,35 +2238,38 @@ private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearch
             cell.textLabel?.text = "\(name(id)) · \(mark)"
             let authorName = remote?.author?.compactDisplayTitle ?? local?["senderName"] as? String ?? "Автор неизвестен"
             var details = [authorName + " · " + time]
-            if let remote { details.append(String(remote.text.prefix(220))) }
+            if let remote { details.append(GoldgramSearchTerms.snippet(remote.text,terms:queryTerms)) }
             if let local {
                 let text = archivedText(local)
-                if remote == nil || text != remote?.text { details.append("Архив: " + String(text.prefix(220))) }
+                if remote == nil || text != remote?.text { details.append("Архив: " + GoldgramSearchTerms.snippet(text,terms:queryTerms)) }
                 if (local["deleted"] as? NSNumber)?.boolValue == true { details.append("Удалено") }
                 else if (local["edited"] as? NSNumber)?.boolValue == true { details.append("Изменено") }
             }
             let body = details.joined(separator: "\n")
             let attributed = NSMutableAttributedString(string: body, attributes: [.foregroundColor: UIColor.secondaryLabel])
-            if !term.isEmpty {
-                let value = body as NSString
-                var remaining = NSRange(location: 0, length: value.length)
-                while remaining.length > 0 {
-                    let found = value.range(of: term, options: [.caseInsensitive, .diacriticInsensitive], range: remaining)
-                    if found.location == NSNotFound || found.length == 0 { break }
-                    attributed.addAttributes([.backgroundColor: UIColor.systemYellow.withAlphaComponent(0.4),
-                        .foregroundColor: UIColor.label], range: found)
-                    let end = NSMaxRange(found)
-                    remaining = NSRange(location: end, length: value.length - end)
-                }
+            for range in GoldgramSearchTerms.ranges(body,terms:queryTerms) {
+                attributed.addAttributes([.backgroundColor:UIColor.systemYellow.withAlphaComponent(0.55),.foregroundColor:UIColor.label],range:range)
             }
-            cell.detailTextLabel?.attributedText = attributed
-            cell.accessoryType = .disclosureIndicator
+            return resultCard(title:cell.textLabel?.text ?? "",body:attributed)
         } else if localMore {
             cell.textLabel?.text = localBusy ? "Загрузка архива…" : "Загрузить ещё из архива"
         } else {
             cell.textLabel?.text = remoteBusy || localBusy ? "Поиск продолжается…" : "Нет результатов"
             cell.selectionStyle = .none
         }
+        return cell
+    }
+    private func resultCard(title:String,body:NSAttributedString) -> UITableViewCell {
+        let cell = UITableViewCell(style:.default,reuseIdentifier:nil); cell.backgroundColor = .clear
+        let card = UIStackView(); card.axis = .vertical; card.spacing = 7; card.isLayoutMarginsRelativeArrangement = true
+        card.layoutMargins = UIEdgeInsets(top:12,left:14,bottom:12,right:14); card.backgroundColor = .secondarySystemGroupedBackground; card.layer.cornerRadius = 14
+        card.translatesAutoresizingMaskIntoConstraints = false; cell.contentView.addSubview(card)
+        NSLayoutConstraint.activate([card.topAnchor.constraint(equalTo:cell.contentView.topAnchor,constant:5),card.bottomAnchor.constraint(equalTo:cell.contentView.bottomAnchor,constant:-5),card.leadingAnchor.constraint(equalTo:cell.contentView.leadingAnchor,constant:4),card.trailingAnchor.constraint(equalTo:cell.contentView.trailingAnchor,constant:-4)])
+        let heading = UILabel(); heading.text = title; heading.font = .preferredFont(forTextStyle:.headline); heading.numberOfLines = 2; heading.adjustsFontForContentSizeCategory = true
+        let text = UILabel(); text.font = .preferredFont(forTextStyle:.subheadline); text.numberOfLines = 8; text.attributedText = body; text.adjustsFontForContentSizeCategory = true
+        let action = UILabel(); action.text = "Открыть сообщение  ›"; action.font = .preferredFont(forTextStyle:.footnote); action.textColor = .systemOrange
+        card.addArrangedSubview(heading); card.addArrangedSubview(text); card.addArrangedSubview(action)
+        cell.accessibilityLabel = title+", "+body.string; cell.accessibilityTraits.insert(.button)
         return cell
     }
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
@@ -2205,8 +2348,8 @@ private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearch
         var parts = [original.map { "Оригинал:\n" + $0 } ?? "Оригинал не получен"]
         if let matched, matched != original, matched != latest { parts.append("Найденная версия:\n" + matched) }
         if let latest, latest != original { parts.append("Последняя сохранённая версия:\n" + latest) }
-        let alert = UIAlertController(title: name(id), message: parts.joined(separator: "\n\n"), preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "Открыть в чате", style: .default) { [weak self = self] _ in
+        let body = parts.joined(separator:"\n\n")
+        let viewer = GoldgramSearchArchivePreview(title:name(id),text:body,terms:queryTerms) { [weak self] in
             guard let self, self.accountOK, self.localRows[id] != nil, !self.jumping else { return }
             self.jumping = true
             let token = self.generation
@@ -2217,9 +2360,8 @@ private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearch
                 if answer["status"] as? String == "ok" { self.jump(id) }
                 else { self.showError("Сообщение недоступно в чате. Сохранённая версия остаётся в архиве.") }
             }
-        })
-        alert.addAction(UIAlertAction(title: "Закрыть", style: .cancel))
-        present(alert, animated: true)
+        }
+        present(UINavigationController(rootViewController:viewer),animated:true)
     }
     private func showError(_ text: String) {
         let alert = UIAlertController(title: "Goldgram", message: text, preferredStyle: .alert)
@@ -2234,9 +2376,14 @@ private final class GoldgramUnifiedSearchScreen: UITableViewController, UISearch
         input.resignFirstResponder()
         returnOffset = tableView.contentOffset; handingOff = true
         let snapshot = navigation.view.snapshotView(afterScreenUpdates: false)
+        let highlight = queryTerms.filter { !$0.isEmpty }
         presenter.dismiss(animated: true) { [weak self = self] in
             guard let self else { return }
-            if !jump(self.context, id, navigation, presenter, snapshot) {
+            let opened: Bool
+            if let searchJump = GoldgramAuthorSearchBridge.nativeSearchJump {
+                opened = searchJump(self.context,id,navigation,presenter,snapshot,highlight)
+            } else { opened = jump(self.context,id,navigation,presenter,snapshot) }
+            if !opened {
                 guard presenter.viewIfLoaded?.window != nil, presenter.presentedViewController == nil else {
                     self.handingOff = false; return
                 }

@@ -343,6 +343,9 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
 
     let chatBackgroundNode: WallpaperBackgroundNode
     public private(set) var controllerInteraction: ChatControllerInteraction?
+    var goldgramSearchHighlight: (EngineMessage.Id, [String])? {
+        didSet { self.controllerInteraction?.goldgramSearchHighlight = self.goldgramSearchHighlight }
+    }
     var interfaceInteraction: ChatPanelInterfaceInteraction?
     
     let messageContextDisposable = MetaDisposable()
@@ -6198,6 +6201,7 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
         controllerInteraction.enableFullTranslucency = context.sharedContext.energyUsageSettings.fullTranslucency
         
         self.controllerInteraction = controllerInteraction
+        controllerInteraction.goldgramSearchHighlight = self.goldgramSearchHighlight
         controllerInteraction.requestWalletTransferArrival = { [weak self] message in
             self?.walletTransferAnimationCoordinator().requestArrival(message)
         }
@@ -8272,6 +8276,11 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
         self.forwardSideListAppearance(.didAppear, animated: animated)
         
         self.didAppear = true
+        if self.goldgramSearchHighlight != nil {
+            self.chatDisplayNode.historyNode.forEachItemNode { itemNode in
+                (itemNode as? ChatMessageItemView)?.updateSearchTextHighlightState()
+            }
+        }
         
         self.chatDisplayNode.historyNode.experimentalSnapScrollToItem = false
         self.chatDisplayNode.historyNode.canReadHistory.set(self.computedCanReadHistoryPromise.get())
@@ -9008,13 +9017,15 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
     }
     
     func updateItemNodesSearchTextHighlightStates() {
+        let clearGoldgram = self.presentationInterfaceState.search != nil && self.goldgramSearchHighlight != nil
+        if clearGoldgram { self.goldgramSearchHighlight = nil }
         var searchString: String?
         var resultsMessageIndices: [MessageIndex]?
         if let search = self.presentationInterfaceState.search, let resultsState = search.resultsState, !resultsState.messageIndices.isEmpty {
             searchString = search.query
             resultsMessageIndices = resultsState.messageIndices
         }
-        if searchString != self.controllerInteraction?.searchTextHighightState?.0 || resultsMessageIndices?.count != self.controllerInteraction?.searchTextHighightState?.1.count {
+        if clearGoldgram || searchString != self.controllerInteraction?.searchTextHighightState?.0 || resultsMessageIndices?.count != self.controllerInteraction?.searchTextHighightState?.1.count {
             var searchTextHighightState: (String, [MessageIndex])?
             if let searchString = searchString, let resultsMessageIndices = resultsMessageIndices {
                 searchTextHighightState = (searchString, resultsMessageIndices)

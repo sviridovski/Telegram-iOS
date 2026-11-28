@@ -363,6 +363,8 @@ public final class ChatControllerInteraction: ChatControllerInteractionProtocol 
     public var currentPsaMessageWithTooltip: EngineMessage.Id?
     public var stickerSettings: ChatInterfaceStickerSettings
     public var searchTextHighightState: (String, [EngineMessage.Index])?
+    // Session-local, exact target only; no message content or search request.
+    public var goldgramSearchHighlight: (EngineMessage.Id, [String])?
     public var unreadMessageRange: [UnreadMessageRangeKey: Range<Int32>] = [:]
     public var seenOneTimeAnimatedMedia = Set<EngineMessage.Id>()
     public var freshWalletTransferMessageIds = Set<EngineMessage.Id>()
