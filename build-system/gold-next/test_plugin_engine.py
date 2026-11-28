@@ -29,10 +29,11 @@ for name, code in sdk_examples.items():
     assert declared and len({key for key, _ in declared}) == len(declared), name
     assert all(key in sdk_contract["permissions"] for key, _ in declared), name
 aicc_sample = source.split('static let aiccAlpha = #"""\n',1)[1].split('\n"""#',1)[0]
+workspace_sample = source.split('static let aiccWorkspace = #"""\n',1)[1].split('\n"""#',1)[0]
 harness = """
 const assert = require('node:assert/strict');
-let result, requests=[], failModels=false, personalChoice="favorites",tileChoice="assistant";
-global.self = {postMessage: raw => {const v=JSON.parse(raw);if(v.rpc!==undefined){requests.push(v);if(v.method==="gold.ai.balance"){self.onmessage({data:{rpcResult:v.rpc,result:{value:{is_available:true,balance_infos:[{currency:"USD",total_balance:"2.50",granted_balance:"0.50",topped_up_balance:"2.00"}]}}}});return;}if(v.method==="gold.ai.usage"){self.onmessage({data:{rpcResult:v.rpc,result:{value:{requests:2,requestsWithUsage:1,totals:{total_tokens:12}}}}});return;}const isModels=v.args.url==="https://api.deepseek.com/models";if(v.args.progress)self.onmessage({data:{rpcProgress:v.rpc,event:{text:"partial",thinking:false,done:false}}});const response=v.method==="gold.search.history"?{value:{items:[{id:"1",text:"synthetic test",timestamp:123}],scope:"currentPeerHistory",complete:false,serverCompleted:true,truncated:false}}:v.method==="gold.documents.pickText"?{value:{name:"test.docx",format:"docx",text:"Hello world",bytes:100,pageCount:0,truncated:false}}:v.method==="ui.select"?{value:v.args.title==="Личные данные"?personalChoice:v.args.layout==="tiles"?tileChoice:"0"}:v.method==="gold.favorites.search"?{value:{items:[{title:"Test chat",folder:"Test",note:"synthetic",tags:[]}],matched:1,scope:"currentPeer",complete:true}}:v.method==="gold.favorites.selected"?{value:{title:"Test chat",folder:"Test"}}:v.method==="gold.favorites.addSelected"?{status:"saved"}:v.method==="gold.favorites.removeSelected"?{status:"removed"}:v.method==="gold.contacts.current"||v.method==="gold.contacts.selected"?{value:{name:"Test user",username:"test",card:{alias:"Test alias",note:"Test note"}}}:v.method==="gold.speech.voices"?{voices:[{id:"mock-ru",name:"Mock",language:"ru-RU"}]}:v.method==="gold.speech.speak"?{status:"ended",started:true}:v.method==="gold.speech.stop"?{stopped:false}:isModels?{status:failModels?503:200,body:JSON.stringify({object:"list",data:[{id:"fresh-model",object:"model"}]})}:{status:200,body:'{"model":"mock-model","usage":{"total_tokens":12,"prompt_tokens":8,"completion_tokens":4,"completion_tokens_details":{"reasoning_tokens":2}},"choices":[{"message":{"content":"mock answer"}}]}',durationMs:123};self.onmessage({data:{rpcResult:v.rpc,result:response}});}else result=v;}};
+let result, requests=[], failModels=false, personalChoice="favorites",tileChoice="assistant",workspaceChoices=[],workspaceAnswer=null;
+global.self = {postMessage: raw => {const v=JSON.parse(raw);if(v.rpc!==undefined){requests.push(v);if(v.method==="gold.ai.balance"){self.onmessage({data:{rpcResult:v.rpc,result:{value:{is_available:true,balance_infos:[{currency:"USD",total_balance:"2.50",granted_balance:"0.50",topped_up_balance:"2.00"}]}}}});return;}if(v.method==="gold.ai.usage"){self.onmessage({data:{rpcResult:v.rpc,result:{value:{requests:2,requestsWithUsage:1,totals:{total_tokens:12}}}}});return;}const isModels=v.args.url==="https://api.deepseek.com/models";if(v.args.progress)self.onmessage({data:{rpcProgress:v.rpc,event:{text:"partial",thinking:false,done:false}}});const response=v.method==="gold.search.history"?{value:{items:[{id:"1",text:"synthetic test",timestamp:123}],scope:"currentPeerHistory",complete:false,serverCompleted:true,truncated:false}}:v.method==="gold.documents.pickText"?{value:{name:"test.docx",format:"docx",text:"Hello world",bytes:100,pageCount:0,truncated:false}}:v.method==="ui.select"?{value:v.args.title==="Личные данные"?personalChoice:["tiles","results"].includes(v.args.layout)?(workspaceChoices.length?workspaceChoices.shift():tileChoice):"0"}:v.method==="gold.favorites.search"?{value:{items:[{title:"Test chat",folder:"Test",note:"synthetic",tags:[]}],matched:1,scope:"currentPeer",complete:true}}:v.method==="gold.favorites.selected"?{value:{title:"Test chat",folder:"Test"}}:v.method==="gold.favorites.addSelected"?{status:"saved"}:v.method==="gold.favorites.removeSelected"?{status:"removed"}:v.method==="gold.contacts.current"||v.method==="gold.contacts.selected"?{value:{name:"Test user",username:"test",card:{alias:"Test alias",note:"Test note"}}}:v.method==="gold.speech.voices"?{voices:[{id:"mock-ru",name:"Mock",language:"ru-RU"}]}:v.method==="gold.speech.speak"?{status:"ended",started:true}:v.method==="gold.speech.stop"?{stopped:false}:isModels?{status:failModels?503:200,body:JSON.stringify({object:"list",data:[{id:"fresh-model",object:"model"}]})}:{status:200,body:JSON.stringify({model:"mock-model",usage:{total_tokens:12,prompt_tokens:8,completion_tokens:4,completion_tokens_details:{reasoning_tokens:2}},choices:[{message:{content:workspaceAnswer??"mock answer"}}]}),durationMs:123};self.onmessage({data:{rpcResult:v.rpc,result:response}});}else result=v;}};
 """ + worker + """
 goldWorkerMain();
 const sample = """ + json.dumps(example) + """;
@@ -477,6 +478,58 @@ assert.equal(result.storage["aicc_profile_v21:p"],"boss");
 assert.ok(!Object.keys(result.storage).some(k=>k.startsWith("aicc_mem_v2:")));
 console.log("AICC Alpha: legacy settings, tile dispatch, cancel, typed AI, profile and permission contracts passed");
 
+const ws = """ + json.dumps(workspace_sample) + """;
+const wsGrants=sdkGrants(ws,true),wsFile="aicc-workspace-v1.json";
+const wsRun=async(event,settings={},files={},extra={})=>{
+ await self.onmessage({data:{source:ws,grants:wsGrants,event,settings,files,managedKey:true,...extra}});
+ assert.ok(!result.error);return result;
+};
+const beforeWs=requests.length;
+const wsStart=await wsRun("plugin.start",{cp1On:true,cp1Name:"Legacy",cp1Prompt:"Legacy prompt",asstProfile:"custom1"});
+assert.equal(wsStart.sections.length,7);assert.equal(wsStart.settings.cp1Prompt,"Legacy prompt");assert.equal(requests.length,beforeWs);
+assert.ok(!wsStart.files[wsFile]);
+const newTool=await wsRun("settings.action",{...wsStart.settings,wsTTitle:"My tool",wsTCommand:"mytool",wsTPrompt:"Synthetic custom prompt",wsTMode:"fast",wsTOutput:"sheet",wsTSource:"input",wsTMenu:true},{},{key:"wsTSave"});
+let wsData=JSON.parse(newTool.files[wsFile]);
+assert.equal(wsData.tools.length,1);assert.equal(wsData.tools[0].id,"wst1");assert.equal(newTool.settings.wsTId,"wst1");
+assert.ok(newTool.contextActions.some(x=>x.id==="aicc_ctx_wst1"));assert.equal(requests.length,beforeWs);
+const wsSavedSettings=newTool.settings,wsSavedFiles=newTool.files;
+const duplicate=await wsRun("settings.action",{...wsSavedSettings,wsTId:"",wsTTitle:"Other",wsTCommand:"перевод"},wsSavedFiles,{key:"wsTSave"});
+assert.equal(duplicate.files[wsFile],wsSavedFiles[wsFile]);assert.ok(duplicate.output.text.includes("занята"));
+await wsRun("floating.tap",{...wsSavedSettings,asstContext:true},wsSavedFiles,{context:{...aiccCtx,draft:"/mytool synthetic",messages:[{id:"1",text:"private extra context"}]}});
+assert.equal(result.output.kind,"sheet");let wsBody=JSON.parse(requests.at(-1).args.body);
+assert.equal(wsBody.messages[1].content,"synthetic");assert.ok(wsBody.messages[0].content.includes("Synthetic custom prompt"));assert.equal(wsBody.thinking.type,"disabled");
+await wsRun("context.tap",wsSavedSettings,wsSavedFiles,{key:"aicc_ctx_wst1",context:{...aiccCtx,selectedMessage:{id:"1",text:"selected test"}}});
+assert.equal(JSON.parse(requests.at(-1).args.body).messages[1].content,"selected test");
+const edit=await wsRun("settings.action",{...wsSavedSettings,wsTTitle:"Renamed"},wsSavedFiles,{key:"wsTSave"});
+assert.equal(JSON.parse(edit.files[wsFile]).tools[0].id,"wst1");assert.equal(JSON.parse(edit.files[wsFile]).tools[0].title,"Renamed");
+const profile=await wsRun("settings.action",{...edit.settings,wsPTitle:"Extra profile",wsPPrompt:"Use the extra style"},edit.files,{key:"wsPSave"});
+wsData=JSON.parse(profile.files[wsFile]);assert.equal(wsData.profiles[0].id,"wsp2");assert.equal(wsData.next,3);
+assert.ok(profile.sections.find(x=>x.title==="Профили").items.find(x=>x.key==="asstProfile").options.some(x=>x.value==="wsp2"));
+await wsRun("floating.tap",{...profile.settings,asstProfile:"wsp2",perChatProfile:false,aiccPanelMode:"quick",asstContext:false},profile.files,{context:aiccCtx});
+assert.ok(JSON.parse(requests.at(-1).args.body).messages[0].content.includes("Use the extra style"));
+tileChoice=null;
+const cancelledDelete=await wsRun("settings.action",profile.settings,profile.files,{key:"wsTDelete"});
+assert.equal(cancelledDelete.files[wsFile],profile.files[wsFile]);
+tileChoice="yes";
+const deleted=await wsRun("settings.action",profile.settings,profile.files,{key:"wsTDelete"});
+assert.equal(JSON.parse(deleted.files[wsFile]).tools.length,0);assert.equal(JSON.parse(deleted.files[wsFile]).next,3);assert.ok(!deleted.contextActions.some(x=>x.id==="aicc_ctx_wst1"));
+const corrupt=await wsRun("settings.action",{...wsSavedSettings,wsTTitle:"New"}, {[wsFile]:"not json"},{key:"wsTSave"});
+assert.equal(corrupt.files[wsFile],"not json");assert.ok(corrupt.output.text.includes("не перезаписаны"));
+const priorCandidates=requests.length;
+workspaceAnswer=JSON.stringify(["First response","Second response","Third response"]);
+workspaceChoices=["1","draft"];
+await wsRun("floating.tap",{...wsSavedSettings,asstContext:false},wsSavedFiles,{context:{...aiccCtx,draft:"варианты: synthetic"}});
+assert.equal(requests.length,priorCandidates+3);assert.equal(requests.at(-2).args.layout,"results");assert.equal(requests.at(-2).args.choices.length,3);assert.ok(requests.at(-2).args.choices[1].title.includes("Second response"));assert.equal(result.output.kind,"draft");assert.equal(result.output.text,"Second response");
+workspaceAnswer="not JSON";
+await wsRun("floating.tap",{...wsSavedSettings,asstContext:false},wsSavedFiles,{context:{...aiccCtx,draft:"варианты: synthetic"}});
+assert.equal(result.output.kind,"sheet");assert.ok(result.output.title.includes("не удалось"));
+workspaceAnswer=JSON.stringify(["One","Two","Three"]);workspaceChoices=[null];
+await wsRun("floating.tap",{...wsSavedSettings,asstContext:false},wsSavedFiles,{context:{...aiccCtx,draft:"варианты: synthetic"}});
+assert.equal(result.output,null);
+workspaceAnswer=null;workspaceChoices=[];
+console.log("AICC Workspace: registry, migration, custom commands, profile library and candidate cards passed");
+
+
 
 
 })().catch(e=>{console.error(e);process.exit(1)});
@@ -756,3 +809,10 @@ assert 'store.record(id)?.code == GoldgramPluginManager.aiccAlpha' in source
 assert 'GoldgramPluginConfirmations(store: store, onlyID: id)' in source
 assert 'onlyID == nil || next.plugins[i].id == onlyID' in source
 assert 'if isDashboard && indexPath.section == 0 { return dashboardCell() }' in source
+
+assert 'GoldgramPluginManager.aiccWorkspace' in source
+assert '("contextMenu", "Контекстное меню", "list.bullet")' in source
+assert 'case .customTools: sectionTitle = "Свои инструменты"' in source
+assert 'case .profileLibrary: sectionTitle = "Библиотека профилей"' in source
+assert 'choices.count <= 3' in ai and 'detailed ? 4000 : 320' in ai
+assert 'detailed: detailed' in ai

@@ -1011,10 +1011,11 @@ private final class GoldgramStreamPanel: UIView {
 private final class GoldgramPluginTilePicker: UIViewController {
     private let heading: String
     private let choices: [[String: String]]
+    private let detailed: Bool
     var onChoice: ((String?) -> Void)?
     private var chosen = false
-    init(title: String, choices: [[String: String]]) {
-        self.heading = title; self.choices = choices
+    init(title: String, choices: [[String: String]], detailed: Bool = false) {
+        self.heading = title; self.choices = choices; self.detailed = detailed
         super.init(nibName: nil, bundle: nil)
     }
     required init?(coder: NSCoder) { return nil }
@@ -1040,7 +1041,7 @@ private final class GoldgramPluginTilePicker: UIViewController {
             stack.trailingAnchor.constraint(equalTo: scroll.frameLayoutGuide.trailingAnchor, constant: -16)
         ])
         let caption = UILabel()
-        caption.text = "Выберите действие"
+        caption.text = detailed ? "Нажмите на нужный вариант" : "Выберите действие"
         caption.font = .preferredFont(forTextStyle: .subheadline)
         caption.adjustsFontForContentSizeCategory = true
         caption.textColor = .secondaryLabel; caption.numberOfLines = 0
@@ -1049,7 +1050,7 @@ private final class GoldgramPluginTilePicker: UIViewController {
         let accent = UIColor { traits in
             traits.userInterfaceStyle == .dark ? UIColor(red: 0.96, green: 0.79, blue: 0.40, alpha: 1) : UIColor(red: 0.48, green: 0.33, blue: 0.06, alpha: 1)
         }
-        let columns = traitCollection.preferredContentSizeCategory.isAccessibilityCategory ? 1 : 2
+        let columns = detailed || traitCollection.preferredContentSizeCategory.isAccessibilityCategory ? 1 : 2
         for offset in stride(from: 0, to: choices.count, by: columns) {
             let row = UIStackView()
             row.axis = .horizontal; row.spacing = 12; row.distribution = .fillEqually
@@ -1065,7 +1066,21 @@ private final class GoldgramPluginTilePicker: UIViewController {
                 let label = item["title"] ?? ""
                 let requested = item["icon"] ?? "sparkles"
                 let symbol = symbols.contains(requested) ? requested : "sparkles"
-                if #available(iOS 15.0, *) {
+                if detailed {
+                    let text = UILabel()
+                    text.text = label; text.numberOfLines = 0
+                    text.font = .preferredFont(forTextStyle: .body)
+                    text.adjustsFontForContentSizeCategory = true
+                    text.textColor = .label
+                    text.translatesAutoresizingMaskIntoConstraints = false
+                    button.addSubview(text)
+                    NSLayoutConstraint.activate([
+                        text.topAnchor.constraint(equalTo: button.topAnchor, constant: 16),
+                        text.bottomAnchor.constraint(equalTo: button.bottomAnchor, constant: -16),
+                        text.leadingAnchor.constraint(equalTo: button.leadingAnchor, constant: 16),
+                        text.trailingAnchor.constraint(equalTo: button.trailingAnchor, constant: -16)
+                    ])
+                } else if #available(iOS 15.0, *) {
                     var config = UIButton.Configuration.plain()
                     config.title = label
                     config.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 25, weight: .medium))
@@ -1173,15 +1188,17 @@ final class GoldgramPluginNetwork: NSObject, UIDocumentPickerDelegate {
         busy = true
         DispatchQueue.main.asyncAfter(deadline: .now()+0.35) { [weak self] in
             guard let self, !self.cancelled, self.valid(), let presenter = self.presenter, presenter.viewIfLoaded?.window != nil, presenter.presentedViewController == nil else { self?.busy = false; completion(["error":"request_cancelled"]); return }
-            if args["layout"] as? String == "tiles" {
+            let detailed = args["layout"] as? String == "results"
+            if args["layout"] as? String == "tiles" || detailed {
+                guard !detailed || choices.count <= 3 else { self.busy = false; completion(["error":"Too many results"]); return }
                 var seen = Set<String>()
                 guard choices.allSatisfy({ item in
                     guard let value = item["value"], !value.isEmpty, value.utf8.count <= 200,
-                          let label = item["title"], !label.isEmpty, label.utf8.count <= 320,
+                          let label = item["title"], !label.isEmpty, label.utf8.count <= (detailed ? 4000 : 320),
                           seen.insert(value).inserted else { return false }
                     return (item["icon"]?.utf8.count ?? 0) <= 60
                 }) else { self.busy = false; completion(["error":"Invalid tiles"]); return }
-                let screen = GoldgramPluginTilePicker(title: String(title.prefix(80)), choices: choices)
+                let screen = GoldgramPluginTilePicker(title: String(title.prefix(80)), choices: choices, detailed: detailed)
                 let nav = UINavigationController(rootViewController: screen)
                 nav.modalPresentationStyle = .formSheet
                 nav.isModalInPresentation = true
