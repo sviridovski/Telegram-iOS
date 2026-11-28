@@ -330,3 +330,7 @@ Workspace registry is a bounded plugin-owned logical JSON file via existing stor
 ## AI Search Foundation 1.0 — #300 candidate
 
 - Native GoldgramAIQueryScreen beside existing unified search: typed user query only via existing GoldgramPluginNetwork broker; dedicated account-scoped .native-search Keychain/usage/budget namespace and lease; no silent plugin key reuse. Strict bounded query-plan validator, dates calculated locally, explicit author/chat pickers and reviewed filter application. Existing search performs one selected term; no new SQLite or JS global search bridge. Shared existing UI components exposed within same module only. CI and device validation pending for ca83a98c2d80c77741281bf70452d272b3dd698a.
+
+## Search Foundation 2.0 — #301 candidate
+
+- Native unified search bounded multi-term OR execution, per-source cursors, local actual-span word/phrase checks and limited Russian nominal inflections; existing identity merge and archive read API unchanged. Native transient exact-target search highlight on ChatControllerInteraction, native rendered text rectangles (spoiler layouts skipped), read-only highlighted archive preview. No new persistent schema, global JS bridge, external data transfer, credentials or permissions. CI and iPhone acceptance pending for 30d719bbc4e1bfac2fa3b3bb3ac7fc3c661ff667.

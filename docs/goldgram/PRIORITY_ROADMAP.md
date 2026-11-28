@@ -75,3 +75,7 @@ User-approved yellow in-message match highlighting on opening a search result (o
 ## Foundation 2.0 scope addition — word forms (2026-11-28)
 
 User requests an optional «Учитывать словоформы» switch in ordinary and AI search. Distinguish literal matching, same-lexeme inflections and separate synonyms; prefer local bounded matching, actual spans for highlights, preserve dedup/navigation and privacy. See AI_COMMANDER_3_PLAN.md for proposed design and tests. Not implemented yet.
+
+## Foundation 2.0 implementation checkpoint — #301
+
+Candidate 30d719bbc4e1bfac2fa3b3bb3ac7fc3c661ff667, CI running. Includes approved multi-term OR, limited optional word-form matching, AI alternatives, cards/counts/stop and exact-target yellow highlight. Detailed limits, tests and acceptance in AI_COMMANDER_3_PLAN.md; do not mark accepted before user device checks. Next Intelligence → Archive Reliability 2.0 → Semantic.
