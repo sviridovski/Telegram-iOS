@@ -843,6 +843,101 @@ private final class GoldgramStreamPanel: UIView {
 // Native request broker. Fixed provider routes, managed credentials, and explicit
 // user actions; chat payload confirmation follows the per-plugin consent policy.
 @MainActor
+// Bounded generic tile picker. Only returns one explicit choice, never executes JS.
+private final class GoldgramPluginTilePicker: UIViewController {
+    private let heading: String
+    private let choices: [[String: String]]
+    var onChoice: ((String?) -> Void)?
+    private var chosen = false
+    init(title: String, choices: [[String: String]]) {
+        self.heading = title; self.choices = choices
+        super.init(nibName: nil, bundle: nil)
+    }
+    required init?(coder: NSCoder) { return nil }
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        title = heading
+        view.backgroundColor = .systemGroupedBackground
+        navigationItem.rightBarButtonItem = UIBarButtonItem(barButtonSystemItem: .close, target: self, action: #selector(closePicker))
+        let scroll = UIScrollView()
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        let stack = UIStackView()
+        stack.axis = .vertical; stack.spacing = 12
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(scroll); scroll.addSubview(stack)
+        NSLayoutConstraint.activate([
+            scroll.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+            scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor, constant: 18),
+            stack.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor, constant: -18),
+            stack.leadingAnchor.constraint(equalTo: scroll.frameLayoutGuide.leadingAnchor, constant: 16),
+            stack.trailingAnchor.constraint(equalTo: scroll.frameLayoutGuide.trailingAnchor, constant: -16)
+        ])
+        let caption = UILabel()
+        caption.text = "Выберите действие"
+        caption.font = .preferredFont(forTextStyle: .subheadline)
+        caption.adjustsFontForContentSizeCategory = true
+        caption.textColor = .secondaryLabel; caption.numberOfLines = 0
+        stack.addArrangedSubview(caption)
+        let symbols = Set(["sparkles","message","pencil","globe","shield","list.bullet","text.alignleft","person.crop.circle","wallet.pass","chart.bar","questionmark.circle","doc.text","trash","arrow.uturn.backward","magnifyingglass","bolt","slider.horizontal.3"])
+        let accent = UIColor { traits in
+            traits.userInterfaceStyle == .dark ? UIColor(red: 0.96, green: 0.79, blue: 0.40, alpha: 1) : UIColor(red: 0.48, green: 0.33, blue: 0.06, alpha: 1)
+        }
+        let columns = traitCollection.preferredContentSizeCategory.isAccessibilityCategory ? 1 : 2
+        for offset in stride(from: 0, to: choices.count, by: columns) {
+            let row = UIStackView()
+            row.axis = .horizontal; row.spacing = 12; row.distribution = .fillEqually
+            for index in offset..<min(offset + columns, choices.count) {
+                let item = choices[index]
+                let button = UIButton(type: .system)
+                button.tag = index
+                button.backgroundColor = .secondarySystemGroupedBackground
+                button.layer.cornerRadius = 16
+                button.layer.borderWidth = 1
+                button.layer.borderColor = UIColor.separator.cgColor
+                button.tintColor = accent
+                let label = item["title"] ?? ""
+                let requested = item["icon"] ?? "sparkles"
+                let symbol = symbols.contains(requested) ? requested : "sparkles"
+                if #available(iOS 15.0, *) {
+                    var config = UIButton.Configuration.plain()
+                    config.title = label
+                    config.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 25, weight: .medium))
+                    config.imagePlacement = .top; config.imagePadding = 9
+                    config.titleAlignment = .center
+                    config.baseForegroundColor = accent
+                    config.contentInsets = NSDirectionalEdgeInsets(top: 16, leading: 10, bottom: 16, trailing: 10)
+                    button.configuration = config
+                } else {
+                    button.setTitle(label, for: .normal)
+                }
+                button.titleLabel?.font = .preferredFont(forTextStyle: .body)
+                button.titleLabel?.adjustsFontForContentSizeCategory = true
+                button.titleLabel?.numberOfLines = 0
+                button.titleLabel?.textAlignment = .center
+                button.accessibilityLabel = label
+                button.heightAnchor.constraint(greaterThanOrEqualToConstant: 106).isActive = true
+                button.addTarget(self, action: #selector(tapTile(_:)), for: .touchUpInside)
+                row.addArrangedSubview(button)
+            }
+            if columns == 2 && row.arrangedSubviews.count == 1 { row.addArrangedSubview(UIView()) }
+            stack.addArrangedSubview(row)
+        }
+    }
+    @objc private func tapTile(_ sender: UIButton) {
+        guard choices.indices.contains(sender.tag) else { return }
+        choose(choices[sender.tag]["value"])
+    }
+    @objc private func closePicker() { choose(nil) }
+    private func choose(_ value: String?) {
+        guard !chosen else { return }
+        chosen = true
+        onChoice?(value); onChoice = nil
+    }
+}
+
 final class GoldgramPluginNetwork: NSObject, UIDocumentPickerDelegate {
     private let config: GoldgramAIConfig
     private weak var presenter: UIViewController?
@@ -914,6 +1009,31 @@ final class GoldgramPluginNetwork: NSObject, UIDocumentPickerDelegate {
         busy = true
         DispatchQueue.main.asyncAfter(deadline: .now()+0.35) { [weak self] in
             guard let self, !self.cancelled, self.valid(), let presenter = self.presenter, presenter.viewIfLoaded?.window != nil, presenter.presentedViewController == nil else { self?.busy = false; completion(["error":"request_cancelled"]); return }
+            if args["layout"] as? String == "tiles" {
+                var seen = Set<String>()
+                guard choices.allSatisfy({ item in
+                    guard let value = item["value"], !value.isEmpty, value.utf8.count <= 200,
+                          let label = item["title"], !label.isEmpty, label.utf8.count <= 320,
+                          seen.insert(value).inserted else { return false }
+                    return (item["icon"]?.utf8.count ?? 0) <= 60
+                }) else { self.busy = false; completion(["error":"Invalid tiles"]); return }
+                let screen = GoldgramPluginTilePicker(title: String(title.prefix(80)), choices: choices)
+                let nav = UINavigationController(rootViewController: screen)
+                nav.modalPresentationStyle = .formSheet
+                nav.isModalInPresentation = true
+                self.fileUI = nav
+                screen.onChoice = { [weak self, weak nav] value in
+                    guard let self, let nav, !self.cancelled else { return }
+                    nav.dismiss(animated: true) { [weak self] in
+                        guard let self, !self.cancelled else { return }
+                        self.fileUI = nil; self.busy = false
+                        guard self.valid() else { completion(["error":"request_cancelled"]); return }
+                        completion(["value": value.map { $0 as Any } ?? NSNull()])
+                    }
+                }
+                presenter.present(nav, animated: true)
+                return
+            }
             let alert = UIAlertController(title: String(title.prefix(160)), message: nil, preferredStyle: .alert); self.alert = alert
             for item in choices { guard let value = item["value"], let label = item["title"], value.count <= 200 else { continue }; alert.addAction(UIAlertAction(title: String(label.prefix(160)), style: .default) { [weak self] _ in self?.busy = false; self?.alert = nil; completion(["value":value]) }) }
             alert.addAction(UIAlertAction(title: "Отмена", style: .cancel) { [weak self] _ in self?.busy = false; self?.alert = nil; completion(["value":NSNull()]) }); presenter.present(alert, animated: true)

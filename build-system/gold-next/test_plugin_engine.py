@@ -28,10 +28,11 @@ for name, code in sdk_examples.items():
     declared = re.findall(r"^// @permission\.([^\s]+) (required|optional)$", code, re.M)
     assert declared and len({key for key, _ in declared}) == len(declared), name
     assert all(key in sdk_contract["permissions"] for key, _ in declared), name
+aicc_sample = source.split('static let aiccAlpha = #"""\n',1)[1].split('\n"""#',1)[0]
 harness = """
 const assert = require('node:assert/strict');
-let result, requests=[], failModels=false, personalChoice="favorites";
-global.self = {postMessage: raw => {const v=JSON.parse(raw);if(v.rpc!==undefined){requests.push(v);if(v.method==="gold.ai.balance"){self.onmessage({data:{rpcResult:v.rpc,result:{value:{is_available:true,balance_infos:[{currency:"USD",total_balance:"2.50",granted_balance:"0.50",topped_up_balance:"2.00"}]}}}});return;}if(v.method==="gold.ai.usage"){self.onmessage({data:{rpcResult:v.rpc,result:{value:{requests:2,requestsWithUsage:1,totals:{total_tokens:12}}}}});return;}const isModels=v.args.url==="https://api.deepseek.com/models";if(v.args.progress)self.onmessage({data:{rpcProgress:v.rpc,event:{text:"partial",thinking:false,done:false}}});const response=v.method==="gold.search.history"?{value:{items:[{id:"1",text:"synthetic test",timestamp:123}],scope:"currentPeerHistory",complete:false,serverCompleted:true,truncated:false}}:v.method==="gold.documents.pickText"?{value:{name:"test.docx",format:"docx",text:"Hello world",bytes:100,pageCount:0,truncated:false}}:v.method==="ui.select"?{value:v.args.title==="Личные данные"?personalChoice:"0"}:v.method==="gold.favorites.search"?{value:{items:[{title:"Test chat",folder:"Test",note:"synthetic",tags:[]}],matched:1,scope:"currentPeer",complete:true}}:v.method==="gold.favorites.selected"?{value:{title:"Test chat",folder:"Test"}}:v.method==="gold.favorites.addSelected"?{status:"saved"}:v.method==="gold.favorites.removeSelected"?{status:"removed"}:v.method==="gold.contacts.current"||v.method==="gold.contacts.selected"?{value:{name:"Test user",username:"test",card:{alias:"Test alias",note:"Test note"}}}:v.method==="gold.speech.voices"?{voices:[{id:"mock-ru",name:"Mock",language:"ru-RU"}]}:v.method==="gold.speech.speak"?{status:"ended",started:true}:v.method==="gold.speech.stop"?{stopped:false}:isModels?{status:failModels?503:200,body:JSON.stringify({object:"list",data:[{id:"fresh-model",object:"model"}]})}:{status:200,body:'{"model":"mock-model","usage":{"total_tokens":12,"prompt_tokens":8,"completion_tokens":4,"completion_tokens_details":{"reasoning_tokens":2}},"choices":[{"message":{"content":"mock answer"}}]}',durationMs:123};self.onmessage({data:{rpcResult:v.rpc,result:response}});}else result=v;}};
+let result, requests=[], failModels=false, personalChoice="favorites",tileChoice="assistant";
+global.self = {postMessage: raw => {const v=JSON.parse(raw);if(v.rpc!==undefined){requests.push(v);if(v.method==="gold.ai.balance"){self.onmessage({data:{rpcResult:v.rpc,result:{value:{is_available:true,balance_infos:[{currency:"USD",total_balance:"2.50",granted_balance:"0.50",topped_up_balance:"2.00"}]}}}});return;}if(v.method==="gold.ai.usage"){self.onmessage({data:{rpcResult:v.rpc,result:{value:{requests:2,requestsWithUsage:1,totals:{total_tokens:12}}}}});return;}const isModels=v.args.url==="https://api.deepseek.com/models";if(v.args.progress)self.onmessage({data:{rpcProgress:v.rpc,event:{text:"partial",thinking:false,done:false}}});const response=v.method==="gold.search.history"?{value:{items:[{id:"1",text:"synthetic test",timestamp:123}],scope:"currentPeerHistory",complete:false,serverCompleted:true,truncated:false}}:v.method==="gold.documents.pickText"?{value:{name:"test.docx",format:"docx",text:"Hello world",bytes:100,pageCount:0,truncated:false}}:v.method==="ui.select"?{value:v.args.title==="Личные данные"?personalChoice:v.args.layout==="tiles"?tileChoice:"0"}:v.method==="gold.favorites.search"?{value:{items:[{title:"Test chat",folder:"Test",note:"synthetic",tags:[]}],matched:1,scope:"currentPeer",complete:true}}:v.method==="gold.favorites.selected"?{value:{title:"Test chat",folder:"Test"}}:v.method==="gold.favorites.addSelected"?{status:"saved"}:v.method==="gold.favorites.removeSelected"?{status:"removed"}:v.method==="gold.contacts.current"||v.method==="gold.contacts.selected"?{value:{name:"Test user",username:"test",card:{alias:"Test alias",note:"Test note"}}}:v.method==="gold.speech.voices"?{voices:[{id:"mock-ru",name:"Mock",language:"ru-RU"}]}:v.method==="gold.speech.speak"?{status:"ended",started:true}:v.method==="gold.speech.stop"?{stopped:false}:isModels?{status:failModels?503:200,body:JSON.stringify({object:"list",data:[{id:"fresh-model",object:"model"}]})}:{status:200,body:'{"model":"mock-model","usage":{"total_tokens":12,"prompt_tokens":8,"completion_tokens":4,"completion_tokens_details":{"reasoning_tokens":2}},"choices":[{"message":{"content":"mock answer"}}]}',durationMs:123};self.onmessage({data:{rpcResult:v.rpc,result:response}});}else result=v;}};
 """ + worker + """
 goldWorkerMain();
 const sample = """ + json.dumps(example) + """;
@@ -438,6 +439,44 @@ const invalidBefore=requests.length;
 await self.onmessage({data:{source:enhancedAI.replace("thinking:false","thinking:false,reasoningEffort:'max'"),grants:goldGrants,event:"settings.action",managedKey:true}});
 assert.ok(result.error);assert.equal(requests.length,invalidBefore);
 console.log("Goldgram AI Engine 1.4 contracts passed");
+
+const aicc = """ + json.dumps(aicc_sample) + """;
+const aiccGrants=sdkGrants(aicc,true);
+const aiccBefore=requests.length;
+await self.onmessage({data:{source:aicc,grants:aiccGrants,event:"plugin.start",managedKey:true,settings:{deepseekModel:"legacy-model",cp1On:true,cp1Name:"My profile",cp1Prompt:"Keep legacy style",asstProfile:"custom1",routeMode:"smart"}}});
+assert.ok(!result.error);assert.equal(result.floating.title,"AI");assert.equal(result.sections.length,5);
+assert.equal(result.settings.deepseekModel,"legacy-model");assert.equal(result.settings.cp1Prompt,"Keep legacy style");assert.equal(result.settings.asstProfile,"custom1");assert.equal(requests.length,aiccBefore);
+const aiccSettings=result.settings;
+const aiccCtx={peerId:"p",draft:"synthetic question",draftWritable:true,messages:[{id:"1",text:"context test"}]};
+await self.onmessage({data:{source:aicc,grants:aiccGrants,event:"floating.tap",managedKey:true,settings:{...aiccSettings,aiccPanelMode:"quick",asstContext:false},context:aiccCtx}});
+assert.ok(!result.error);assert.equal(result.output.kind,"draft");assert.equal(result.output.text,"mock answer");
+let body=JSON.parse(requests.at(-1).args.body);assert.equal(body.model,"legacy-model");assert.equal(body.thinking.type,"enabled");assert.ok(body.messages[0].content.includes("Keep legacy style"));assert.equal(body.messages[1].content,"synthetic question");
+tileChoice="rewrite";
+await self.onmessage({data:{source:aicc,grants:aiccGrants,event:"floating.tap",managedKey:true,settings:aiccSettings,context:aiccCtx}});
+assert.equal(requests.at(-2).method,"ui.select");assert.equal(requests.at(-2).args.layout,"tiles");assert.ok(requests.at(-2).args.choices.some(x=>x.icon==="pencil"));assert.equal(result.output.text,"mock answer");
+tileChoice=null;
+const cancelBefore=requests.length;
+await self.onmessage({data:{source:aicc,grants:aiccGrants,event:"floating.tap",managedKey:true,settings:aiccSettings,context:aiccCtx}});
+assert.equal(requests.length,cancelBefore+1);assert.equal(result.output,null);
+await self.onmessage({data:{source:aicc,grants:aiccGrants,event:"floating.tap",managedKey:true,settings:aiccSettings,context:{...aiccCtx,draft:"перевод: test"}}});
+assert.equal(JSON.parse(requests.at(-1).args.body).messages[1].content,"test");assert.equal(result.output.kind,"draft");
+await self.onmessage({data:{source:aicc,grants:aiccGrants,event:"context.tap",key:"aicc_ctx_scam",managedKey:true,settings:aiccSettings,context:{peerId:"p",draft:"unchanged",selectedMessage:{id:"m",text:"synthetic warning"}}}});
+assert.equal(result.output.kind,"sheet");assert.equal(JSON.parse(requests.at(-1).args.body).messages[1].content,"synthetic warning");
+await self.onmessage({data:{source:aicc,grants:aiccGrants,event:"context.tap",key:"aicc_ctx_reply",managedKey:true,settings:{...aiccSettings,asstContext:false},context:{peerId:"c",type:"channel",draft:"",draftWritable:false,selectedMessage:{id:"m",text:"synthetic channel"}}}});
+assert.equal(result.output.kind,"sheet");
+await self.onmessage({data:{source:aicc,grants:aiccGrants,event:"settings.action",key:"btnBalance",managedKey:true}});
+assert.equal(requests.at(-1).method,"gold.ai.balance");assert.ok(result.output.text.includes("USD 2.50"));
+const noGrant=requests.length;
+await self.onmessage({data:{source:aicc,grants:aiccGrants.filter(x=>x!=="gold.ai.balance"),event:"settings.action",key:"btnBalance",managedKey:true}});
+assert.equal(requests.length,noGrant);assert.ok(result.output.text.includes("gold.ai.balance"));
+await self.onmessage({data:{source:aicc,grants:aiccGrants,event:"settings.action",key:"btnUsage",managedKey:false}});
+assert.equal(requests.at(-1).method,"gold.ai.usage");assert.ok(result.output.text.includes("Запросы: 2"));
+tileChoice="boss";
+await self.onmessage({data:{source:aicc,grants:aiccGrants,event:"context.tap",key:"aicc_ctx_profile",managedKey:true,context:aiccCtx}});
+assert.equal(result.storage["aicc_profile_v21:p"],"boss");
+assert.ok(!Object.keys(result.storage).some(k=>k.startsWith("aicc_mem_v2:")));
+console.log("AICC Alpha: legacy settings, tile dispatch, cancel, typed AI, profile and permission contracts passed");
+
 
 
 })().catch(e=>{console.error(e);process.exit(1)});
