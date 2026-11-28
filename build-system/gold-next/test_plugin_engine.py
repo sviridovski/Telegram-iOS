@@ -816,3 +816,41 @@ assert 'case .customTools: sectionTitle = "Свои инструменты"' in 
 assert 'case .profileLibrary: sectionTitle = "Библиотека профилей"' in source
 assert 'choices.count <= 3' in ai and 'detailed ? 4000 : 320' in ai
 assert 'detailed: detailed' in ai
+
+
+# Workspace UI 2.0 uses the existing registry and editor keys without replacing the JS.
+assert "private func workspaceLibraryCell()" in source
+assert "private func openWorkspaceEditor(entryID: String?)" in source
+assert "if isWorkspaceLibrary && indexPath.section == 0 { return workspaceLibraryCell() }" in source
+assert 'record.fileData?["aicc-workspace-v1.json"]' in source
+assert "GoldgramWorkspaceLibrary.editorValues" in source
+assert "if isDashboard || isWorkspaceLibrary { return [] }" in source
+if sys.platform == "darwin":
+    workspace_ui = source.split("// BEGIN GOLDGRAM_WORKSPACE_LIBRARY_UI\n",1)[1].split("// END GOLDGRAM_WORKSPACE_LIBRARY_UI",1)[0]
+    routing = source.split("// BEGIN GOLDGRAM_AICC_DASHBOARD_ROUTING\n",1)[1].split("// END GOLDGRAM_AICC_DASHBOARD_ROUTING",1)[0]
+    fixture = r'''
+let valid = #"{"version":1,"next":3,"tools":[{"id":"wst1","title":"News","prompt":"Analyse","command":"news","mode":"fast","output":"sheet","source":"input","menu":true}],"profiles":[{"id":"wsp2","title":"Friend","prompt":"Friendly"}]}"#
+private let library = GoldgramWorkspaceLibrary.read(valid)!
+precondition(GoldgramWorkspaceLibrary.read(nil)?.tools.isEmpty == true)
+precondition(GoldgramWorkspaceLibrary.read("broken") == nil)
+precondition(GoldgramWorkspaceLibrary.read(valid.replacingOccurrences(of: "wst1", with: "wst3")) == nil)
+precondition(GoldgramWorkspaceLibrary.read(valid.replacingOccurrences(of: "fast", with: "bad")) == nil)
+precondition(library.entries(tools: true).count == 1 && library.entries(tools: false).count == 1)
+private let tool = GoldgramWorkspaceLibrary.editorValues(tools: true, entry: library.tools.first)
+precondition(tool["wsTId"] as? String == "wst1" && tool["wsTCommand"] as? String == "news" && tool["wsTMenu"] as? Bool == true)
+private let profile = GoldgramWorkspaceLibrary.editorValues(tools: false, entry: library.profiles.first)
+precondition(profile["wsPId"] as? String == "wsp2" && profile["wsPPrompt"] as? String == "Friendly" && profile["wsTId"] == nil)
+private let blank = GoldgramWorkspaceLibrary.editorValues(tools: true, entry: nil)
+precondition(blank["wsTId"] as? String == "" && blank["wsTMode"] as? String == "default" && blank["wsTMenu"] as? Bool == false)
+let schema: [[String:Any]] = [["title":"Свои инструменты","items":[["key":"wsTInfo"],["key":"wsTNew"],["key":"wsTEdit"],["key":"wsTEditing"],["key":"wsTTitle"],["key":"wsTSave"]]],["title":"Библиотека профилей","items":[["key":"wsPInfo"],["key":"wsPTitle"],["key":"wsPSave"]]]]
+private func keys(_ page: GoldgramAICCSettingsPage) -> [String] {
+    page.sections(schema).flatMap { ($0["items"] as? [[String:String]] ?? []).compactMap { $0["key"] } }
+}
+precondition(keys(.customTools).isEmpty && keys(.profileLibrary).isEmpty)
+precondition(keys(.toolEditor) == ["wsTTitle","wsTSave"] && keys(.profileEditor) == ["wsPTitle","wsPSave"])
+print("Workspace UI routing and registry: 10 checks passed")
+'''
+    with tempfile.TemporaryDirectory() as tmp:
+        path = pathlib.Path(tmp)/"main.swift"
+        path.write_text("import Foundation\n"+routing+workspace_ui+fixture)
+        subprocess.run(["swift",str(path)],check=True,timeout=90)

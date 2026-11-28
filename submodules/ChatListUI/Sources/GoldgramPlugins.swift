@@ -2683,7 +2683,10 @@ private final class GoldgramPluginDiagnosticsScreen: UIViewController {
 
 // BEGIN GOLDGRAM_AICC_DASHBOARD_ROUTING
 private enum GoldgramAICCSettingsPage: String, CaseIterable {
-    case model, profiles, tools, context, button, management, customTools, profileLibrary
+    case model, profiles, tools, context, button, management, customTools, profileLibrary, toolEditor, profileEditor
+    var isLibrary: Bool { self == .customTools || self == .profileLibrary }
+    var isEditor: Bool { self == .toolEditor || self == .profileEditor }
+    var workspaceTools: Bool { self == .customTools || self == .toolEditor }
     var title: String {
         switch self {
         case .model: return "Модель и сеть"
@@ -2691,6 +2694,8 @@ private enum GoldgramAICCSettingsPage: String, CaseIterable {
         case .tools: return "Инструменты и команды"
         case .customTools: return "Свои инструменты"
         case .profileLibrary: return "Библиотека профилей"
+        case .toolEditor: return "Инструмент"
+        case .profileEditor: return "Профиль"
         case .context: return "Контекст и память"
         case .button: return "Кнопка AI"
         case .management: return "Управление"
@@ -2715,6 +2720,8 @@ private enum GoldgramAICCSettingsPage: String, CaseIterable {
         case .tools: sectionTitle = "Инструменты и команды"
         case .customTools: sectionTitle = "Свои инструменты"
         case .profileLibrary: sectionTitle = "Библиотека профилей"
+        case .toolEditor: sectionTitle = "Свои инструменты"
+        case .profileEditor: sectionTitle = "Библиотека профилей"
         case .button: sectionTitle = "Кнопка и вывод"
         case .management: return []
         }
@@ -2722,6 +2729,12 @@ private enum GoldgramAICCSettingsPage: String, CaseIterable {
             var next = section
             next.removeValue(forKey: "group")
             next["title"] = title
+            if isLibrary { next["items"] = [[String: Any]](); next.removeValue(forKey: "footer") }
+            if isEditor {
+                let prefix = workspaceTools ? "wsT" : "wsP"
+                let hidden = Set(["Info", "New", "Edit", "Editing"].map { prefix + $0 })
+                next["items"] = (section["items"] as? [[String: Any]] ?? []).filter { !hidden.contains($0["key"] as? String ?? "") }
+            }
             if self == .profiles || self == .context {
                 let contextKeys = Set(["asstContext", "perChatProfile"])
                 next["items"] = (section["items"] as? [[String: Any]] ?? []).filter {
@@ -2735,6 +2748,69 @@ private enum GoldgramAICCSettingsPage: String, CaseIterable {
     }
 }
 // END GOLDGRAM_AICC_DASHBOARD_ROUTING
+
+// BEGIN GOLDGRAM_WORKSPACE_LIBRARY_UI
+// Read-only view of the existing JS registry. JS remains the sole writer of library records.
+private struct GoldgramWorkspaceLibrary: Decodable {
+    struct Entry: Decodable {
+        let id: String
+        let title: String
+        let prompt: String
+        let command: String?
+        let mode: String?
+        let output: String?
+        let source: String?
+        let menu: Bool?
+    }
+    let version: Int
+    let next: Int
+    let tools: [Entry]
+    let profiles: [Entry]
+
+    static func read(_ body: String?) -> GoldgramWorkspaceLibrary? {
+        guard let body else { return GoldgramWorkspaceLibrary(version: 1, next: 1, tools: [], profiles: []) }
+        guard body.utf8.count <= 32768, let library = try? JSONDecoder().decode(Self.self, from: Data(body.utf8)),
+              library.version == 1, (1...100000000).contains(library.next),
+              library.tools.count <= 8, library.profiles.count <= 8 else { return nil }
+        var ids = Set<String>(), commands = Set<String>()
+        func textOK(_ value: String, _ chars: Int, _ bytes: Int) -> Bool {
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return !trimmed.isEmpty && trimmed.utf16.count <= chars && trimmed.utf8.count <= bytes
+        }
+        for (entries, prefix) in [(library.tools, "wst"), (library.profiles, "wsp")] {
+            var titles = Set<String>()
+            for entry in entries {
+                guard entry.id.range(of: "^" + prefix + "[1-9][0-9]{0,7}$", options: .regularExpression) != nil,
+                      let number = Int(entry.id.dropFirst(3)), number < library.next, ids.insert(entry.id).inserted,
+                      textOK(entry.title, 60, 240), textOK(entry.prompt, 1200, 3200),
+                      titles.insert(entry.title.lowercased()).inserted else { return nil }
+                if prefix == "wst" {
+                    guard let command = entry.command, command == command.lowercased(),
+                          command.range(of: "^[a-zа-яё0-9_]{1,32}$", options: .regularExpression) != nil, commands.insert(command).inserted,
+                          let mode = entry.mode, ["default","fast","smart","max"].contains(mode),
+                          let output = entry.output, ["default","draft","insert","clipboard","sheet"].contains(output),
+                          let source = entry.source, ["input","context"].contains(source), entry.menu != nil else { return nil }
+                }
+            }
+        }
+        return library
+    }
+    func entries(tools isTools: Bool) -> [Entry] { isTools ? tools : profiles }
+    // Same scratch keys/defaults as editor(kind,item) in the unchanged built-in JS.
+    static func editorValues(tools: Bool, entry: Entry?) -> [String: Any] {
+        let prefix = tools ? "wsT" : "wsP"
+        var values: [String: Any] = [prefix+"Id": entry?.id ?? "", prefix+"Title": entry?.title ?? "", prefix+"Prompt": entry?.prompt ?? ""]
+        if tools {
+            values["wsTCommand"] = entry?.command ?? ""
+            values["wsTMode"] = entry?.mode ?? "default"
+            values["wsTOutput"] = entry?.output ?? "default"
+            values["wsTSource"] = entry?.source ?? "input"
+            values["wsTMenu"] = entry?.menu ?? false
+        }
+        return values
+    }
+}
+// END GOLDGRAM_WORKSPACE_LIBRARY_UI
 
 private final class GoldgramPluginDetail: UITableViewController, UIDocumentPickerDelegate {
     private let store: GoldgramPluginStore
@@ -2754,9 +2830,29 @@ private final class GoldgramPluginDetail: UITableViewController, UIDocumentPicke
     private var isWorkspace: Bool { store.record(id)?.code == GoldgramPluginManager.aiccWorkspace }
     private var isAICC: Bool { store.record(id)?.code == GoldgramPluginManager.aiccAlpha || isWorkspace }
     private var isDashboard: Bool { isAICC && page == nil }
+    private var isWorkspaceLibrary: Bool { isWorkspace && page?.isLibrary == true }
+    private var isWorkspaceEditor: Bool { isWorkspace && page?.isEditor == true }
+    private func workspaceLibrary(_ record: GoldgramPluginRecord) -> GoldgramWorkspaceLibrary? {
+        guard record.grants.contains("storage"), record.grants.contains("settings.read") else { return nil }
+        return GoldgramWorkspaceLibrary.read(record.fileData?["aicc-workspace-v1.json"])
+    }
     private var visibleSections: [[String: Any]] {
-        if isDashboard { return [] }
-        if isAICC, let page { return page.sections(sections) }
+        if isDashboard || isWorkspaceLibrary { return [] }
+        if isAICC, let page {
+            let filtered = page.sections(sections)
+            if isWorkspaceEditor {
+                let prefix = page.workspaceTools ? "wsT" : "wsP"
+                let values = GoldgramPluginStore.decodeValues(store.record(id)?.settings ?? [:])
+                if (values[prefix + "Id"] as? String ?? "").isEmpty {
+                    return filtered.map { section in
+                        var result = section
+                        result["items"] = (section["items"] as? [[String: Any]] ?? []).filter { $0["key"] as? String != prefix + "Delete" }
+                        return result
+                    }
+                }
+            }
+            return filtered
+        }
         return sections
     }
     private var visibleManagement: [Int] {
@@ -2766,6 +2862,11 @@ private final class GoldgramPluginDetail: UITableViewController, UIDocumentPicke
     }
     private func refreshTitle() {
         title = isAICC ? (page?.title ?? (isWorkspace ? "AI Commander 3.1" : "AI Commander 3.0")) : (store.record(id)?.manifest.name ?? "Плагин")
+        if isWorkspaceEditor, let page {
+            let prefix = page.workspaceTools ? "wsT" : "wsP"
+            let values = GoldgramPluginStore.decodeValues(store.record(id)?.settings ?? [:])
+            title = (values[prefix + "Id"] as? String ?? "").isEmpty ? (page.workspaceTools ? "Новый инструмент" : "Новый профиль") : (page.workspaceTools ? "Редактор инструмента" : "Редактор профиля")
+        }
     }
     required init?(coder: NSCoder) { return nil }
     override func viewDidLoad() {
@@ -2795,8 +2896,8 @@ private final class GoldgramPluginDetail: UITableViewController, UIDocumentPicke
         return group(section).map { $0 == title ? title : $0 + " / " + title } ?? title
     }
     private func items(_ section: Int) -> [[String: Any]] { visibleSections[section-1]["items"] as? [[String: Any]] ?? [] }
-    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? (isDashboard ? 1 : visibleManagement.count) : (enhanced && group(section) != nil ? 1 + (groupCollapsed(section) ? 0 : items(section).count) : items(section).count) }
-    override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? { section == 0 ? (isDashboard || !visibleManagement.isEmpty ? status : nil) : visibleSections[section-1]["footer"] as? String }
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? (isDashboard || isWorkspaceLibrary ? 1 : visibleManagement.count) : (enhanced && group(section) != nil ? 1 + (groupCollapsed(section) ? 0 : items(section).count) : items(section).count) }
+    override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? { section == 0 ? (isDashboard || isWorkspaceLibrary || !visibleManagement.isEmpty ? status : nil) : visibleSections[section-1]["footer"] as? String }
     private func dashboardCell() -> UITableViewCell {
         let cell = UITableViewCell(style: .default, reuseIdentifier: nil)
         cell.selectionStyle = .none
@@ -2877,6 +2978,96 @@ private final class GoldgramPluginDetail: UITableViewController, UIDocumentPicke
         }
         return cell
     }
+    private func workspaceLibraryCell() -> UITableViewCell {
+        let cell = UITableViewCell(style: .default, reuseIdentifier: nil)
+        cell.selectionStyle = .none
+        cell.backgroundColor = .clear
+        let stack = UIStackView(); stack.axis = .vertical; stack.spacing = 12
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        cell.contentView.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: cell.contentView.topAnchor, constant: 12),
+            stack.bottomAnchor.constraint(equalTo: cell.contentView.bottomAnchor, constant: -12),
+            stack.leadingAnchor.constraint(equalTo: cell.contentView.leadingAnchor, constant: 4),
+            stack.trailingAnchor.constraint(equalTo: cell.contentView.trailingAnchor, constant: -4)
+        ])
+        func label(_ text: String) {
+            let value = UILabel(); value.text = text; value.numberOfLines = 0
+            value.font = .preferredFont(forTextStyle: .subheadline); value.textColor = .secondaryLabel
+            value.adjustsFontForContentSizeCategory = true; stack.addArrangedSubview(value)
+        }
+        guard let page, let record = store.record(id), record.enabled, store.isCurrent(), store.failure == nil, !store.state.safe,
+              let library = workspaceLibrary(record) else {
+            label("Библиотека недоступна. Сохранённые данные не изменены."); return cell
+        }
+        let isTools = page.workspaceTools
+        let entries = library.entries(tools: isTools)
+        let editorPage: GoldgramAICCSettingsPage = isTools ? .toolEditor : .profileEditor
+        guard !editorPage.sections(sections).isEmpty else {
+            label("Сначала обновите настройки плагина в разделе «Управление»."); return cell
+        }
+        label("Библиотека · \(entries.count) / 8")
+        let accent = UIColor { traits in
+            traits.userInterfaceStyle == .dark ? UIColor(red: 0.96, green: 0.79, blue: 0.40, alpha: 1) : UIColor(red: 0.48, green: 0.33, blue: 0.06, alpha: 1)
+        }
+        var tiles: [(id: String?, title: String, subtitle: String?, icon: String)] = entries.map {
+            ($0.id, $0.title, isTools ? "/" + ($0.command ?? "") : nil, isTools ? "wand.and.stars" : "person.crop.circle")
+        }
+        if entries.count < 8 { tiles.append((nil, isTools ? "Создать инструмент" : "Создать профиль", nil, "plus.circle")) }
+        let columns = traitCollection.preferredContentSizeCategory.isAccessibilityCategory ? 1 : 2
+        for offset in stride(from: 0, to: tiles.count, by: columns) {
+            let row = UIStackView(); row.axis = .horizontal; row.spacing = 12; row.distribution = .fillEqually
+            for index in offset..<min(offset + columns, tiles.count) {
+                let tile = tiles[index]
+                let button = UIButton(type: .system)
+                button.backgroundColor = .secondarySystemGroupedBackground
+                button.layer.cornerRadius = 16; button.tintColor = accent
+                if tile.id == nil { button.layer.borderWidth = 1; button.layer.borderColor = accent.resolvedColor(with: traitCollection).cgColor }
+                if #available(iOS 15.0, *) {
+                    var config = UIButton.Configuration.plain()
+                    config.title = tile.title; config.subtitle = tile.subtitle
+                    config.image = UIImage(systemName: tile.icon, withConfiguration: UIImage.SymbolConfiguration(pointSize: 26, weight: .medium))?.withTintColor(accent, renderingMode: .alwaysOriginal)
+                    config.imagePlacement = .top; config.imagePadding = 12; config.titleAlignment = .center
+                    config.baseForegroundColor = .label
+                    config.contentInsets = NSDirectionalEdgeInsets(top: 14, leading: 8, bottom: 14, trailing: 8)
+                    button.configuration = config
+                } else { button.setTitle([tile.title, tile.subtitle].compactMap { $0 }.joined(separator: "\n"), for: .normal) }
+                button.titleLabel?.numberOfLines = 0; button.titleLabel?.textAlignment = .center
+                button.titleLabel?.adjustsFontForContentSizeCategory = true
+                button.accessibilityLabel = [tile.title, tile.subtitle].compactMap { $0 }.joined(separator: ", ")
+                button.heightAnchor.constraint(greaterThanOrEqualToConstant: 118).isActive = true
+                button.isEnabled = run == nil
+                button.addAction(UIAction { [weak self] _ in self?.openWorkspaceEditor(entryID: tile.id) }, for: .touchUpInside)
+                row.addArrangedSubview(button)
+            }
+            if columns == 2 && row.arrangedSubviews.count == 1 { row.addArrangedSubview(UIView()) }
+            stack.addArrangedSubview(row)
+        }
+        return cell
+    }
+    private func openWorkspaceEditor(entryID: String?) {
+        store.refresh()
+        guard isWorkspaceLibrary, let page, run == nil, store.isCurrent(), store.failure == nil, !store.state.safe,
+              var record = store.record(id), record.enabled, record.grants.contains("ui.mutate"),
+              record.manifest.required.isSubset(of: Set(record.grants)),
+              let library = workspaceLibrary(record),
+              let lease = GoldgramPluginRun.reserve(account: account, id: id) else {
+            showPluginError("Библиотека недоступна или плагин занят."); return
+        }
+        defer { GoldgramPluginRun.releaseUpdateLease(lease) }
+        let entries = library.entries(tools: page.workspaceTools)
+        let entry = entries.first { $0.id == entryID }
+        guard entryID == nil ? entries.count < 8 : entry != nil else { tableView.reloadData(); return }
+        reloadSchema()
+        let target: GoldgramAICCSettingsPage = page.workspaceTools ? .toolEditor : .profileEditor
+        guard !target.sections(sections).isEmpty else { showPluginError("Обновите настройки плагина."); return }
+        var values = GoldgramPluginStore.decodeValues(record.settings)
+        for (key, value) in GoldgramWorkspaceLibrary.editorValues(tools: page.workspaceTools, entry: entry) { values[key] = value }
+        guard let encoded = GoldgramPluginStore.encodeValues(values) else { showPluginError("Не удалось подготовить редактор."); return }
+        record.settings = encoded
+        guard store.put(record) else { showPluginError("Не удалось подготовить редактор."); return }
+        navigationController?.pushViewController(GoldgramPluginDetail(store: store, id: id, account: account, page: target), animated: true)
+    }
     private func openDashboardTile(_ key: String) {
         store.refresh()
         guard isDashboard, store.isCurrent(), store.failure == nil, run == nil, let record = store.record(id) else { return }
@@ -2920,6 +3111,7 @@ private final class GoldgramPluginDetail: UITableViewController, UIDocumentPicke
     }
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         if isDashboard && indexPath.section == 0 { return dashboardCell() }
+        if isWorkspaceLibrary && indexPath.section == 0 { return workspaceLibraryCell() }
         let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
         cell.textLabel?.numberOfLines = 0; cell.detailTextLabel?.numberOfLines = 2
         if indexPath.section == 0 {
@@ -2974,7 +3166,7 @@ private final class GoldgramPluginDetail: UITableViewController, UIDocumentPicke
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
         store.refresh()
-        guard store.isCurrent(), store.failure == nil, var p = store.record(id), !isDashboard else { return }
+        guard store.isCurrent(), store.failure == nil, var p = store.record(id), !isDashboard, !isWorkspaceLibrary else { return }
         if indexPath.section > 0 {
             let grouped = enhanced && group(indexPath.section) != nil
             if grouped, indexPath.row == 0, let name = group(indexPath.section) { if !collapsedGroups.insert(name).inserted { collapsedGroups.remove(name) }; tableView.reloadData(); return }
@@ -3198,7 +3390,14 @@ private final class GoldgramPluginDetail: UITableViewController, UIDocumentPicke
             guard self.store.put(current) else { self.status = "Не удалось сохранить настройки."; self.tableView.reloadData(); return }
             self.reloadSchema()
             self.logs = Array((self.logs + (result["logs"] as? [String] ?? [])).suffix(80))
-            self.status = "Выполнено"; self.tableView.reloadData()
+            self.status = "Выполнено"; self.refreshTitle(); self.tableView.reloadData()
+            if self.isWorkspaceEditor, event == "settings.action", let key, ["wsTDelete", "wsPDelete"].contains(key),
+               let page = self.page, let library = self.workspaceLibrary(current),
+               let previousID = GoldgramPluginStore.decodeValues(p.settings)[page.workspaceTools ? "wsTId" : "wsPId"] as? String,
+               !previousID.isEmpty, !library.entries(tools: page.workspaceTools).contains(where: { $0.id == previousID }),
+               self.navigationController?.topViewController === self {
+                self.navigationController?.popViewController(animated: true); return
+            }
             if event == "settings.action" {
                 if let output = result["output"] as? [String: Any], let text = output["text"] as? String { self.showPluginError(text) }
                 else if let last = (result["logs"] as? [String])?.last { self.showPluginError(last) }
