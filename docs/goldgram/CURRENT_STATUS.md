@@ -1,6 +1,6 @@
 # CURRENT_STATUS — verified checkpoint
 
-  > **2026-11-28 local user date — #296 Usage & Balance 2.0 candidate queued; #295 remains accepted recovery.** Start with [START_HERE.md](./START_HERE.md) and [AI_COMMANDER_3_PLAN.md](./AI_COMMANDER_3_PLAN.md). Check latest GitHub branch/jobs/artifact before changes.
+  > **2026-11-28 local user date — #296 Usage & Balance 2.0 CI green, general device acceptance; next AI Workspace.** Start with [START_HERE.md](./START_HERE.md) and [AI_COMMANDER_3_PLAN.md](./AI_COMMANDER_3_PLAN.md). Check latest GitHub branch/jobs/artifact before changes.
 
 ## P0 development priority (user-approved 2026-11-25)
 
@@ -13,12 +13,12 @@
 | Item | Latest confirmed status |
 | --- | --- |
 | Feature branch | `gold-next-243-author-search` |
-| HEAD | `0b9093352943c5822dae83c5d020a03899464f03` (#296 Usage & Balance 2.0 candidate), parent #295 |
-| Last green CI | [#295](https://github.com/sviridovski/Telegram-iOS/actions/runs/46100731982), success, 22m40s elapsed, IPA 15246461538 present/unexpired |
-| Last installed | #295 — user installed, reports all good; needs navigation to context menu command switches. Individual toggle tests not reported. |
+| HEAD | `0b9093352943c5822dae83c5d020a03899464f03` (#296 Usage & Balance 2.0), CI success and general device acceptance |
+| Last green CI | [#296](https://github.com/sviridovski/Telegram-iOS/actions/runs/46110684689), success, 37m55s elapsed, IPA 15251075737 present/unexpired at verification |
+| Last installed | #296 — user reports «все отлично», screenshots show provider balance obtained, four completed requests with tokens, model group/chart and history/limit controls; no priced requests displayed. |
 | Failed candidate | #289 native preflight test_goldgram_ai.py:56 stale string assertion after refactor; #288 missing sample ui.read fixed in #289; #287 failure not separately diagnosed. |
-| Next task | Verify [#296](https://github.com/sviridovski/Telegram-iOS/actions/runs/46110684689) CI and native financial center on iPhone; then AI Workspace, direct context menu and custom tools. |
-| Recovery | #295 `f6eb6bfb1b561dc58137c9b83235002d32be8f20` green/general acceptance; #294 prior AICC, #293 AI Engine. Historical archive/media limitations remain. |
+| Next task | AI Workspace: user-defined tools, expandable profile library, direct context menu settings, individual answer selection; compact tiled UI. Then AI Search Foundation. |
+| Recovery | #296 `0b9093352943c5822dae83c5d020a03899464f03` green/general acceptance; #295 `f6eb6bfb1b561dc58137c9b83235002d32be8f20` previous dashboard checkpoint. Historical archive/media limitations remain. |
 
 ## #252 corrections retained in #253
 
@@ -672,3 +672,8 @@ User approves original AI Commander 3.0 proposal and requests usage statistics, 
 - Opt-in monthly USD limit stored natively per plugin, default disabled; block next broker chat completion at send boundary if upper estimated already-recorded known cost for current UTC month reaches configured limit. Applies to plugin broker only (including legacy plugin calls), not native reserve AI or outside app, no hard account budget or exact preflight maximum, no cancellation of in-flight requests; missing prices/usage excluded, clearing stats resets accumulated limit, UI explains. No payment/top-up, no auto transfer. Existing request confirmations, manual send, context/privacy rules unchanged. No changes to SQLite/Ghost/Collector/Live Bridge/native search or CI cache/workflow.
 - Local test evidence: Foundation helper plus fixture compiled via Linux swiftc -swift-version 5 and ran 16/16 assertions, verified FNV hashes exact committed helper 688d62ae and fixture f51a7d67. Coverage price/peak, expired/missing/unknown/partial, positive thresholds, no legacy cost, >128 records still aggregated, serialization/no double import, period/retention. AI source contract membership assertions 38/38, no skipped. Added fixture to existing native preflight. JS Worker and built-in AICC Alpha byte-identical to #295; no new JS replay claim. Full UIKit typecheck/real iOS/provider tests pending.
 - Device checklist: install IPA only, do not replace plugin JS. Open Balance or Statistics, check existing key/profiles, manually refresh balance (compare provider amounts/currency), select period and verify totals/history, run a synthetic AI request with existing consent if desired (billable), verify new known tokens/model/estimated cost after refresh/reopen, restart app, check persistence. Test low threshold after manual balance refresh; optional limit test only with known cost >0 and threshold <= recorded upper estimate, verify next request blocked and removing threshold restores generation; avoid unnecessary billable test. Clear only if willing to lose stats (destructive). Verify cancel/leave/background, other plugin isolation, unchanged chat behavior. Pending: complete iOS compile, real balance, ledger writes, limit and layout. Next Workspace; later AI Search Foundation, Intelligence, Archive Reliability 2.0, Semantic. No fixed future CI numbers.
+
+## 2026-11-28 — #296 Usage & Balance 2.0 general device acceptance
+
+- Verified exact HEAD 0b9093352943c5822dae83c5d020a03899464f03, [CI #296](https://github.com/sviridovski/Telegram-iOS/actions/runs/46110684689) completed success; mx/native/build all green, created 2026-11-28 05:07:53 UTC, updated 05:45:48 UTC, elapsed 37m55s. IPA 15251075737 present and unexpired at verification. User reports «Бро, все отлично» and supplied two screenshots: native finance screen, successful USD balance refresh and availability, four completed requests with known token usage (Flash), cache fields, average latency, weekly chart, model breakdown, history count and limit/low-balance settings. Cost explicitly not available, 0/4 priced. Legacy records are intentionally unpriced, which could explain this; timing of each record not independently verified. Do not infer a pricing defect or a successful new pricing test. Do not store user's actual account balance or private screenshots in repo. Accept #296 for observed/general reported functionality; no reported blockers. #296 recovery baseline, #295 previous. Individual tests of new cost estimates, persistence after restart, period switches, threshold/limit enforcement, clearing/cancel/teardown and isolation remain open. Build duration remains above 15–20m goal; no cache/workflow changes in #296.
+- Next AI Workspace (not implemented): bounded custom tool registry, expandable profiles preserving existing data, direct context menu settings, individual result selection and refinement; reuse scoped APIs or add narrow reusable native UI only when needed. Preserve GoldAPI 1.4 compatibility, compact tiles, Keychain and existing confirmation/privacy/manual-send invariants. Then AI Search Foundation, Intelligence, Archive Reliability 2.0, AI Search Semantic. No source changes or new CI for this acceptance.

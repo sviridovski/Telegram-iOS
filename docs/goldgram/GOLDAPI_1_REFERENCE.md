@@ -108,3 +108,5 @@ See [SDK_DEVELOPER_GUIDE.md](./SDK_DEVELOPER_GUIDE.md) for current GGAPI surface
 #293 GoldAPI 1.4.0 CI green and general device acceptance (2026-11-28). See CURRENT_STATUS for exact evidence and open individual tests; no new API change in this documentation update.
 
 #296 candidate: native financial center/ledger v2; GoldAPI 1.4.0 ai.balance and ai.usage signatures and response shapes unchanged (usage last128, cost:null). Optional native per-plugin monthly estimated-cost guard may refuse later completions; handle ordinary broker error. No JS API for changing budget or reading full aggregates yet. See CURRENT_STATUS.md.
+
+#296 native financial center CI green and general device acceptance on 2026-11-28; real balance and local usage visible, new priced request calculation and other individual edge checks remain open. GoldAPI 1.4.0 contract unchanged.
