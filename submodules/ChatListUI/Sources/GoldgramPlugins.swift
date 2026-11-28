@@ -1097,7 +1097,7 @@ window.goldRun = function(payload) {
 """#
 }
 
-private final class GoldgramPluginEditor: UIViewController {
+final class GoldgramPluginEditor: UIViewController {
     private let input = UITextView()
     private let original: String
     private let onSave: (String) -> Void
@@ -2540,7 +2540,7 @@ private final class GoldgramPluginUISettings: UITableViewController {
     }
 }
 
-private final class GoldgramWorkspaceChoiceScreen: UIViewController {
+final class GoldgramWorkspaceChoiceScreen: UIViewController {
     private let options: [[String: Any]]
     private let selected: String?
     private let choose: (Any) -> Void

@@ -311,3 +311,40 @@ assert 'route == .completion && self.config.financeBudgetReached()' in s
 assert 'network.fetch(["url":"https://api.deepseek.com/user/balance","method":"GET"],allowBalance:true)' in s
 assert 'GoldgramFinanceScreen(config:' in plugins
 assert 'GoldgramPluginRun.releaseUpdateLease(lease)' in plugins
+
+
+# AI Search Foundation: strict provider proposal, local dates, no message history in payload.
+search = (root / "submodules/ChatListUI/Sources/GoldgramAuthorSearch.swift").read_text()
+planner = search.split("// BEGIN GOLDGRAM_AI_SEARCH_FOUNDATION\n",1)[1].split("// END GOLDGRAM_AI_SEARCH_FOUNDATION",1)[0]
+fixture = r'''
+var cal = Calendar(identifier:.gregorian); cal.timeZone = TimeZone(secondsFromGMT:0)!
+let now = GoldgramAIQueryPlan.day("2026-11-28",calendar:cal)!
+private let p = GoldgramAIQueryPlan.parse(#"{"terms":["отпуск","ОТПУСК","график"],"author":"Лёша","relativeDays":7,"source":"all"}"#,now:now,calendar:cal)!
+precondition(p.terms == ["отпуск","график"] && p.author == "Лёша" && p.source == 2)
+precondition(p.dates!.0 == Int32(GoldgramAIQueryPlan.day("2026-11-22",calendar:cal)!.timeIntervalSince1970))
+precondition(p.dates!.1 == Int32(GoldgramAIQueryPlan.day("2026-11-29",calendar:cal)!.timeIntervalSince1970)-1)
+precondition(GoldgramAIQueryPlan.parse(#"{"terms":[],"from":"2026-02-30","through":"2026-03-01"}"#) == nil)
+precondition(GoldgramAIQueryPlan.parse(#"{"terms":[],"from":"2026-11-30","through":"2026-11-01"}"#) == nil)
+precondition(GoldgramAIQueryPlan.parse(#"{"terms":[],"relativeDays":true}"#) == nil)
+precondition(GoldgramAIQueryPlan.parse(#"{"terms":[],"relativeDays":2,"relativeMonths":1}"#) == nil)
+precondition(GoldgramAIQueryPlan.parse(#"{"terms":[],"peerId":"123"}"#) == nil)
+precondition(GoldgramAIQueryPlan.parse(#"{"terms":[],"source":"secret"}"#) == nil)
+precondition(GoldgramAIQueryPlan.parse(#"{"terms":[],"event":"edited","media":"photos"}"#) == nil)
+precondition(GoldgramAIQueryPlan.parse(#"{"terms":["x","y","z","a","b","c","d"]}"#) == nil)
+precondition(GoldgramAIQueryPlan.parse(#"{"terms":[],"author":null,"chat":null}"#) != nil)
+precondition(GoldgramAIQueryPlan.parse(#"{"terms":[],"source":"telegram","event":"deleted"}"#) == nil)
+precondition(GoldgramAIQueryPlan.parse(#"{"terms":[],"relativeMonths":3}"#,now:now,calendar:cal)!.dates!.0 == Int32(GoldgramAIQueryPlan.day("2026-08-28",calendar:cal)!.timeIntervalSince1970))
+precondition(GoldgramAIQueryPlan.response(#"{"choices":[{"finish_reason":"length","message":{"content":"{\"terms\":[]}"}}]}"#) == nil)
+precondition(GoldgramAIQueryPlan.response(#"{"choices":[{"finish_reason":"stop","message":{"content":"{\"terms\":[\"x\"]}"}}]}"#)?.terms == ["x"])
+precondition(GoldgramAIQueryPlan.query(String(repeating:"a",count:1001)) == nil)
+print("AI Search Foundation: 17 checks passed")
+'''
+with tempfile.TemporaryDirectory() as tmp:
+    path = pathlib.Path(tmp)/"main.swift"
+    path.write_text("import Foundation\nimport CoreFoundation\n"+planner+fixture)
+    subprocess.run(["swift",str(path)],check=True,timeout=90)
+assert 'self.config = GoldgramAIConfig(account: id + ".native-search")' in search
+assert '["role":"user","content":query]' in search
+assert 'self.authorHint = plan.author; self.chatHint = plan.chat' in search
+assert 'analyzed,authorHint == nil,chatHint == nil' in search
+assert 'self.updateButtons(); self.submit()' in search
