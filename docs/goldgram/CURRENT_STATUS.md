@@ -1,6 +1,6 @@
 # CURRENT_STATUS — verified checkpoint
 
-  > **2026-11-28 local user date — #294 confirmation UX resolved on device; #295 AICC dashboard candidate in CI.** Start with [START_HERE.md](./START_HERE.md) and [AI_COMMANDER_3_PLAN.md](./AI_COMMANDER_3_PLAN.md). Check latest GitHub branch/jobs/artifact before changes.
+  > **2026-11-28 local user date — #295 dashboard CI green and user general acceptance; context menu path clarified. Next Usage & Balance UI.** Start with [START_HERE.md](./START_HERE.md) and [AI_COMMANDER_3_PLAN.md](./AI_COMMANDER_3_PLAN.md). Check latest GitHub branch/jobs/artifact before changes.
 
 ## P0 development priority (user-approved 2026-11-25)
 
@@ -13,12 +13,12 @@
 | Item | Latest confirmed status |
 | --- | --- |
 | Feature branch | `gold-next-243-author-search` |
-| HEAD | `f6eb6bfb1b561dc58137c9b83235002d32be8f20` (#295 compact AICC dashboard candidate), parent #294 |
-| Last green CI | [#294](https://github.com/sviridovski/Telegram-iOS/actions/runs/46095404638), success, 28m39s elapsed, IPA 15244295514 present/unexpired |
-| Last installed | #294 — user confirmed confirmation fix; screenshots show v3.0.0, rollback 2.1.8, saved key label, migrated custom profile fields, streaming enabled. Long settings screen UX requested simpler. |
+| HEAD | `f6eb6bfb1b561dc58137c9b83235002d32be8f20` (#295 compact AICC dashboard), CI success |
+| Last green CI | [#295](https://github.com/sviridovski/Telegram-iOS/actions/runs/46100731982), success, 22m40s elapsed, IPA 15246461538 present/unexpired |
+| Last installed | #295 — user installed, reports all good; needs navigation to context menu command switches. Individual toggle tests not reported. |
 | Failed candidate | #289 native preflight test_goldgram_ai.py:56 stale string assertion after refactor; #288 missing sample ui.read fixed in #289; #287 failure not separately diagnosed. |
-| Next task | Verify [#295](https://github.com/sviridovski/Telegram-iOS/actions/runs/46100731982) dashboard routing and actual device UI; then Usage & Balance UI/Workspace. |
-| Recovery | #294 `74fb906a4cf071d2b6db10bba1e16244582487d5` green and accepted confirmation behavior; #293 previous AI Engine checkpoint. Historical archive/media limitations remain. |
+| Next task | Usage & Balance UI; then Workspace incl potential direct context-menu settings entry and custom tools. |
+| Recovery | #295 `f6eb6bfb1b561dc58137c9b83235002d32be8f20` green/general acceptance; #294 prior AICC, #293 AI Engine. Historical archive/media limitations remain. |
 
 ## #252 corrections retained in #253
 
@@ -657,3 +657,8 @@ User approves original AI Commander 3.0 proposal and requests usage statistics, 
 - Implemented [f6eb6bfb](https://github.com/sviridovski/Telegram-iOS/commit/f6eb6bfb1b561dc58137c9b83235002d32be8f20) direct parent #294; two files GoldgramPlugins.swift and test_plugin_engine.py. [CI #295](https://github.com/sviridovski/Telegram-iOS/actions/runs/46100731982) in_progress when checked. Native-only dashboard for exact built-in AICC Alpha code; no changes to AICC JS or shared JS Worker (verified byte-identical), no plugin version bump, no grant/settings/Keychain/schema/confirmation reset or data migration. No new GoldAPI API, provider routes, SQLite/Ghost/Collector/Live Bridge/search/cache/workflow changes. Other/custom plugins retain normal settings screen. Duplicate equal group/title fixed generally.
 - Dashboard native UITableView single cell with summary enabled/version/model/thinking/streaming, 10 tiles, two columns or one at accessibility font size, gold adaptive accent. AI panel/balance/usage dispatch existing validated settings.action keys only, same permission/consent and run guard; no new provider call at screen load; stop button while running. Six subpages reuse existing GoldgramPluginDetail implementation with filtered display sections and management row mapping (full persisted schema remains untouched): model & network incl native model catalog and streaming, profiles, tools, context (asstContext/perChatProfile only, legacy memory inactive), button/output incl visibility and UI options, management (enable/disable, refresh, JS editor, permissions, console, rollback, delete, update, diagnostics). Per-plugin confirmations screen uses onlyID; restore scope limited to chosen UUID, existing global behavior unchanged. Existing cancellation, safe mode and unchanged draft guard unchanged. Disabled plugin exposes management for enabling. If legacy/custom code replaces AICC, falls back to standard detail. Current stats and balance only; no charts, cost, full memory or library yet. Dashboard layout and navigation on actual iOS pending; no claim it fits every device without scrolling. Exact source routing fixture compiled/executed via Linux Swift, 11/11 checks covering section filtering, duplicate group removal, model permission gating, stop route and coverage of all 13 management rows; added to native CI and four source assertions. No new JS harness replay claimed (worker/sample unchanged); full CI pending. No local UIKit build/typecheck. User should install new IPA, not replace plugin JS, and verify old confirmations and settings remain; all prior edge checks stay open.
 - Next Usage & Balance UI, Workspace, AI Search Foundation, Intelligence, Archive Reliability 2.0 and AI Search Semantic after #295 acceptance. This is a focused usability adjustment before further additions.
+
+## 2026-11-28 — #295 dashboard general acceptance and context menu navigation
+
+- Exact code f6eb6bfb1b561dc58137c9b83235002d32be8f20, [CI #295](https://github.com/sviridovski/Telegram-iOS/actions/runs/46100731982) completed success, 22m40s elapsed; jobs mx:success, native:success, build:success; IPA 15246461538, expired=false. User reports «поставил 295, все хорошо» and asks where to add/remove desired context menu commands. General acceptance, not proof of every tile, data preservation or edge scenario. #295 becomes recovery checkpoint.
+- Verified exact GoldgramPluginDetail routing .button management rows [7,10] and GoldgramPluginUISettings. Current path Plugins > AI Commander 3.0 > Кнопка AI > Интерфейс плагина > Команды контекстного меню. Global switch under Внешний вид controls all commands; individual switches change uiOptions.hiddenActions for already registered actions; existing ui.mutate/messages.read grants required. Hiding is reversible, not deletion of JS or creation of a new command. Custom tools remain planned in Workspace. Suggest considering direct context-menu navigation in future UX, not implemented now. No source changes/new CI. Next Usage & Balance UI.
