@@ -312,3 +312,9 @@ Existing full schema and code preserved; native route enum filters display only.
 ## Usage & Balance 2.0 (#296 candidate)
 
 Native per-plugin finance screen and bounded metadata ledger v2 in UserDefaults, 366 day aggregates +128 recent shadow-compatible records; exact scoped balance RPC reused via native broker lease; opt-in local known-cost monthly guard, published tariff estimate with expiry and unknown-cost coverage. No additional API/JS or SQLite, privacy invariants preserved. See CURRENT_STATUS and DECISIONS_LOG for limits and test evidence.
+
+## GGAPI result picker — #297 Workspace candidate
+
+Additive `await GGAPI.ui.select(title, [{value,title}], {layout:"results"})` returns one chosen string or null; existing alert/tiles modes unchanged. Requires existing ui.mutate and explicit interactive execution/context validity; runtime.features().resultPicker is grant-based capability indicator. Native broker validates 1–3 choices, distinct nonempty values <=200 UTF-8 bytes, titles nonempty <=4000 UTF-8 bytes, optional icon <=60 bytes, screen title <=80 characters. Reuses native modal picker with single-column scrollable multiline text cards; dismissal before callback and existing cancellation/revalidation. No arbitrary HTML, JS execution, network or new permission. Native UI/device rendering pending. GoldAPI 1.4.0 and SDK contract unchanged. Existing GGAPI tile layout cap remains 24 choices and 320-byte labels.
+
+Workspace registry is a bounded plugin-owned logical JSON file via existing storage; native dashboard only for exact built-in revisions, explicit version update retains UUID and data, resets grants per standard policy. See CURRENT_STATUS for limits and evidence.

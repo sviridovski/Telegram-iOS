@@ -132,3 +132,7 @@ Existing GGAPI.ui.select(title,choices) remains alert-based. Additive opt-in `aw
 #296 candidate: native Usage & Balance 2.0; SDK 1.1.0/GoldAPI 1.4.0 unchanged. Existing ai.usage() returns last128, not full daily ledger. Native user-configured cost guard can reject chat completion, handle safely. No new JS permissions or migration.
 
 #296 native financial center CI green and general device acceptance; SDK/GoldAPI unchanged. Next AI Workspace. See CURRENT_STATUS.md for evidence and remaining tests.
+
+## GGAPI result picker — #297 Workspace candidate
+
+Additive `await GGAPI.ui.select(title, [{value,title}], {layout:"results"})` returns one chosen string or null; existing alert/tiles modes unchanged. Requires existing ui.mutate and explicit interactive execution/context validity; runtime.features().resultPicker is grant-based capability indicator. Native broker validates 1–3 choices, distinct nonempty values <=200 UTF-8 bytes, titles nonempty <=4000 UTF-8 bytes, optional icon <=60 bytes, screen title <=80 characters. Reuses native modal picker with single-column scrollable multiline text cards; dismissal before callback and existing cancellation/revalidation. No arbitrary HTML, JS execution, network or new permission. Native UI/device rendering pending. GoldAPI 1.4.0 and SDK contract unchanged. Existing GGAPI tile layout cap remains 24 choices and 320-byte labels.
