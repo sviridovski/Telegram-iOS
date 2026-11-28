@@ -71,3 +71,7 @@ User approved the proposed tiled AI Search plan. Foundation 1.0 (#300 candidate)
 ## Foundation 2.0 scope addition (2026-11-28)
 
 User-approved yellow in-message match highlighting on opening a search result (ordinary and AI search, channels/groups/private chats; actual text/caption matches only). Preserve native exact jump and return, formatting and privacy. See AI_COMMANDER_3_PLAN.md for acceptance checks. Not implemented yet.
+
+## Foundation 2.0 scope addition — word forms (2026-11-28)
+
+User requests an optional «Учитывать словоформы» switch in ordinary and AI search. Distinguish literal matching, same-lexeme inflections and separate synonyms; prefer local bounded matching, actual spans for highlights, preserve dedup/navigation and privacy. See AI_COMMANDER_3_PLAN.md for proposed design and tests. Not implemented yet.
