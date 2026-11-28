@@ -824,7 +824,7 @@ assert "private func openWorkspaceEditor(entryID: String?)" in source
 assert "if isWorkspaceLibrary && indexPath.section == 0 { return workspaceLibraryCell() }" in source
 assert 'record.fileData?["aicc-workspace-v1.json"]' in source
 assert "GoldgramWorkspaceLibrary.editorValues" in source
-assert "if isDashboard || isWorkspaceLibrary { return [] }" in source
+assert "if isDashboard || isWorkspaceLibrary || isWorkspaceEditor { return [] }" in source
 if sys.platform == "darwin":
     workspace_ui = source.split("// BEGIN GOLDGRAM_WORKSPACE_LIBRARY_UI\n",1)[1].split("// END GOLDGRAM_WORKSPACE_LIBRARY_UI",1)[0]
     routing = source.split("// BEGIN GOLDGRAM_AICC_DASHBOARD_ROUTING\n",1)[1].split("// END GOLDGRAM_AICC_DASHBOARD_ROUTING",1)[0]
@@ -848,9 +848,20 @@ private func keys(_ page: GoldgramAICCSettingsPage) -> [String] {
 }
 precondition(keys(.customTools).isEmpty && keys(.profileLibrary).isEmpty)
 precondition(keys(.toolEditor) == ["wsTTitle","wsTSave"] && keys(.profileEditor) == ["wsPTitle","wsPSave"])
-print("Workspace UI routing and registry: 10 checks passed")
+precondition(GoldgramWorkspaceEditorLayout.rows(tools: true, existing: false, compact: false) == [["wsTTitle"],["wsTCommand"],["wsTPrompt"],["wsTMode","wsTOutput"],["wsTSource","wsTMenu"],["wsTSave"]])
+precondition(GoldgramWorkspaceEditorLayout.rows(tools: false, existing: true, compact: false) == [["wsPTitle"],["wsPPrompt"],["wsPSave","wsPDelete"]])
+precondition(GoldgramWorkspaceEditorLayout.rows(tools: true, existing: true, compact: true).allSatisfy { $0.count == 1 })
+precondition(GoldgramWorkspaceEditorLayout.savedID(tools: true, before: ["wsTId":""], after: ["wsTId":"wst1"], library: library, output: "Сохранено: News") == "wst1")
+precondition(GoldgramWorkspaceEditorLayout.savedID(tools: true, before: ["wsTId":"wst2"], after: ["wsTId":"wst1"], library: library, output: "Сохранено: News") == nil)
+precondition(GoldgramWorkspaceEditorLayout.savedID(tools: true, before: [:], after: ["wsTId":"wst1"], library: library, output: "Команда занята") == nil)
+precondition(GoldgramWorkspaceEditorLayout.savedID(tools: false, before: [:], after: ["wsPId":"wsp2"], library: library, output: "Сохранено: Friend") == "wsp2")
+print("Workspace UI routing, registry and editor: 17 checks passed")
 '''
     with tempfile.TemporaryDirectory() as tmp:
         path = pathlib.Path(tmp)/"main.swift"
         path.write_text("import Foundation\n"+routing+workspace_ui+fixture)
         subprocess.run(["swift",str(path)],check=True,timeout=90)
+
+assert "if isWorkspaceEditor && indexPath.section == 0 { return workspaceEditorCell() }" in source
+assert "GoldgramWorkspaceChoiceScreen(title:" in source
+assert "GoldgramWorkspaceEditorLayout.savedID" in source
