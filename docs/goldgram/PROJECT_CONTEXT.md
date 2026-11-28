@@ -322,3 +322,7 @@ Workspace registry is a bounded plugin-owned logical JSON file via existing stor
 ## Workspace UI 2.0 — #298 candidate
 
 - Native built-in Workspace presentation reads existing bounded per-plugin JSON registry and maps selected records to existing JS editor scratch keys under the existing account-scoped execution lease. The unchanged JS remains the only writer of registry entries; no new API, data format, permission, database or plugin replacement. Native library grid and individual editor routes are distinct; invalid registry blocks opening the editor. CI/device validation pending for a21e5ac2a75e20f2e8f33eb5267e2a6772c5d704.
+
+## Workspace UI 3.0 — #299 candidate
+
+- Full tiled native editor and option selector for built-in Workspace; the existing JS registry remains sole writer, native presentation uses existing editor settings/schema, existing account/permission boundaries. Save navigation requires confirmed persisted entry and JS success output, no new data format/API/permissions. CI and real-device validation pending for fc7b5e29f492123ccbfcc0f6556d0f4b5e6daca7.

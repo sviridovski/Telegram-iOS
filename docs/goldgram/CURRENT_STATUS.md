@@ -1,6 +1,6 @@
 # CURRENT_STATUS — verified checkpoint
 
-  > **2026-11-28 local user date — #298 CI green, installed; empty tiled library and separate editor visible, user concern not yet clarified.** Start with [START_HERE.md](./START_HERE.md).
+  > **2026-11-28 local user date — #299 full tiled Workspace UI committed, CI queued, device acceptance pending.** Start with [START_HERE.md](./START_HERE.md).
 
 ## P0 development priority (user-approved 2026-11-25)
 
@@ -13,11 +13,11 @@
 | Item | Latest confirmed status |
 | --- | --- |
 | Feature branch | `gold-next-243-author-search` |
-| HEAD | `a21e5ac2a75e20f2e8f33eb5267e2a6772c5d704` (#298 Workspace UI 2.0), CI success |
+| HEAD | `fc7b5e29f492123ccbfcc0f6556d0f4b5e6daca7` (#299 Workspace UI 3.0), [CI](https://github.com/sviridovski/Telegram-iOS/actions/runs/46148320601) queued |
 | Last green CI | [#298](https://github.com/sviridovski/Telegram-iOS/actions/runs/46131530191), success, 34m19s, IPA 15257774999 unexpired |
-| Last installed | #298, video confirms empty tiled tools library and separate list editor. User reports concern; exact issue unresolved. |
+| Last installed | #298, empty tiled library and separate list editor confirmed; user clarified appearance concern, approved #299 full tiled editor. |
 | Failed candidate | #289 native preflight test_goldgram_ai.py:56 stale string assertion after refactor; #288 missing sample ui.read fixed in #289; #287 failure not separately diagnosed. |
-| Next task | Clarify editor UX vs interaction failure; verify CRUD/profiles/commands and correct if needed, then AI Search Foundation. |
+| Next task | Verify #299 CI/IPA and real-device full tiled editors, option pickers, CRUD, persistence and commands; then AI Search Foundation. |
 | Recovery | #296 `0b9093352943c5822dae83c5d020a03899464f03` green/general acceptance; #295 `f6eb6bfb1b561dc58137c9b83235002d32be8f20` previous dashboard checkpoint. Historical archive/media limitations remain. |
 
 ## #252 corrections retained in #253
@@ -703,3 +703,10 @@ User approves original AI Commander 3.0 proposal and requests usage statistics, 
 
 - Exact HEAD a21e5ac2a75e20f2e8f33eb5267e2a6772c5d704; [CI #298](https://github.com/sviridovski/Telegram-iOS/actions/runs/46131530191) success, 34m19s elapsed (09:40:03–10:14:22 UTC); native, mx and build all success, IPA artifact 15257774999 unexpired at verification. Native validation and build steps success; individual test output not independently inspected.
 - User installed #298 and reported «по-моему что то не так». Examined the 7.8-second screen recording: AI Commander dashboard → Свои инструменты (0/8, only create tile) → Новый инструмент (separate standard list editor with name, command, prompt, thinking, result, source, menu switch, save; no delete for new item). This confirms empty library and navigation, not saved-entry CRUD, field interaction, profiles or command execution. List-form editor is consistent with previous #298 design; user's exact concern (appearance or nonresponsive row) not yet specified. No new code change or build until clarified; propose compact inline editor if appearance is the issue. #296 remains generally accepted fallback.
+
+## 2026-11-28 — #299 Workspace UI 3.0 (candidate)
+
+- User clarified #298 complaint: appearance, not a reported interaction failure. User explicitly approved full tiled editor for tools and profiles («Да бро, все правильно👍 начинай 299»). Code [fc7b5e29f492123ccbfcc0f6556d0f4b5e6daca7](https://github.com/sviridovski/Telegram-iOS/commit/fc7b5e29f492123ccbfcc0f6556d0f4b5e6daca7), direct parent #298, branch HEAD verified. [CI #299](https://github.com/sviridovski/Telegram-iOS/actions/runs/46148320601) queued at verification, no green result or IPA claimed.
+- Two changed files: GoldgramPlugins.swift and test_plugin_engine.py (+222/-21). Workspace editor uses a native tile stack in a single nonselectable container instead of standard settings rows; wide title/command/prompt tiles, paired mode/output and source/menu, save/delete action tiles; profile title/prompt and actions. New record hides delete. Accessibility category uses one column. Values shown on tiles; tapping text opens existing native input/editor, options use new two-column tile choice screen, menu toggles existing setting. Existing libraries retained. Successful save returns to library only after persisted registry entry, matching saved ID and JS success text; errors retain editor, delete retains existing confirmation. No JS, manifest, GoldAPI, broker, SQLite, Ghost, Collector, Live Bridge, workflow or cache-key changes; plugin need not be replaced for this UI-only change. Existing account/grant checks and scratch keys retained.
+- Foundation fixture extended from 10 to 17 checks and source assertions added; embedded Workspace JS byte-identical verified, code commit diff/HEAD verified. Tests not independently run in this session; CI and UIKit/device testing pending. Build acceleration not changed in this commit to isolate UI fix; 15–20m objective open.
+- Device acceptance: verify both empty libraries, both fully tiled editors and parameter choice screens, text editing and cancellation, toggle, valid save returns to library with correct card, invalid/conflicting command stays in editor, reopen/edit and save, delete cancel/confirm, existing data and key retained, command/context-menu execution, accessibility layout. #298 CI green but only empty library and separate editor verified, not CRUD; #296 remains last generally accepted fallback. Next AI Search Foundation after user confirms #299.
